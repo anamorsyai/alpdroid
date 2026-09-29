@@ -29,14 +29,16 @@ class AlpineTermApp : Application() {
         }
     }
 
-    /** Slow, network-bound work: downloading/extracting Alpine, spawning a session. */
-    val backgroundExecutor = Executors.newSingleThreadExecutor()
+    /** Slow, network-bound work: downloading/extracting Alpine, spawning a session.
+     *  Daemon threads: after the deliberate "Exit" path (tabs destroyed, service stopped)
+     *  idle leftovers must never keep the process itself alive behind a gone UI. */
+    val backgroundExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "alpdroid-bg").apply { isDaemon = true } }
 
     /** Package search (AlpineSession.searchPackages) runs its own `apk update` over the network
      *  with a watchdog timeout, but even a bounded hang here must never share a thread with
      *  addTab/startSessionNow/backup/restore on [backgroundExecutor] — a wedged or slow search
      *  would otherwise queue behind (or block) opening a brand-new tab for as long as it takes. */
-    val searchExecutor = Executors.newSingleThreadExecutor()
+    val searchExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "alpdroid-search").apply { isDaemon = true } }
 
     /** Owned here rather than by MainActivity: `proot` and every shell are child processes of
      *  this same app process, not of any particular Activity instance, and Android can destroy

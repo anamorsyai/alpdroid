@@ -19,6 +19,7 @@ class PluginJobs(private val app: AlpineTermApp) {
     private val pool = Executors.newCachedThreadPool { r -> Thread(r, "plugin-job").apply { isDaemon = true } }
     private val scheduler = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "plugin-scheduler").apply { isDaemon = true } }
     private val running = ConcurrentHashMap<String, PtySession>()
+    private val watchdogs = ConcurrentHashMap<String, Thread>()
     private val lastStart = ConcurrentHashMap<String, Long>()
     private val lastEnd = ConcurrentHashMap<String, Long>()
     @Volatile var enabledCount = 0
@@ -83,7 +84,8 @@ class PluginJobs(private val app: AlpineTermApp) {
         val watchdog = if (j.everyMinutes != null) Thread({
             try { Thread.sleep(5 * 60_000L); runCatching { session.destroy() } } catch (_: InterruptedException) {}
         }, "plugin-job-watchdog").apply { isDaemon = true; start() } else null
-        var written = 0
+        watchdog?.let { watchdogs[k] = it }
+        var written = 0L
         runCatching {
             val buf = ByteArray(4096)
             while (true) {
@@ -95,15 +97,26 @@ class PluginJobs(private val app: AlpineTermApp) {
             }
         }
         watchdog?.interrupt()
+        watchdogs.remove(k)
         runCatching { session.destroy() }
         running.remove(k)
         lastEnd[k] = System.currentTimeMillis()
         runCatching { log.appendText("\n=== ended ${stamp()} ===\n") }
     }
 
-    fun stop(j: Job) { running[key(j.plugin, j.id)]?.let { runCatching { it.destroy() } } }
+    fun stop(j: Job) {
+        running.remove(key(j.plugin, j.id))?.let { runCatching { it.destroy() } }
+        // Otherwise the 5-minute watchdog sleeps on after every manual stop — one zombie
+        // sleeper per stop/start cycle that later fires a no-op destroy().
+        watchdogs.remove(key(j.plugin, j.id))?.interrupt()
+    }
 
-    fun stopAll() { running.values.forEach { runCatching { it.destroy() } } }
+    fun stopAll() {
+        running.keys.toList().forEach { k ->
+            running.remove(k)?.let { runCatching { it.destroy() } }
+            watchdogs.remove(k)?.interrupt()
+        }
+    }
 
     fun isRunning(j: Job) = running.containsKey(key(j.plugin, j.id))
 

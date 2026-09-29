@@ -30,8 +30,9 @@ class PtySession private constructor(
      *  every tab's writeToSession() through a single app-wide executor) — a write that blocks
      *  (a large paste into a program that isn't reading its stdin fast enough, or one whose pty
      *  itself is backed up) used to stall keystrokes to every OTHER tab too, not just the one
-     *  actually stuck, since they all queued behind the same single thread. */
-    private val writeExecutor = Executors.newSingleThreadExecutor()
+     *  actually stuck, since they all queued behind the same single thread. Daemon threads so a
+     *  missed destroy() can never pin the whole process alive on its own. */
+    private val writeExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "pty-write").apply { isDaemon = true } }
 
     fun writeAsync(bytes: ByteArray) {
         writeExecutor.execute {

@@ -269,7 +269,18 @@ object AlpineSession {
             }
         }, "pty-search-watchdog").apply { isDaemon = true; start() }
         return try {
-            session.stdout.bufferedReader().readText().lines().map { it.trim() }.filter { it.isNotEmpty() }
+            // Bounded: readText() on `apk update; apk search` output accumulates one String
+            // with no cap — the 20s watchdog bounds time, not bytes, against an output flood.
+            val sb = StringBuilder()
+            val buf = CharArray(8 * 1024)
+            session.stdout.bufferedReader().use { reader ->
+                while (sb.length < MAX_SEARCH_CHARS) {
+                    val n = reader.read(buf, 0, minOf(buf.size, MAX_SEARCH_CHARS - sb.length))
+                    if (n == -1) break
+                    sb.append(buf, 0, n)
+                }
+            }
+            sb.toString().lines().map { it.trim() }.filter { it.isNotEmpty() }
         } catch (e: Exception) {
             Log.w(TAG, "package search failed", e)
             emptyList()
@@ -281,6 +292,9 @@ object AlpineSession {
     }
 
     private const val SEARCH_TIMEOUT_MS = 20_000L
+
+    /** Ceiling for [searchPackages] output — an apk index listing is KBs; 1MB is headroom, not a limit anyone hits. */
+    private const val MAX_SEARCH_CHARS = 1024 * 1024
 
     /** For the Settings "Refresh network" action — resolv.conf is only otherwise written when a
      *  new session starts, so a network change mid-session (wifi <-> mobile data) or a carrier

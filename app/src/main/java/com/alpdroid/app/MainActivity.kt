@@ -1292,7 +1292,17 @@ class MainActivity : Activity() {
     // --- Plugins: dynamic panels built from plugin.json, logic in guest scripts ---------------
 
     private var pluginRun: PtySession? = null
+    private var pluginWatchdog: Thread? = null
     private val ansiRe = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]|\u001B\\][^\u0007]*\u0007")
+
+    /** Stops a foreground one-shot run including its watchdog — destroying the session alone
+     *  left the 120s watchdog thread sleeping to the end, one zombie per Stop tap. */
+    private fun stopPluginRun() {
+        pluginRun?.let { runCatching { it.destroy() } }
+        pluginRun = null
+        pluginWatchdog?.interrupt()
+        pluginWatchdog = null
+    }
 
     private fun buildPluginsCategory(panel: LinearLayout) { fillPlugins(panel) }
 
@@ -1328,8 +1338,7 @@ class MainActivity : Activity() {
 
     private fun showPlugin(panel: LinearLayout, plugin: Plugins.Plugin) {
         panel.removeAllViews()
-        pluginRun?.let { runCatching { it.destroy() } }
-        pluginRun = null
+        stopPluginRun()
         panel.addView(pillButton().apply { text = "← All plugins"; setOnClickListener { fillPlugins(panel) } })
         panel.addView(guideLink("Plugins"))
         panel.addView(sectionLabel(plugin.title))
@@ -1373,7 +1382,7 @@ class MainActivity : Activity() {
             background = cardBg(); setPadding(dp(12), dp(10), dp(12), dp(10))
             text = "Output appears here."
         }
-        val stop = pillButton().apply { text = "Stop"; visibility = View.GONE; setOnClickListener { pluginRun?.let { runCatching { it.destroy() } } } }
+        val stop = pillButton().apply { text = "Stop"; visibility = View.GONE; setOnClickListener { stopPluginRun(); stop.visibility = View.GONE } }
 
         fun runButton(b: Plugins.Button) {
             output.text = "▶ ${b.label}\n"
@@ -1384,7 +1393,8 @@ class MainActivity : Activity() {
                 if (session == null) { mainHandler.post { output.append("Couldn't start (is Alpine ready?)\n"); stop.visibility = View.GONE }; return@execute }
                 pluginRun = session
                 val watchdog = Thread({ try { Thread.sleep(120_000); runCatching { session.destroy() } } catch (_: InterruptedException) {} }, "plugin-watchdog").apply { isDaemon = true; start() }
-                var total = 0
+                pluginWatchdog = watchdog
+                var total = 0L
                 runCatching {
                     val buf = ByteArray(4096)
                     while (true) {
@@ -1395,7 +1405,9 @@ class MainActivity : Activity() {
                     }
                 }
                 watchdog.interrupt()
+                if (pluginWatchdog === watchdog) pluginWatchdog = null
                 runCatching { session.destroy() }
+                if (pluginRun === session) pluginRun = null
                 mainHandler.post { output.append("\n■ finished\n"); stop.visibility = View.GONE }
             }
         }
@@ -2956,10 +2968,12 @@ class MainActivity : Activity() {
     /** Scrollback + screen as a plain .txt in the same folder backups use — for pasting an agent's
      *  output somewhere else without fighting long-press selection across thousands of lines. */
     private fun saveTabOutput(tab: TerminalTab) {
-        val text = tab.emulator.fullText()
-        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
-        val dest = File(AlpineBackup.backupsDir(this), "alpineterm-output-$stamp.txt")
+        // fullText() walks ~2000 scrollback rows into a ~400KB+ string — built here on the
+        // background thread, never on the UI thread that calls this from the tab menu.
         (application as AlpineTermApp).backgroundExecutor.execute {
+            val text = tab.emulator.fullText()
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
+            val dest = File(AlpineBackup.backupsDir(this), "alpineterm-output-$stamp.txt")
             val ok = runCatching { dest.writeText(text) }.isSuccess
             mainHandler.post {
                 android.widget.Toast.makeText(

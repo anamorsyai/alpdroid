@@ -269,13 +269,30 @@ object AlpineRootfs {
     }
 
     private fun httpGetText(url: String): String {
+        // Bounded: readBytes() on a network body with no Content-Length check loads whatever
+        // a hostile/redirected mirror returns straight into the heap. Only small text files
+        // (release indexes) ever flow through here, so a 4MB ceiling is generous, not tight.
         val connection = openHttpConnection(url)
         try {
-            return connection.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+            connection.inputStream.use { input ->
+                val out = java.io.ByteArrayOutputStream()
+                val buf = ByteArray(32 * 1024)
+                var total = 0
+                while (true) {
+                    val n = input.read(buf)
+                    if (n == -1) break
+                    total += n
+                    if (total > MAX_TEXT_BYTES) throw IllegalStateException("response too large: $url")
+                    out.write(buf, 0, n)
+                }
+                return out.toString(Charsets.UTF_8.name())
+            }
         } finally {
             connection.disconnect()
         }
     }
+
+    private const val MAX_TEXT_BYTES = 4 * 1024 * 1024
 
     private fun openHttpConnection(url: String): HttpURLConnection {
         val connection = URL(url).openConnection() as HttpURLConnection

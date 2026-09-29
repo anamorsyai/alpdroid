@@ -81,6 +81,7 @@ object AlpineBackup {
         destRoot.deleteRecursivelyNoFollow()
         destRoot.mkdirs()
         var count = 0
+        var totalBytes = 0L
         // Compared lexically (Path.normalize(), never touching the filesystem) rather than via
         // File.canonicalPath, which resolves real symlinks on disk — including ones THIS SAME
         // restore already extracted moments earlier from entries earlier in the archive. A crafted
@@ -102,6 +103,11 @@ object AlpineBackup {
                 val size = header.readString(124, 12).trimEnd('\u0000', ' ').toLongOrNull(8) ?: 0L
 
                 if (name.isEmpty()) { skipPadding(input, size); continue }
+                // Tar-bomb guard (same threat class as FileOps' zip caps): this reads any
+                // user-picked .tar.gz, and the size field is attacker-controlled.
+                if (++count > MAX_RESTORE_ENTRIES) throw IllegalStateException("archive has more than $MAX_RESTORE_ENTRIES entries")
+                totalBytes += size
+                if (totalBytes > MAX_RESTORE_BYTES) throw IllegalStateException("archive extracts more than ${MAX_RESTORE_BYTES / (1024 * 1024)} MB")
                 val dest = File(destRoot, name)
                 val destNormalized = dest.toPath().normalize()
                 if (destNormalized != rootNormalized && !destNormalized.startsWith(rootNormalized)) {
@@ -145,10 +151,14 @@ object AlpineBackup {
                     }
                     else -> throw IllegalStateException("unsupported backup entry type '$type': $name")
                 }
-                onEntry(++count)
+                onEntry(count)
             }
         }
     }
+
+    /** Tar-bomb caps for [restore] — mirrors FileOps' zip caps, sized for a whole rootfs. */
+    private const val MAX_RESTORE_ENTRIES = 500_000
+    private const val MAX_RESTORE_BYTES = 8L * 1024 * 1024 * 1024
 
     private fun ustarName(header: ByteArray): String {
         val prefix = header.readString(345, 155).trimEnd('\u0000')
@@ -216,7 +226,15 @@ object AlpineBackup {
                     out.write(buf, 0, n)
                     copied += n
                 }
-                if (copied < size) out.write(ByteArray((size - copied).toInt()))
+                // Padded in chunks: a single ByteArray((size - copied).toInt()) allocation
+                // wraps negative past 2GB (Long→Int narrowing) and OOMs even below that.
+                var pad = size - copied
+                val zeros = ByteArray(32 * 1024)
+                while (pad > 0) {
+                    val n = minOf(zeros.size.toLong(), pad).toInt()
+                    out.write(zeros, 0, n)
+                    pad -= n
+                }
                 padTo512(size)
             }
         }

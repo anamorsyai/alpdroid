@@ -953,6 +953,11 @@ class MainActivity : Activity() {
         )
     }
 
+    private val backupCancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val restoreCancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var backupCancelBtn: Button? = null
+    private var restoreCancelBtn: Button? = null
+
     private fun buildBackupCategory(panel: LinearLayout) {
         panel.addView(sectionLabel("Backup"))
         panel.addView(guideLink("Backup & restore"))
@@ -962,6 +967,12 @@ class MainActivity : Activity() {
                 setOnClickListener { backupAlpine() }
             },
         )
+        backupCancelBtn = pillButton().apply {
+            text = "Cancel backup"
+            visibility = View.GONE
+            setOnClickListener { backupCancelled.set(true) }
+        }
+        panel.addView(backupCancelBtn)
         panel.addView(
             MaterialSwitch(this).apply {
                 text = "Automatic weekly backup (keeps the newest 3)"
@@ -976,6 +987,12 @@ class MainActivity : Activity() {
                 setOnClickListener { restoreAlpinePicker() }
             },
         )
+        restoreCancelBtn = pillButton().apply {
+            text = "Cancel restore"
+            visibility = View.GONE
+            setOnClickListener { restoreCancelled.set(true) }
+        }
+        panel.addView(restoreCancelBtn)
         panel.addView(
             pillButton().apply {
                 text = "Export settings"
@@ -2053,6 +2070,7 @@ class MainActivity : Activity() {
     }
 
     private lateinit var searchBar: LinearLayout
+    private lateinit var searchCounter: TextView
 
     /** A `less`-of-the-scrollback search bar, hidden until the extra-keys row's search button
      *  toggles it — jumps the view to matches via TerminalView.search() rather than duplicating
@@ -2095,10 +2113,19 @@ class MainActivity : Activity() {
             addView(input)
             addView(iconButton("▲") { doSearch(input.text.toString(), forward = false) })
             addView(iconButton("▼") { doSearch(input.text.toString(), forward = true) })
+            val counter = TextView(this).apply {
+                textSize = 12f
+                setTextColor(0xFF8B93A1.toInt())
+                minWidth = dp(48)
+                gravity = Gravity.CENTER
+            }
+            searchCounter = counter
+            addView(counter)
             addView(
                 iconButton("✕") {
                     visibility = View.GONE
                     input.setText("")
+                    searchCounter.text = ""
                     terminalView.clearSearch()
                     terminalView.requestFocus()
                 },
@@ -2110,8 +2137,11 @@ class MainActivity : Activity() {
 
     private fun doSearch(query: String, forward: Boolean) {
         if (query.isEmpty()) return
-        if (!terminalView.search(query, forward)) {
-            android.widget.Toast.makeText(this, "No matches", android.widget.Toast.LENGTH_SHORT).show()
+        terminalView.searchAsync(query, forward) { found, position, total ->
+            searchCounter.text = if (found) "$position/$total" else ""
+            if (!found) {
+                android.widget.Toast.makeText(this, "No matches", android.widget.Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -3295,6 +3325,8 @@ class MainActivity : Activity() {
         android.widget.Toast.makeText(this, "Backing up Alpine to ${dest.name}…", android.widget.Toast.LENGTH_SHORT).show()
         val app = application as AlpineTermApp
         val notifId = OperationNotifications.newId()
+        backupCancelled.set(false)
+        runOnUiThread { backupCancelBtn?.visibility = View.VISIBLE }
         app.backgroundExecutor.execute {
             // Sweep up any .part left behind by a previous backup that got killed outright rather
             // than throwing — restoreAlpinePicker() already ignores these (it only lists
@@ -3306,15 +3338,16 @@ class MainActivity : Activity() {
             // hammering the notification manager once per file in a tree with thousands of them.
             var lastUpdateMs = 0L
             OperationNotifications.progress(this, notifId, "Backing up Alpine", "Starting…")
+            var cancelled = false
             val ok = runCatching {
-                AlpineBackup.backup(root, partial) { count ->
+                AlpineBackup.backup(root, partial, { count ->
                     val now = System.currentTimeMillis()
                     if (now - lastUpdateMs >= 300) {
                         lastUpdateMs = now
                         OperationNotifications.progress(this, notifId, "Backing up Alpine", "$count files backed up…")
                     }
-                }
-            }.isSuccess && partial.renameTo(dest)
+                }, { backupCancelled.get() })
+            }.onFailure { if (it is java.util.concurrent.CancellationException) cancelled = true }.isSuccess && partial.renameTo(dest)
             if (!ok) partial.delete()
             if (ok && auto) {
                 // Only counted as done once it really finished, so a failed or killed run retries at the next app start.
@@ -3326,13 +3359,14 @@ class MainActivity : Activity() {
                 this,
                 notifId,
                 "Backing up Alpine",
-                if (ok) "Backup saved: ${dest.name}" else "Backup failed",
+                if (ok) "Backup saved: ${dest.name}" else if (cancelled) "Backup cancelled" else "Backup failed",
                 ok,
             )
             mainHandler.post {
+                backupCancelBtn?.visibility = View.GONE
                 android.widget.Toast.makeText(
                     this,
-                    if (ok) "Backup saved: ${dest.absolutePath}" else "Backup failed",
+                    if (ok) "Backup saved: ${dest.absolutePath}" else if (cancelled) "Backup cancelled" else "Backup failed",
                     android.widget.Toast.LENGTH_LONG,
                 ).show()
             }
@@ -3358,7 +3392,37 @@ class MainActivity : Activity() {
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setTitle("Restore ${backupFile.name}?")
             .setMessage("This replaces the entire current Alpine installation. All open sessions will be closed. This can't be undone.")
-            .setPositiveButton("Restore") { _, _ ->
+            .setPositiveButton("Restore") { _, _ -> startRestore(backupFile) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /**
+     * Free-space preflight for restores (backups already had one): a gzip'd rootfs typically
+     * expands ~3-4x, so anything under 4x the archive size warns instead of wiping the live
+     * install and then dying to ENOSPC halfway through extraction.
+     */
+    private fun startRestore(backupFile: File) {
+        val destRoot = AlpineRootfs.rootDir(this)
+        val free = runCatching { android.os.StatFs(destRoot.path).availableBytes }.getOrDefault(Long.MAX_VALUE)
+        val need = backupFile.length() * 4
+        if (need > 0 && free < need) {
+            com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                .setTitle("Low storage")
+                .setMessage(
+                    "This backup (${FileOps.humanSize(backupFile.length())}) may need roughly " +
+                        "${FileOps.humanSize(need)} unpacked, but only ${FileOps.humanSize(free)} is free. " +
+                        "It'll likely fail partway — leaving Alpine broken until a fresh setup. Continue anyway?",
+                )
+                .setPositiveButton("Continue anyway") { _, _ -> doRestore(backupFile) }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } else {
+            doRestore(backupFile)
+        }
+    }
+
+    private fun doRestore(backupFile: File) {
                 // closeTab() only requests destruction — actual removal from `tabs` happens later,
                 // asynchronously, via onTabExited() on each session's own reader thread — so a
                 // snapshot is destroyed here rather than looping on tabs.isNotEmpty(), which
@@ -3370,6 +3434,8 @@ class MainActivity : Activity() {
                 android.widget.Toast.makeText(this, "Restoring…", android.widget.Toast.LENGTH_SHORT).show()
                 val app = application as AlpineTermApp
                 val notifId = OperationNotifications.newId()
+                restoreCancelled.set(false)
+                runOnUiThread { restoreCancelBtn?.visibility = View.VISIBLE }
                 OperationNotifications.progress(this, notifId, "Restoring ${backupFile.name}", "Starting…")
                 app.backgroundExecutor.execute {
                     // destroy() only requests the process die — starting to overwrite the whole
@@ -3384,25 +3450,27 @@ class MainActivity : Activity() {
                     // isReady() could still report the half-extracted, broken tree as ready.
                     AlpineRootfs.clearReadyMarker(this)
                     var lastUpdateMs = 0L
+                    var cancelled = false
                     val ok = runCatching {
-                        AlpineBackup.restore(backupFile, AlpineRootfs.rootDir(this)) { count ->
+                        AlpineBackup.restore(backupFile, AlpineRootfs.rootDir(this), { count ->
                             val now = System.currentTimeMillis()
                             if (now - lastUpdateMs >= 300) {
                                 lastUpdateMs = now
                                 OperationNotifications.progress(this, notifId, "Restoring ${backupFile.name}", "$count entries restored…")
                             }
-                        }
-                    }.isSuccess
+                        }, { restoreCancelled.get() })
+                    }.onFailure { if (it is java.util.concurrent.CancellationException) cancelled = true }.isSuccess
                     if (ok) AlpineRootfs.markReady(this, backupFile.name)
                     OperationNotifications.finish(
                         this,
                         notifId,
                         "Restoring ${backupFile.name}",
-                        if (ok) "Restore complete" else "Restore failed",
+                        if (ok) "Restore complete" else if (cancelled) "Restore cancelled" else "Restore failed",
                         ok,
                     )
                     mainHandler.post {
-                        android.widget.Toast.makeText(this, if (ok) "Restore complete" else "Restore failed — starting a fresh Alpine setup instead", android.widget.Toast.LENGTH_LONG).show()
+                        restoreCancelBtn?.visibility = View.GONE
+                        android.widget.Toast.makeText(this, if (ok) "Restore complete" else if (cancelled) "Restore cancelled — starting a fresh Alpine setup instead" else "Restore failed — starting a fresh Alpine setup instead", android.widget.Toast.LENGTH_LONG).show()
                         drawerLayout.closeDrawer(GravityCompat.END)
                         pendingSessionStarts--
                         // Always add a replacement, restore failure included — AlpineBackup.restore()
@@ -3414,8 +3482,6 @@ class MainActivity : Activity() {
                     }
                 }
             }
-            .setNegativeButton("Cancel", null)
-            .show()
     }
 
     private fun exportSettings() {

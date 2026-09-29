@@ -23,13 +23,13 @@ object AlpineBackup {
         return File(base, "AlpDroidBackups").apply { mkdirs() }
     }
 
-    fun backup(root: File, destTarGz: File, onEntry: (count: Int) -> Unit = {}) {
+    fun backup(root: File, destTarGz: File, onEntry: (count: Int) -> Unit = {}, isCancelled: () -> Boolean = { false }) {
         // Write to a temp sibling and rename into place: an aborted run (killed app, full
         // disk) used to leave a truncated file at the real path that looked restorable.
         val tmp = File(destTarGz.parentFile, "${destTarGz.name}.part")
         GZIPOutputStream(tmp.outputStream().buffered()).use { gz ->
             val writer = UstarWriter(gz)
-            addTree(writer, root, root, intArrayOf(0), onEntry)
+            addTree(writer, root, root, intArrayOf(0), onEntry, isCancelled)
             writer.finish()
         }
         if (!tmp.renameTo(destTarGz)) throw IllegalStateException("could not finalize backup")
@@ -39,7 +39,10 @@ object AlpineBackup {
      *  in shared storage: the agent-API token and the LAN opencode-web password. */
     private val NEVER_BACKED_UP = setOf("etc/alpdroid/bridge", "root/.opencode-web.env")
 
-    private fun addTree(writer: UstarWriter, base: File, file: File, count: IntArray, onEntry: (Int) -> Unit) {
+    private fun addTree(writer: UstarWriter, base: File, file: File, count: IntArray, onEntry: (Int) -> Unit, isCancelled: () -> Boolean) {
+        // Cooperative cancel, checked every 256 entries (not every file — a volatile read
+        // per file over 500k files is measurable).
+        if (count[0] % 256 == 0 && isCancelled()) throw java.util.concurrent.CancellationException("backup cancelled")
         val relative = if (file == base) "" else file.relativeTo(base).path
         if (relative in NEVER_BACKED_UP) return
         if (relative.isNotEmpty()) {
@@ -71,13 +74,13 @@ object AlpineBackup {
             onEntry(++count[0])
         }
         if (file.isDirectory && !Files.isSymbolicLink(file.toPath())) {
-            file.listFiles()?.forEach { addTree(writer, base, it, count, onEntry) }
+            file.listFiles()?.forEach { addTree(writer, base, it, count, onEntry, isCancelled) }
         }
     }
 
     /** Wipes [destRoot] first — a partial restore mixed with whatever was there before would be
      *  worse than a clean failure. */
-    fun restore(srcTarGz: File, destRoot: File, onEntry: (count: Int) -> Unit = {}) {
+    fun restore(srcTarGz: File, destRoot: File, onEntry: (count: Int) -> Unit = {}, isCancelled: () -> Boolean = { false }) {
         destRoot.deleteRecursivelyNoFollow()
         destRoot.mkdirs()
         var count = 0
@@ -106,6 +109,7 @@ object AlpineBackup {
                 // Tar-bomb guard (same threat class as FileOps' zip caps): this reads any
                 // user-picked .tar.gz, and the size field is attacker-controlled.
                 if (++count > MAX_RESTORE_ENTRIES) throw IllegalStateException("archive has more than $MAX_RESTORE_ENTRIES entries")
+                if (count % 256 == 0 && isCancelled()) throw java.util.concurrent.CancellationException("restore cancelled")
                 totalBytes += size
                 if (totalBytes > MAX_RESTORE_BYTES) throw IllegalStateException("archive extracts more than ${MAX_RESTORE_BYTES / (1024 * 1024)} MB")
                 val dest = File(destRoot, name)

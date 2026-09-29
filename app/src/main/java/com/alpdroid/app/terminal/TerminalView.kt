@@ -178,6 +178,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
     private var searchQuery = ""
     private var searchMatches: List<Int> = emptyList()
     private var searchMatchIndex = -1
+    @Volatile private var searchTicket = 0
 
     // Blinking block cursor: a plain Handler toggle rather than a ValueAnimator — this only
     // needs to flip a boolean and repaint twice a second, an Animator's overhead buys nothing.
@@ -886,6 +887,42 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         invalidate()
     }
 
+    /** Jumps the view to the next (or previous) match for [query] in scrollback+screen.
+     *  The scan runs off the UI thread (a 2000-row scan janks); navigation and [onDone]
+     *  run back on it. [onDone] reports (found, 1-based position, total). */
+    fun searchAsync(query: String, forward: Boolean, onDone: (Boolean, Int, Int) -> Unit) {
+        val em = emulator ?: run { onDone(false, 0, 0); return }
+        if (query.isEmpty()) { onDone(false, 0, 0); return }
+        val ticket = ++searchTicket
+        Thread({
+            val gen = em.generation
+            var matches = em.findRows(query)
+            // Output kept streaming during the scan: rescan once (bounded) so the matches
+            // describe the grid the view actually jumps through, not a stale one.
+            if (gen != em.generation) matches = em.findRows(query)
+            post {
+                if (ticket != searchTicket) return@post // superseded by a newer query
+                if (query != searchQuery) {
+                    searchQuery = query
+                    searchMatches = matches
+                    searchMatchIndex = -1
+                }
+                if (searchMatches.isEmpty()) { onDone(false, 0, 0); return@post }
+                searchMatchIndex = if (searchMatchIndex < 0) {
+                    if (forward) 0 else searchMatches.size - 1
+                } else if (forward) {
+                    (searchMatchIndex + 1) % searchMatches.size
+                } else {
+                    (searchMatchIndex - 1 + searchMatches.size) % searchMatches.size
+                }
+                val targetRow = searchMatches[searchMatchIndex]
+                scrollOffset = (em.scrollbackSize() - targetRow).coerceIn(0, em.scrollbackSize())
+                invalidate()
+                onDone(true, searchMatchIndex + 1, searchMatches.size)
+            }
+        }, "term-search").apply { isDaemon = true; start() }
+    }
+
     /** Jumps the view to the next (or previous) match for [query] in scrollback+screen. Returns
      *  false when there are no matches at all, so the caller can show "not found". */
     fun search(query: String, forward: Boolean): Boolean {
@@ -910,6 +947,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
     }
 
     fun clearSearch() {
+        searchTicket++
         searchQuery = ""
         searchMatches = emptyList()
         searchMatchIndex = -1
@@ -1042,13 +1080,34 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         outAttrs.inputType = android.text.InputType.TYPE_NULL
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN
         return object : BaseInputConnection(this, false) {
+            // Composition buffer for CJK/autocomplete IMEs: setComposingText() stages the
+            // in-progress composition (shown by the IME's own candidate window, not echoed
+            // here — the shell echoes committed text back through the pty) and only
+            // finish/commit sends it, instead of committing char-by-char with no composition.
+            var composing = ""
             override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
+                composing = ""
                 sendControlAware(text.toString())
+                return true
+            }
+
+            override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
+                composing = text.toString()
+                return true
+            }
+
+            override fun finishComposingText(): Boolean {
+                if (composing.isNotEmpty()) {
+                    sendControlAware(composing)
+                    composing = ""
+                }
                 return true
             }
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
                 repeat(beforeLength) { sendControlAware(byteArrayOf(0x7F)) }
+                // afterLength used to be silently dropped — forward-delete never worked.
+                repeat(afterLength) { sendControlAware("\u001B[3~") }
                 return true
             }
 

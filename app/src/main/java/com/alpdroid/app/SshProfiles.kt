@@ -8,8 +8,11 @@ import org.json.JSONObject
  *  reconnecting from a phone is one tap instead of re-typing host/port/user each time. */
 data class SshProfile(val name: String, val host: String, val port: String, val user: String) {
     fun connectCommand(): String {
-        val portArg = if (port.isNotBlank() && port != "22") "-p $port " else ""
-        val userHost = if (user.isNotBlank()) "$user@$host" else host
+        // Single-quote every field: profile fields are typed by the user and interpolated
+        // straight into a shell command line, so `host="x; rm -rf ~"` would otherwise inject.
+        fun q(s: String) = "'" + s.replace("'", "'\\''") + "'"
+        val portArg = port.toIntOrNull()?.takeIf { it in 1..65535 && it != 22 }?.let { "-p $it " } ?: ""
+        val userHost = if (user.isNotBlank()) "${q(user)}@${q(host)}" else q(host)
         return "ssh $portArg$userHost\n"
     }
 }

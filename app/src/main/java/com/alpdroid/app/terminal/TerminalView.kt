@@ -186,7 +186,16 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
     private val blinkRunnable = object : Runnable {
         override fun run() {
             cursorBlinkOn = !cursorBlinkOn
-            invalidate()
+            // Repaint only the cursor cell, not the whole grid: a full invalidate() here
+            // redrew every row (with a fresh renderSnapshot copy) twice a second even idle.
+            // Skipped entirely when the cursor isn't visible anyway (hidden, scrolled up,
+            // view not shown) — nothing on screen changes on those ticks.
+            val em = emulator
+            if (em != null && em.cursorVisible && scrollOffset == 0 && isShown) {
+                val x = em.cursorCol * cellWidth
+                val y = (em.cursorRow * cellHeight).roundToInt().toFloat()
+                invalidate(x.toInt(), y.toInt(), (x + cellWidth).toInt() + 1, (y + cellHeight).toInt() + 1)
+            }
             blinkHandler.postDelayed(this, 530)
         }
     }

@@ -206,6 +206,25 @@ class TerminalEmulator(
         for (r in 0 until rows) { append(rowText(screen[r])); append('\n') }
     }
 
+    /**
+     * Last [maxLines] lines only, built directly from the tail — the agent screen endpoint
+     * polled this via fullText().trimEnd().lines().takeLast().joinToString(), materializing
+     * the whole ~400KB scrollback plus two throwaway copies per request.
+     */
+    @Synchronized
+    fun tailText(maxLines: Int): String {
+        val take = maxLines.coerceIn(1, 5000)
+        val total = scrollback.size + rows
+        val from = (total - take).coerceAtLeast(0)
+        return buildString {
+            for (i in from until total) {
+                val row = if (i < scrollback.size) scrollback.elementAt(i) else screen[i - scrollback.size]
+                append(rowText(row).trimEnd())
+                if (i < total - 1) append('\n')
+            }
+        }.trimEnd()
+    }
+
     private fun rowText(row: Array<Cell>): String = buildString { row.forEach { append(it.ch) } }.trimEnd()
 
     /** Combined-row indices (see [combinedRow]) whose text contains [query], case-insensitive —

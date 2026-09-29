@@ -24,12 +24,15 @@ object NetworkInfo {
         return props.dnsServers.mapNotNull { it.hostAddress }
     }
 
-    /** Non-loopback IPv4 addresses of this device, for display ("reach this shell over LAN at…"). */
+    /** Non-loopback IPv4 addresses of this device, for display ("reach this shell over LAN at…").
+     *  Down interfaces and link-local (169.254.x, no router) addresses are excluded — neither
+     *  is an address another device can actually reach. */
     fun localIpv4Addresses(): List<String> = runCatching {
         NetworkInterface.getNetworkInterfaces().asSequence()
+            .filter { runCatching { it.isUp }.getOrDefault(false) }
             .flatMap { it.inetAddresses.asSequence() }
             .filterIsInstance<Inet4Address>()
-            .filter { !it.isLoopbackAddress }
+            .filter { !it.isLoopbackAddress && !it.isLinkLocalAddress }
             .map { it.hostAddress ?: "" }
             .filter { it.isNotBlank() }
             .toList()

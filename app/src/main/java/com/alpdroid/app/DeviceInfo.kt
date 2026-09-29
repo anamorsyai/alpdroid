@@ -66,9 +66,27 @@ object DeviceInfo {
      *  read them anyway). */
     fun guestBinds(context: Context): List<Pair<File, String>> {
         if (!StorageAccess.isGranted(context)) return emptyList()
-        return runCatching { removableDrives(context) }.getOrDefault(emptyList())
-            .filter { it.mounted }
-            .mapNotNull { d -> d.path?.let { it to "/mnt/${d.mountName}" } }
+        val drives = runCatching { removableDrives(context) }.getOrDefault(emptyList()).filter { it.mounted }
+        val paths = guestPaths(drives)
+        return drives.mapNotNull { d -> d.path?.let { it to (paths[d] ?: "/mnt/${d.mountName}") } }
+    }
+
+    /**
+     * Guest path per drive, de-duplicated: two volumes can sanitize to the same name
+     * ("My Drive" vs "My_Drive"), and the second bind would otherwise shadow the first
+     * under one /mnt/<name>. Suffixes (-2, -3, …) in volume order, deterministic per set.
+     */
+    fun guestPaths(drives: List<Drive>): Map<Drive, String> {
+        val used = mutableSetOf<String>()
+        return drives.associateWith { d ->
+            var name = d.mountName
+            var n = 1
+            while (!used.add(name)) {
+                n++
+                name = "${d.mountName}-$n"
+            }
+            "/mnt/$name"
+        }
     }
 
     fun usbDevices(context: Context): List<Usb> {

@@ -71,6 +71,11 @@ class AgentBridge(private val app: AlpineTermApp) {
 
     fun updateToken(token: String) { this.token = token }
 
+    companion object {
+        private const val MAX_HEADERS = 100
+        private val TAB_ROUTE = Regex("^/v1/tabs/(\\d+)/(send|screen|select|close)$")
+    }
+
     private fun readLine(input: InputStream): String? {
         val sb = StringBuilder()
         while (sb.length < 8192) {
@@ -87,11 +92,18 @@ class AgentBridge(private val app: AlpineTermApp) {
         val input = BufferedInputStream(sock.getInputStream())
         val requestLine = readLine(input) ?: return
         val parts = requestLine.split(" ")
-        if (parts.size < 2) return
+        // Only what this tiny API speaks; anything else (a stray browser probe, garbage)
+        // is dropped before it reaches routing or auth handling.
+        if (parts.size != 3 || (parts[0] != "GET" && parts[0] != "POST")) return
+        if (!parts[1].startsWith("/")) return
         val headers = HashMap<String, String>()
+        var headerCount = 0
         while (true) {
             val line = readLine(input) ?: break
             if (line.isEmpty()) break
+            // Unbounded header count (only each line was length-capped) let one connection
+            // pile up HashMap entries indefinitely.
+            if (++headerCount > MAX_HEADERS) return
             val i = line.indexOf(':')
             if (i > 0) headers[line.substring(0, i).trim().lowercase()] = line.substring(i + 1).trim()
         }
@@ -160,7 +172,7 @@ class AgentBridge(private val app: AlpineTermApp) {
     private fun route(h: Host?, method: String, path: String, q: Map<String, String>, body: JSONObject): Pair<Int, JSONObject> {
         val ok = JSONObject().put("ok", true)
         fun str(k: String) = body.optString(k, "").ifEmpty { q[k] ?: "" }
-        Regex("^/v1/tabs/(\\d+)/(send|screen|select|close)$").matchEntire(path)?.let { m ->
+        TAB_ROUTE.matchEntire(path)?.let { m ->
             val id = m.groupValues[1].toInt()
             val tab = onMain { app.tabs.firstOrNull { it.id == id } } ?: return 404 to error("no such tab")
             return when (m.groupValues[2]) {
@@ -172,7 +184,7 @@ class AgentBridge(private val app: AlpineTermApp) {
                 }
                 "screen" -> {
                     val lines = (q["lines"] ?: body.optString("lines")).toIntOrNull() ?: 200
-                    val text = tab.emulator.fullText().trimEnd().lines().takeLast(lines.coerceIn(1, 5000)).joinToString("\n")
+                    val text = tab.emulator.tailText(lines)
                     200 to JSONObject().put("text", text).put("cwd", JSONObject.NULL)
                 }
                 "select" -> if (h == null) noUi else 200 to JSONObject().put("ok", h.selectTab(id))

@@ -156,7 +156,13 @@ object GitHubAuth {
         var wait = code.interval
         val deadline = System.currentTimeMillis() + code.expiresIn.coerceAtMost(900) * 1000L
         while (System.currentTimeMillis() < deadline && !cancelled()) {
-            Thread.sleep(wait * 1000L)
+            try {
+                Thread.sleep(wait * 1000L)
+            } catch (_: InterruptedException) {
+                // A stop/cancel that interrupts the sleeper used to escape as an exception
+                // instead of the normal Cancelled result the UI expects.
+                return Poll.Failed("Cancelled.")
+            }
             val r = runCatching {
                 post(
                     "https://github.com/login/oauth/access_token",
@@ -168,7 +174,9 @@ object GitHubAuth {
             }
             when (r.optString("error")) {
                 "authorization_pending" -> {}
-                "slow_down" -> wait += 5
+                // Capped: repeated slow_down (+5s each) used to push the sleep past the
+                // deadline and past cancellation, one long uninterruptible nap per loop.
+                "slow_down" -> wait = (wait + 5).coerceAtMost(30)
                 "expired_token" -> return Poll.Failed("The code expired — start again.")
                 "access_denied" -> return Poll.Failed("Approval was denied.")
                 else -> return Poll.Failed(r.optString("error_description", "Sign-in failed."))

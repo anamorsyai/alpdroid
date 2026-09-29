@@ -87,12 +87,31 @@ object Plugins {
     private fun prefs(c: Context) = c.getSharedPreferences("alpineterm_plugins", Context.MODE_PRIVATE)
 
     /** Hash of everything that would run (manifest + scripts, not the saved state). */
-    fun fingerprint(p: Plugin): String {
+    fun fingerprint(p: Plugin): String = fingerprintCached(p)
+
+    // isApproved() → fingerprint() runs on every scheduler tick per job and on several UI
+    // paths — a full directory walk + read + SHA-256 each time. Cached on the newest
+    // mtime under the plugin dir: content changes bump mtime, so a hit means nothing to
+    // re-hash. state.json/logs are excluded from both the hash and the mtime check.
+    private var fpCacheId = ""
+    private var fpCacheMtime = 0L
+    private var fpCacheHash = ""
+
+    @Synchronized
+    private fun fingerprintCached(p: Plugin): String {
+        var mtime = 0L
+        p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }.forEach {
+            if (it.isFile && it.name != "state.json") mtime = maxOf(mtime, it.lastModified())
+        }
+        if (p.id == fpCacheId && mtime == fpCacheMtime && fpCacheHash.isNotEmpty()) return fpCacheHash
         val md = MessageDigest.getInstance("SHA-256")
         p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }.filter { it.isFile && it.name != "state.json" }.sortedBy { it.path }.forEach {
             md.update(it.relativeTo(p.dir).path.toByteArray()); md.update(runCatching { it.readBytes() }.getOrDefault(ByteArray(0)))
         }
-        return md.digest().joinToString("") { "%02x".format(it) }
+        fpCacheId = p.id
+        fpCacheMtime = mtime
+        fpCacheHash = md.digest().joinToString("") { "%02x".format(it) }
+        return fpCacheHash
     }
 
     fun isApproved(c: Context, p: Plugin) = prefs(c).getString("approved_${p.id}", null) == fingerprint(p)

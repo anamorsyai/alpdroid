@@ -86,7 +86,10 @@ object FileOps {
         val dest = uniqueDestination(dstDir, src.name)
         if (src.renameTo(dest)) return dest
         val copied = copy(src, dstDir)
-        delete(src)
+        // A failed delete after a successful cross-storage copy used to return "moved"
+        // while the source still existed — a silent duplicate the caller then displayed
+        // as if the original were gone.
+        if (!delete(src)) throw IllegalStateException("copied to ${copied.name} but could not remove the original")
         return copied
     }
 

@@ -238,10 +238,14 @@ object AlpineRootfs {
         totalBytes = 0
         val connection = openHttpConnection(url)
         totalBytes = connection.contentLengthLong.coerceAtLeast(0)
-        connection.inputStream.use { raw ->
-            val counted = ProgressInputStream(raw) { n -> downloadedBytes += n }
-            val hashed: InputStream = if (digest != null) java.security.DigestInputStream(counted, digest) else counted
-            GZIPInputStream(hashed).use { gz -> extractUstar(gz, root) }
+        try {
+            connection.inputStream.use { raw ->
+                val counted = ProgressInputStream(raw) { n -> downloadedBytes += n }
+                val hashed: InputStream = if (digest != null) java.security.DigestInputStream(counted, digest) else counted
+                GZIPInputStream(hashed).use { gz -> extractUstar(gz, root) }
+            }
+        } finally {
+            connection.disconnect()
         }
         if (digest != null) {
             val actual = digest.digest().joinToString("") { "%02x".format(it) }
@@ -314,6 +318,11 @@ object AlpineRootfs {
         val rootPath = root.canonicalPath
         val header = ByteArray(512)
         val copyBuf = ByteArray(32 * 1024) // reused across every file entry rather than per-file
+        // Bomb caps: the tarball comes over the network and its size fields are untrusted —
+        // a malicious mirror response otherwise streams gigabytes to disk before the
+        // post-extract sha256 check ever runs.
+        var entries = 0
+        var totalBytes = 0L
         while (true) {
             readFully(input, header)
             if (header.all { it == 0.toByte() }) break
@@ -322,6 +331,9 @@ object AlpineRootfs {
             val type = header[156].toInt().toChar()
             val linkName = header.readString(157, 100).trimEnd('\u0000')
             val size = header.readString(124, 12).trimEnd('\u0000', ' ').toLongOrNull(8) ?: 0L
+            if (++entries > MAX_TAR_ENTRIES) throw IllegalStateException("archive has more than $MAX_TAR_ENTRIES entries")
+            totalBytes += size
+            if (totalBytes > MAX_TAR_BYTES) throw IllegalStateException("archive extracts more than ${MAX_TAR_BYTES / (1024 * 1024)} MB")
 
             if (name.isEmpty() || name == ".") {
                 skipPadding(input, size)
@@ -356,6 +368,10 @@ object AlpineRootfs {
     private fun chmod(file: File, mode: Int) {
         runCatching { Os.chmod(file.absolutePath, mode and 0b1111111111) }
     }
+
+    /** Tar-bomb caps for [extractUstar] — a minirootfs is ~50MB; 2GB/500k is headroom. */
+    private const val MAX_TAR_ENTRIES = 500_000
+    private const val MAX_TAR_BYTES = 2L * 1024 * 1024 * 1024
 
     private fun readFully(input: InputStream, buf: ByteArray) {
         var off = 0

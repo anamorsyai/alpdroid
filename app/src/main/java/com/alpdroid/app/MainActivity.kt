@@ -1557,8 +1557,9 @@ class MainActivity : Activity() {
 
         override fun devicesJson(): JSONObject {
             val drives = runCatching { DeviceInfo.removableDrives(this@MainActivity) }.getOrDefault(emptyList())
+            val guestPaths = DeviceInfo.guestPaths(drives)
             return JSONObject()
-                .put("drives", JSONArray(drives.map { JSONObject().put("label", it.label).put("mounted", it.mounted).put("guest_path", "/mnt/${it.mountName}").put("total", it.totalBytes).put("free", it.freeBytes) }))
+                .put("drives", JSONArray(drives.map { JSONObject().put("label", it.label).put("mounted", it.mounted).put("guest_path", guestPaths[it] ?: "/mnt/${it.mountName}").put("total", it.totalBytes).put("free", it.freeBytes) }))
                 .put("usb", JSONArray(DeviceInfo.usbDevices(this@MainActivity).map { JSONObject().put("id", it.id).put("title", it.title).put("kind", it.kind) }))
                 .put("interfaces", JSONArray(DeviceInfo.interfaces().map { JSONObject().put("name", it.name).put("kind", it.kind).put("up", it.up).put("addresses", JSONArray(it.addresses)) }))
                 .put("network", DeviceInfo.activeNetwork(this@MainActivity)?.let { JSONObject().put("transport", it.transport).put("internet", it.validated).put("dns", JSONArray(it.dns)).put("gateway", it.gateway ?: JSONObject.NULL) } ?: JSONObject.NULL)
@@ -1953,6 +1954,7 @@ class MainActivity : Activity() {
 
         panel.addView(sectionLabel("Drives (SD card / USB flash)"))
         val drives = runCatching { DeviceInfo.removableDrives(this) }.getOrDefault(emptyList())
+        val guestPaths = DeviceInfo.guestPaths(drives)
         if (drives.isEmpty()) panel.addView(devNote("None detected. Plug in an SD card or USB drive (OTG); only drives Android itself can mount appear here."))
         drives.forEach { d ->
             val used = d.totalBytes - d.freeBytes
@@ -1964,7 +1966,7 @@ class MainActivity : Activity() {
                     lines = buildList {
                         if (d.mounted) {
                             add("Space" to "${DeviceInfo.humanBytes(d.freeBytes)} free of ${DeviceInfo.humanBytes(d.totalBytes)}")
-                            add("In terminal" to "/mnt/${d.mountName}  (new tabs)")
+                            add("In terminal" to "${guestPaths[d] ?: "/mnt/${d.mountName}"}  (new tabs)")
                             add("Android path" to "${d.path}")
                         } else add("Status" to "Unavailable to the terminal")
                         d.uuid?.let { add("UUID" to it) }
@@ -2682,7 +2684,9 @@ class MainActivity : Activity() {
             SessionPersistence.clear(this)
             updateKeepAliveService()
             deliberateExit = true
-            mainHandler.postDelayed({ finish() }, 400)
+            // Re-checked: a new tab started in the 400ms window (widget, bridge, fast tap)
+            // used to be killed along with the exit it replaced.
+            mainHandler.postDelayed({ if (tabs.isEmpty() && pendingSessionStarts == 0) finish() }, 400)
             return
         }
         persistTabLabels()

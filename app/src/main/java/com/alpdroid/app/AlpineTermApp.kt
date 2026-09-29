@@ -16,15 +16,13 @@ class AlpineTermApp : Application() {
 
     /**
      * One-off proot runs (plugin buttons, package search) each mint a `proot-scratch-*` dir
-     * that nothing ever deleted — slow cache growth, one dir per run. Only dirs older than a
-     * day go: anything newer might still belong to a live plugin session whose PROOT_TMP_DIR
-     * points right at it.
+     * that nothing ever deleted. Safe to wipe them all here: this runs at process start, and
+     * every proot session is a child of this process — none can predate it.
      */
     private fun sweepStaleProotScratch() {
         runCatching {
-            val cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
             (cacheDir.listFiles() ?: emptyArray())
-                .filter { it.isDirectory && (it.name.startsWith("proot-scratch-plugin-") || it.name.startsWith("proot-scratch-search-")) && it.lastModified() < cutoff }
+                .filter { it.isDirectory && it.name.startsWith("proot-scratch-") }
                 .forEach { runCatching { it.deleteRecursively() } }
         }
     }

@@ -26,7 +26,7 @@ object GitHubAuth {
     data class DeviceCode(val deviceCode: String, val userCode: String, val verificationUri: String, val expiresIn: Int, val interval: Int)
 
     sealed interface Poll {
-        data class Granted(val token: String) : Poll
+        data class Granted(val token: String, val refreshToken: String?, val expiresInSec: Int) : Poll
         data class Failed(val reason: String) : Poll
     }
 
@@ -48,19 +48,74 @@ object GitHubAuth {
     }
 
     fun saveToken(context: Context, token: String, login: String?) {
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
-        val enc = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
-        prefs(context).edit()
-            .putString("token", Base64.encodeToString(cipher.iv + enc, Base64.NO_WRAP))
-            .putString("login", login)
-            .apply()
+        saveToken(context, token, login, null, 0, "")
     }
 
-    fun token(context: Context): String? = runCatching {
-        val raw = Base64.decode(prefs(context).getString("token", null) ?: return null, Base64.NO_WRAP)
+    /**
+     * Persists the device-flow result. The OAuth access token is short-lived; the refresh
+     * token (when the flow returns one) plus its expiry and the client ID are what let
+     * [validToken] renew silently later instead of failing with 401 until the user signs
+     * in again. Old installs that only stored "token" keep working: no expiry recorded
+     * means "unknown", treated as still valid.
+     */
+    fun saveToken(context: Context, token: String, login: String?, refreshToken: String?, expiresInSec: Int, clientId: String) {
+        val prefs = prefs(context)
+        prefs.edit()
+            .putString("token", encrypt(token))
+            .putString("login", login)
+            .apply()
+        if (!refreshToken.isNullOrBlank()) prefs.edit().putString("refresh_token", encrypt(refreshToken)).apply()
+        // An absent expiry on a fresh grant means the token doesn't expire — clear any stale
+        // deadline so validToken() doesn't refresh on every single call.
+        if (expiresInSec > 0) prefs.edit().putLong("expires_at", System.currentTimeMillis() + expiresInSec * 1000L).apply()
+        else prefs.edit().remove("expires_at").apply()
+        if (clientId.isNotBlank()) prefs.edit().putString("client_id", clientId).apply()
+    }
+
+    private fun encrypt(plain: String): String {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
+        return Base64.encodeToString(cipher.iv + cipher.doFinal(plain.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
+    }
+
+    private fun decrypt(stored: String?): String? = runCatching {
+        val raw = Base64.decode(stored ?: return null, Base64.NO_WRAP)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, raw.copyOfRange(0, 12))) }
         String(cipher.doFinal(raw, 12, raw.size - 12), Charsets.UTF_8)
     }.getOrNull()
+
+    fun token(context: Context): String? = decrypt(prefs(context).getString("token", null))
+
+    /**
+     * A usable access token: the stored one while it isn't expired (60s clock-skew margin),
+     * otherwise renewed once via the stored refresh token. Blocking (network on refresh) —
+     * call off the main thread. Null only when renewal is impossible: no refresh token was
+     * ever stored, it was rejected, or the network failed — the user must sign in again.
+     */
+    fun validToken(context: Context): String? {
+        val prefs = prefs(context)
+        token(context)?.let { current ->
+            val expiresAt = prefs.getLong("expires_at", 0L)
+            if (expiresAt == 0L || System.currentTimeMillis() < expiresAt - 60_000L) return current
+        }
+        return if (refreshNow(context)) token(context) else null
+    }
+
+    /** One silent renewal via the device-flow refresh token. Blocking. */
+    fun refreshNow(context: Context): Boolean = runCatching {
+        val prefs = prefs(context)
+        val refreshToken = decrypt(prefs.getString("refresh_token", null))?.takeIf { it.isNotBlank() } ?: return false
+        val clientId = prefs.getString("client_id", null)?.takeIf { it.isNotBlank() } ?: return false
+        val r = post(
+            "https://github.com/login/oauth/access_token",
+            mapOf("client_id" to clientId, "grant_type" to "refresh_token", "refresh_token" to refreshToken),
+        )
+        val fresh = r.optString("access_token").takeIf { it.isNotBlank() } ?: return false
+        // GitHub rotates the refresh token on use: persist the replacement when one comes
+        // back, otherwise keep the current one for the next renewal.
+        val rotated = r.optString("refresh_token").takeIf { it.isNotBlank() }
+        saveToken(context, fresh, login(context), rotated, r.optInt("expires_in", 0), clientId)
+        true
+    }.getOrDefault(false)
 
     fun login(context: Context): String? = prefs(context).getString("login", null)
 
@@ -108,7 +163,9 @@ object GitHubAuth {
                     mapOf("client_id" to clientId.trim(), "device_code" to code.deviceCode, "grant_type" to "urn:ietf:params:oauth:grant-type:device_code"),
                 )
             }.getOrNull() ?: continue
-            r.optString("access_token").takeIf { it.isNotBlank() }?.let { return Poll.Granted(it) }
+            r.optString("access_token").takeIf { it.isNotBlank() }?.let {
+                return Poll.Granted(it, r.optString("refresh_token").takeIf { rt -> rt.isNotBlank() }, r.optInt("expires_in", 0))
+            }
             when (r.optString("error")) {
                 "authorization_pending" -> {}
                 "slow_down" -> wait += 5

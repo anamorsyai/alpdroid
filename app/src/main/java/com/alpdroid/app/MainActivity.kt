@@ -1569,7 +1569,7 @@ class MainActivity : Activity() {
             .put("login", GitHubAuth.login(this@MainActivity) ?: JSONObject.NULL)
             .put("agents_may_use_token", settingsStore.agentGithubToken)
 
-        override fun githubToken(): String? = if (settingsStore.agentGithubToken) GitHubAuth.token(this@MainActivity) else null
+        override fun githubToken(): String? = if (settingsStore.agentGithubToken) GitHubAuth.validToken(this@MainActivity) else null
     }
 
     /** Re-applies every user-visible setting after one was changed programmatically. */
@@ -1716,7 +1716,7 @@ class MainActivity : Activity() {
                         dialog.dismiss()
                         when (result) {
                             is GitHubAuth.Poll.Granted -> {
-                                GitHubAuth.saveToken(this, result.token, login)
+                                GitHubAuth.saveToken(this, result.token, login, result.refreshToken, result.expiresInSec, clientId)
                                 android.widget.Toast.makeText(this, "Signed in to GitHub as ${login ?: "?"}", android.widget.Toast.LENGTH_LONG).show()
                                 // Bring the app back after the browser step. Android may refuse a launch from the
                                 // background, so a tap-to-return notification covers that case.

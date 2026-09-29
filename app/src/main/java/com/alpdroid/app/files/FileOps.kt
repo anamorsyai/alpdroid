@@ -100,6 +100,11 @@ object FileOps {
         else file.delete()
 
     fun rename(file: File, newName: String): File {
+        // A name is one path segment, not a path: "../", "/" or "a/b" would escape the
+        // current directory (the dialog passes raw text straight through here).
+        require(newName.isNotBlank() && !newName.contains('/') && !newName.contains('\u0000') && newName != "." && newName != "..") {
+            "invalid name: \"$newName\""
+        }
         val dest = File(file.parentFile, newName)
         if (dest.exists()) throw IllegalArgumentException("\"$newName\" already exists")
         if (!file.renameTo(dest)) throw IllegalStateException("rename failed")
@@ -170,9 +175,13 @@ object FileOps {
         targetDir.mkdirs()
         val canonicalTarget = targetDir.canonicalPath
         var count = 0
+        var totalBytes = 0L
         ZipInputStream(zipFile.inputStream().buffered()).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
+                // Zip-bomb guard: a tiny archive can declare gigabytes of highly-compressible
+                // output and fill the phone's storage. Abort before writing past the caps.
+                if (++count > MAX_UNZIP_ENTRIES) throw IllegalStateException("zip has more than $MAX_UNZIP_ENTRIES entries")
                 val outFile = File(targetDir, entry.name)
                 if (!outFile.canonicalPath.startsWith("$canonicalTarget${File.separator}") && outFile.canonicalPath != canonicalTarget) {
                     throw SecurityException("zip entry escapes destination: ${entry.name}")
@@ -181,10 +190,19 @@ object FileOps {
                     outFile.mkdirs()
                 } else {
                     outFile.parentFile?.mkdirs()
-                    outFile.outputStream().use { zis.copyTo(it) }
+                    outFile.outputStream().use { out ->
+                        val buf = ByteArray(32 * 1024)
+                        var n = zis.read(buf)
+                        while (n != -1) {
+                            totalBytes += n
+                            if (totalBytes > MAX_UNZIP_BYTES) throw IllegalStateException("zip extracts more than ${MAX_UNZIP_BYTES / (1024 * 1024)} MB")
+                            out.write(buf, 0, n)
+                            n = zis.read(buf)
+                        }
+                    }
                 }
                 zis.closeEntry()
-                onEntry(++count)
+                onEntry(count)
                 entry = zis.nextEntry
             }
         }
@@ -216,4 +234,8 @@ object FileOps {
         }
         return "%.1f %s".format(value, units[unitIndex])
     }
+
+    /** Zip-bomb caps for [unzip]: a few-KB archive can declare GBs of output. */
+    private const val MAX_UNZIP_ENTRIES = 100_000
+    private const val MAX_UNZIP_BYTES = 2L * 1024 * 1024 * 1024
 }

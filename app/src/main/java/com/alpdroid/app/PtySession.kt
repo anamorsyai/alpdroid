@@ -146,6 +146,19 @@ class PtySession private constructor(
 
     fun isAlive(): Boolean = runCatching { process.exitValue(); false }.getOrDefault(true)
 
+    /** The bridge binary's own stderr is never part of the terminal stream (redirectErrorStream
+     *  stays false so pty output framing is untouched) — but an undrained pipe fills up and
+     *  wedges the child once the OS buffer is full. A daemon thread discards it; the bridge is
+     *  quiet on success, so this costs nothing in the common case. */
+    private fun drainStderr() {
+        Thread({
+            runCatching {
+                val buf = ByteArray(1024)
+                while (process.errorStream.read(buf) != -1) { /* discard */ }
+            }
+        }, "pty-stderr-drain").apply { isDaemon = true; start() }
+    }
+
     /** Blocks (the calling thread, never the main one — callers are expected to be on a
      *  background executor) until this session's process has actually exited, or [timeoutMs]
      *  passes. destroy() only *requests* the process die; a caller that immediately starts
@@ -162,6 +175,11 @@ class PtySession private constructor(
         // this executor exists to isolate from other tabs) should be interrupted right away along
         // with the rest of the session tearing down, not left to drain on its own.
         writeExecutor.shutdownNow()
+        // The process's own pipes: destroying the process doesn't close our ends, leaking an
+        // fd trio per closed tab until the app process itself dies.
+        runCatching { stdin.close() }
+        runCatching { stdout.close() }
+        runCatching { process.errorStream.close() }
         runCatching { controlOut?.close() }
         runCatching { controlFifo.delete() }
         resizeThreadRunning = false
@@ -192,9 +210,18 @@ class PtySession private constructor(
             builder.environment().clear()
             builder.environment().putAll(env)
             builder.redirectErrorStream(false)
-            val process = builder.start()
+            val process: Process
+            try {
+                process = builder.start()
+            } catch (e: Exception) {
+                // start() throwing (missing/ broken bridge binary) used to leave the mkfifo'd
+                // control file behind in the cache dir, forever, once per attempt.
+                runCatching { fifo.delete() }
+                throw e
+            }
             val session = PtySession(process, fifo)
             session.openControlChannelAsync()
+            session.drainStderr()
             return session
         }
     }

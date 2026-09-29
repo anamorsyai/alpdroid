@@ -52,7 +52,13 @@ class PluginJobs(private val app: AlpineTermApp) {
             if (!Plugins.isEnabled(p, j.id)) continue
             count++
             val k = key(p, j.id)
-            if (running.containsKey(k) || !Plugins.isApproved(app, p)) continue
+            if (running.containsKey(k)) {
+                // Approval revoked (or scripts changed) while the job was already running —
+                // kill it now rather than letting revoked code finish on its own terms.
+                if (!Plugins.isApproved(app, p)) running.remove(k)?.let { runCatching { it.destroy() } }
+                continue
+            }
+            if (!Plugins.isApproved(app, p)) continue
             val due = if (j.everyMinutes == null) now - (lastEnd[k] ?: 0L) >= 30_000L
             else (lastStart[k] ?: 0L) + j.everyMinutes * 60_000L <= now
             if (due) launch(j)

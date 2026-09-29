@@ -7,11 +7,27 @@ class AlpineTermApp : Application() {
     override fun onCreate() {
         super.onCreate()
         OperationNotifications.clearStale(this)
+        sweepStaleProotScratch()
         pluginJobs.start()
     }
 
     /** Scheduled / keep-running plugin scripts (see PluginJobs). */
     val pluginJobs = PluginJobs(this)
+
+    /**
+     * One-off proot runs (plugin buttons, package search) each mint a `proot-scratch-*` dir
+     * that nothing ever deleted — slow cache growth, one dir per run. Only dirs older than a
+     * day go: anything newer might still belong to a live plugin session whose PROOT_TMP_DIR
+     * points right at it.
+     */
+    private fun sweepStaleProotScratch() {
+        runCatching {
+            val cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
+            (cacheDir.listFiles() ?: emptyArray())
+                .filter { it.isDirectory && (it.name.startsWith("proot-scratch-plugin-") || it.name.startsWith("proot-scratch-search-")) && it.lastModified() < cutoff }
+                .forEach { runCatching { it.deleteRecursively() } }
+        }
+    }
 
     /** Slow, network-bound work: downloading/extracting Alpine, spawning a session. */
     val backgroundExecutor = Executors.newSingleThreadExecutor()

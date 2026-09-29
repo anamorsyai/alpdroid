@@ -30,10 +30,13 @@ object TerminalColors {
 
     /** xterm's 256-color cube: 0-15 the ANSI16 above, 16-231 a 6x6x6 RGB cube, 232-255 a gray ramp. */
     fun ansi256(n: Int): Int {
+        // Params arrive raw from the CSI parser (ESC[38;5;-1m is legal input) — an unclamped
+        // negative indexes ANSI16 out of bounds and crashes the reader thread mid-output.
+        val clamped = n.coerceIn(0, 255)
         return when {
-            n < 16 -> ANSI16[n]
-            n < 232 -> {
-                val i = n - 16
+            clamped < 16 -> ANSI16[clamped]
+            clamped < 232 -> {
+                val i = clamped - 16
                 val r = i / 36
                 val g = (i / 6) % 6
                 val b = i % 6
@@ -41,7 +44,7 @@ object TerminalColors {
                 rgb(lvl(r), lvl(g), lvl(b))
             }
             else -> {
-                val gray = 8 + (n - 232) * 10
+                val gray = 8 + (clamped - 232) * 10
                 rgb(gray, gray, gray)
             }
         }

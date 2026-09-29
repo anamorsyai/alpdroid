@@ -1618,7 +1618,15 @@ class MainActivity : Activity() {
             },
         )
         panel.addView(pillButton().apply { text = "Copy access token"; setOnClickListener {
-            (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("token", settingsStore.agentToken))
+            val clip = android.content.ClipData.newPlainText("token", settingsStore.agentToken)
+            // A long-lived bearer token on the system clipboard is readable by any app —
+            // mark it sensitive (API 33+) so the system hides it from clipboard history.
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                clip.description.extras = android.os.PersistableBundle().apply {
+                    putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true)
+                }
+            }
+            (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(clip)
             android.widget.Toast.makeText(this@MainActivity, "Token copied", android.widget.Toast.LENGTH_SHORT).show()
         } })
         panel.addView(pillButton().apply { text = "Regenerate token (locks out old ones)"; setOnClickListener {

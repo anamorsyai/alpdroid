@@ -268,7 +268,14 @@ object AlpineRootfs {
         override fun close() = wrapped.close()
     }
 
-    private fun httpGetText(url: String): String = openHttpConnection(url).inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+    private fun httpGetText(url: String): String {
+        val connection = openHttpConnection(url)
+        try {
+            return connection.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+        } finally {
+            connection.disconnect()
+        }
+    }
 
     private fun openHttpConnection(url: String): HttpURLConnection {
         val connection = URL(url).openConnection() as HttpURLConnection

@@ -40,6 +40,10 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
 
     var emulator: TerminalEmulator? = null
         set(value) {
+            // Detach the previous emulator first: its onAltScreenChanged lambda captures this
+            // view (via resizeHandler), so leaving it set keeps posting resizes for a dead
+            // session and pins the whole view hierarchy in memory after a tab is replaced.
+            if (field !== value) field?.onAltScreenChanged = null
             field = value
             // Reacting to this immediately (not waiting for the next onDraw's own polling check)
             // is what closes the race described on scheduleResize(delayMs=0L)'s own call site
@@ -486,8 +490,12 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             scheduleResize(0L)
         }
         canvas.drawColor(TerminalColors.DEFAULT_BG)
-        val rows = em.rows
-        val scrollbackSize = em.scrollbackSize()
+        // One atomic snapshot for the whole frame (see renderSnapshot): reading rows, the
+        // scrollback size and each row through separate calls let feed()/resize() on the
+        // pty-reader thread shrink the grid between two reads and crash on a stale index.
+        val snap = em.renderSnapshot()
+        val rows = snap.rows
+        val scrollbackSize = snap.scrollbackSize
         val shift = renderShiftPx(em)
 
         canvas.save()
@@ -497,17 +505,17 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             val sourceIndex = screenRow - scrollOffset
             val row: Array<Cell> = if (sourceIndex < 0) {
                 val sbIndex = scrollbackSize + sourceIndex
-                if (sbIndex < 0) continue else em.scrollbackRow(sbIndex)
+                if (sbIndex < 0 || sbIndex >= snap.scrollbackRows.size) continue else snap.scrollbackRows[sbIndex]
             } else {
-                em.rowAt(sourceIndex)
+                if (sourceIndex >= snap.screenRows.size) continue else snap.screenRows[sourceIndex]
             }
             drawRow(canvas, row, screenRow)
         }
 
-        if (scrollOffset == 0 && em.cursorVisible && cursorBlinkOn) {
-            val cx = em.cursorCol * cellWidth
-            val cy = (em.cursorRow * cellHeight).roundToInt().toFloat()
-            val cyBottom = ((em.cursorRow + 1) * cellHeight).roundToInt().toFloat()
+        if (scrollOffset == 0 && snap.cursorVisible && cursorBlinkOn) {
+            val cx = snap.cursorCol * cellWidth
+            val cy = (snap.cursorRow * cellHeight).roundToInt().toFloat()
+            val cyBottom = ((snap.cursorRow + 1) * cellHeight).roundToInt().toFloat()
             paint.color = TerminalColors.CURSOR
             paint.alpha = 170
             canvas.drawRect(cx, cy, cx + cellWidth, cyBottom, paint)
@@ -547,6 +555,9 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
      *  [TerminalEmulator.textInRange] expects, so a selection survives scrolling while it's held. */
     private fun touchToCell(x: Float, y: Float): Pair<Int, Int> {
         val em = emulator ?: return 0 to 0
+        // rows/cols are >= 1 by construction now, but a view laid out at 0 size briefly
+        // reports a 0 grid — coerceIn(0, -1) would throw, so bail out explicitly.
+        if (em.rows < 1 || em.cols < 1) return 0 to 0
         val screenRow = ((y + renderShiftPx(em)) / cellHeight).toInt().coerceIn(0, em.rows - 1)
         val col = ((x - gridOffsetX) / cellWidth).toInt().coerceIn(0, em.cols - 1)
         val logicalRow = (em.scrollbackSize() + screenRow - scrollOffset).coerceIn(0, em.combinedRowCount() - 1)
@@ -666,10 +677,13 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
                     // the opposite of the usual physical-mouse-wheel mapping.
                     val button = if (deltaRows > 0) 65 else 64
                     val (row, col) = touchToCell(e2.x, e2.y)
+                    // One pty write for the whole gesture, not one per row: up to 40 separate
+                    // writes per motion event used to flood the pty and stall the reader.
+                    val sb = StringBuilder()
                     repeat(min(abs(deltaRows), 40)) {
-                        em.mouseClickSequence(row, col, button = button, pressed = true)
-                            ?.let { send(it.toByteArray(Charsets.UTF_8)) }
+                        em.mouseClickSequence(row, col, button = button, pressed = true)?.let { sb.append(it) }
                     }
+                    if (sb.isNotEmpty()) send(sb.toString().toByteArray(Charsets.UTF_8))
                 } else {
                     // No mouse tracking: fall back to repeated up/down-arrow presses ("alternate
                     // scroll mode"), which is what vim/htop/less/a plain pager react to for

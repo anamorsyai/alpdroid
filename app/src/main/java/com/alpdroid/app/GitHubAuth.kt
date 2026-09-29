@@ -66,6 +66,11 @@ object GitHubAuth {
 
     fun signOut(context: Context) {
         prefs(context).edit().clear().apply()
+        // The encrypted token is gone with the prefs, but the Keystore key itself survives —
+        // delete it too so a future sign-in mints a fresh one instead of reusing key material.
+        runCatching {
+            KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(KEY_ALIAS)
+        }
     }
 
     private fun post(url: String, form: Map<String, String>): JSONObject {

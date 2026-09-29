@@ -169,6 +169,10 @@ exit 0
         runScript(context, p, b.script, b.id, values)
 
     fun runScript(context: Context, p: Plugin, script: String, buttonId: String, values: Map<String, String>): PtySession? {
+        // Enforced here, not just at the UI call sites: an agent (or anything else) can drop
+        // a plugin in, and a future caller that forgets the isApproved() check must fail
+        // closed rather than run unreviewed code.
+        if (!isApproved(context, p)) return null
         val env = HashMap<String, String>()
         env["PLUGIN_ID"] = p.id
         env["PLUGIN_DIR"] = "/root/.alpdroid/plugins/${p.id}"

@@ -24,11 +24,15 @@ object AlpineBackup {
     }
 
     fun backup(root: File, destTarGz: File, onEntry: (count: Int) -> Unit = {}) {
-        GZIPOutputStream(destTarGz.outputStream().buffered()).use { gz ->
+        // Write to a temp sibling and rename into place: an aborted run (killed app, full
+        // disk) used to leave a truncated file at the real path that looked restorable.
+        val tmp = File(destTarGz.parentFile, "${destTarGz.name}.part")
+        GZIPOutputStream(tmp.outputStream().buffered()).use { gz ->
             val writer = UstarWriter(gz)
             addTree(writer, root, root, intArrayOf(0), onEntry)
             writer.finish()
         }
+        if (!tmp.renameTo(destTarGz)) throw IllegalStateException("could not finalize backup")
     }
 
     /** Live secrets that are regenerated at every session start — never copied into a backup that sits

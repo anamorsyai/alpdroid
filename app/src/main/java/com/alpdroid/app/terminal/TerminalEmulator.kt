@@ -68,9 +68,9 @@ class TerminalEmulator(
      *  a config change) and a *different* instance is the one actually on screen. Re-set by
      *  rebindTabOutputs() alongside TerminalTab.onOutput, the same pattern that field already uses. */
     var onBell: () -> Unit = onBell
-    var rows: Int = rows
+    var rows: Int = max(1, rows)
         private set
-    var cols: Int = cols
+    var cols: Int = max(1, cols)
         private set
 
     var cursorRow = 0
@@ -258,6 +258,10 @@ class TerminalEmulator(
 
     @Synchronized
     fun resize(newRows: Int, newCols: Int) {
+        // A 0 (or negative) dimension arrives transiently from layout passes before the view
+        // has a size — accepting it would set rows/cols to 0 and make every coerceIn(0, rows-1)
+        // below throw, killing the session over a meaningless intermediate measurement.
+        if (newRows < 1 || newCols < 1) return
         if (newRows == rows && newCols == cols) return
         // The primary screen treats scrollback+screen as one continuous buffer across a resize:
         // shrinking (the soft keyboard opening, which shrinks the view under adjustResize) pushes
@@ -550,6 +554,34 @@ class TerminalEmulator(
     @Synchronized
     fun scrollbackRow(indexFromOldest: Int): Array<Cell> = scrollback.elementAt(indexFromOldest)
 
+    /** One consistent picture of the grid for a single frame. onDraw() reads rows, scrollback
+     *  size and individual rows through separate calls today; feed() on the pty-reader thread
+     *  can mutate the grid between any two of them (a resize shrinking the grid mid-frame),
+     *  turning a valid index captured a line earlier into an IndexOutOfBounds crash. Taking
+     *  every reference under this one lock makes a frame atomic against feed()/resize(). */
+    data class RenderSnapshot(
+        val rows: Int,
+        val cols: Int,
+        val scrollbackSize: Int,
+        val screenRows: List<Array<Cell>>,
+        val scrollbackRows: List<Array<Cell>>,
+        val cursorRow: Int,
+        val cursorCol: Int,
+        val cursorVisible: Boolean,
+    )
+
+    @Synchronized
+    fun renderSnapshot(): RenderSnapshot = RenderSnapshot(
+        rows = rows,
+        cols = cols,
+        scrollbackSize = scrollback.size,
+        screenRows = screen.toList(),
+        scrollbackRows = scrollback.toList(),
+        cursorRow = cursorRow,
+        cursorCol = cursorCol,
+        cursorVisible = cursorVisible,
+    )
+
     // --- Byte-level parsing -------------------------------------------------------------
 
     private fun processByte(b: Int) {
@@ -652,7 +684,10 @@ class TerminalEmulator(
 
     private fun processCsi(b: Int) {
         if (b in 0x30..0x3F || b in 0x20..0x2F) {
-            csiBuf.append(b.toChar())
+            // Capped: a malformed/hostile stream of parameter bytes with no final byte
+            // (a stuck program, a binary file catted to the terminal) would otherwise grow
+            // this buffer without bound until the process ran out of memory.
+            if (csiBuf.length < 256) csiBuf.append(b.toChar()) else state = State.NORMAL
             return
         }
         if (b in 0x40..0x7E) {
@@ -864,7 +899,7 @@ class TerminalEmulator(
     }
 
     private fun scrollUp(n: Int) {
-        repeat(min(n, bottomMargin - topMargin + 1)) {
+        repeat(min(n, bottomMargin - topMargin + 1).coerceAtLeast(0)) {
             val row = screen.removeAt(topMargin)
             if (topMargin == 0) {
                 scrollback.addLast(row)
@@ -887,7 +922,7 @@ class TerminalEmulator(
     }
 
     private fun scrollDown(n: Int) {
-        repeat(min(n, bottomMargin - topMargin + 1)) {
+        repeat(min(n, bottomMargin - topMargin + 1).coerceAtLeast(0)) {
             screen.removeAt(bottomMargin)
             screen.add(topMargin, blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
         }
@@ -895,7 +930,7 @@ class TerminalEmulator(
 
     private fun insertLines(n: Int) {
         if (cursorRow < topMargin || cursorRow > bottomMargin) return
-        repeat(min(n, bottomMargin - cursorRow + 1)) {
+        repeat(min(n, bottomMargin - cursorRow + 1).coerceAtLeast(0)) {
             screen.removeAt(bottomMargin)
             screen.add(cursorRow, blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
         }
@@ -903,7 +938,7 @@ class TerminalEmulator(
 
     private fun deleteLines(n: Int) {
         if (cursorRow < topMargin || cursorRow > bottomMargin) return
-        repeat(min(n, bottomMargin - cursorRow + 1)) {
+        repeat(min(n, bottomMargin - cursorRow + 1).coerceAtLeast(0)) {
             screen.removeAt(cursorRow)
             screen.add(bottomMargin, blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
         }

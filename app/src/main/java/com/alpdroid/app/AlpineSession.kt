@@ -390,6 +390,10 @@ object AlpineSession {
             } else {
                 conf.delete()
             }
+        }.onFailure {
+            // A silent failure here used to leave agent access half-wired (bridge file missing
+            // or stale token) with nothing diagnosing why alpctl stopped answering.
+            Log.w(TAG, "could not write agent files", it)
         }
     }
 

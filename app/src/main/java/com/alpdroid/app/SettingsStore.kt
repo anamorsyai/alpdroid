@@ -61,10 +61,13 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_AGENT_GH, false)
         set(value) = prefs.edit().putBoolean(KEY_AGENT_GH, value).apply()
 
-    /** Random per install; rotating it locks out anything holding the old one. */
+    /** Random per install; rotating it locks out anything holding the old one. Synchronized:
+     *  two threads racing the first read used to mint two different tokens and persist only
+     *  the second, silently invalidating whatever the first caller was already using. */
     val agentToken: String
-        get() = prefs.getString(KEY_AGENT_TOKEN, null) ?: regenerateAgentToken()
+        @Synchronized get() = prefs.getString(KEY_AGENT_TOKEN, null) ?: regenerateAgentToken()
 
+    @Synchronized
     fun regenerateAgentToken(): String {
         val bytes = ByteArray(24).also { java.security.SecureRandom().nextBytes(it) }
         val token = android.util.Base64.encodeToString(bytes, android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP)
@@ -78,7 +81,7 @@ class SettingsStore(context: Context) {
 
     /** Password protecting the LAN-exposed opencode web server (user "opencode"). */
     val opencodeWebPassword: String
-        get() = prefs.getString(KEY_OC_PASS, null) ?: run {
+        @Synchronized get() = prefs.getString(KEY_OC_PASS, null) ?: run {
             val chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
             val r = java.security.SecureRandom()
             val pw = (1..20).map { chars[r.nextInt(chars.length)] }.joinToString("")

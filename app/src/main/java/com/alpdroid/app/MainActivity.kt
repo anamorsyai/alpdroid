@@ -1918,7 +1918,57 @@ class MainActivity : Activity() {
         else -> "Weak"
     }
 
+    /** Snapshot of everything the Devices screen shows — collected off the main thread
+     *  (Wi-Fi scans, sysfs reads, storage stats), rendered on it. Views can't cross threads,
+     *  so only plain data travels between the two halves. */
+    private data class DevicesData(
+        val summary: List<Pair<String, String>>,
+        val net: DeviceInfo.ActiveNet?,
+        val link: DeviceInfo.WifiLink?,
+        val ifaces: List<DeviceInfo.Iface>,
+        val drives: List<DeviceInfo.Drive>,
+        val guestPaths: Map<DeviceInfo.Drive, String>,
+        val storageGranted: Boolean,
+        val usb: List<DeviceInfo.Usb>,
+        val hasLocation: Boolean,
+        val locationEnabled: Boolean,
+        val wifi: List<DeviceInfo.Wifi>,
+    )
+
+    private var devicesTicket = 0
+
     private fun fillDevices(panel: LinearLayout, rescan: Boolean = false) {
+        panel.removeAllViews()
+        panel.addView(pillButton().apply { text = "Refresh"; setOnClickListener { fillDevices(panel, rescan = true) } })
+        panel.addView(guideLink("Devices"))
+        panel.addView(devNote("Scanning hardware…"))
+        val ticket = ++devicesTicket
+        val appCtx = applicationContext
+        (application as AlpineTermApp).backgroundExecutor.execute {
+            val drives = runCatching { DeviceInfo.removableDrives(appCtx) }.getOrDefault(emptyList())
+            val data = DevicesData(
+                summary = DeviceInfo.deviceSummary(appCtx),
+                net = DeviceInfo.activeNetwork(appCtx),
+                link = DeviceInfo.wifiLink(appCtx),
+                ifaces = DeviceInfo.interfaces(),
+                drives = drives,
+                guestPaths = DeviceInfo.guestPaths(drives),
+                storageGranted = StorageAccess.isGranted(appCtx),
+                usb = DeviceInfo.usbDevices(appCtx),
+                hasLocation = DeviceInfo.hasLocationPermission(this@MainActivity),
+                locationEnabled = DeviceInfo.locationEnabled(appCtx),
+                wifi = if (DeviceInfo.hasLocationPermission(this@MainActivity)) DeviceInfo.wifiScan(appCtx, rescan) else emptyList(),
+            )
+            mainHandler.post {
+                // The panel may have been rebuilt (another Refresh, category switch) while the
+                // scan was in flight — never render into a panel that isn't current anymore.
+                if (isFinishing || isDestroyed || devicesPanel !== panel || ticket != devicesTicket) return@post
+                renderDevices(panel, data)
+            }
+        }
+    }
+
+    private fun renderDevices(panel: LinearLayout, data: DevicesData) {
         panel.removeAllViews()
         val ok = 0xFF3ED0B8.toInt()
         val warn = 0xFFE5A94B.toInt()
@@ -1929,14 +1979,14 @@ class MainActivity : Activity() {
 
 
         panel.addView(sectionLabel("This phone"))
-        panel.addView(devCard("${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}", lines = DeviceInfo.deviceSummary(this)))
+        panel.addView(devCard("${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}", lines = data.summary))
 
         panel.addView(sectionLabel("Active connection"))
-        val net = DeviceInfo.activeNetwork(this)
+        val net = data.net
         if (net == null) {
             panel.addView(devCard("Offline", chips = listOf("no network" to bad)))
         } else {
-            val link = if (net.transport == "Wi-Fi") DeviceInfo.wifiLink(this) else null
+            val link = if (net.transport == "Wi-Fi") data.link else null
             panel.addView(
                 devCard(
                     net.transport,
@@ -1958,7 +2008,7 @@ class MainActivity : Activity() {
         }
 
         panel.addView(sectionLabel("Network adapters"))
-        val ifaces = DeviceInfo.interfaces()
+        val ifaces = data.ifaces
         if (ifaces.isEmpty()) panel.addView(devNote("No adapters reported."))
         ifaces.forEach { i ->
             panel.addView(
@@ -1975,8 +2025,8 @@ class MainActivity : Activity() {
         }
 
         panel.addView(sectionLabel("Drives (SD card / USB flash)"))
-        val drives = runCatching { DeviceInfo.removableDrives(this) }.getOrDefault(emptyList())
-        val guestPaths = DeviceInfo.guestPaths(drives)
+        val drives = data.drives
+        val guestPaths = data.guestPaths
         if (drives.isEmpty()) panel.addView(devNote("None detected. Plug in an SD card or USB drive (OTG); only drives Android itself can mount appear here."))
         drives.forEach { d ->
             val used = d.totalBytes - d.freeBytes
@@ -1996,10 +2046,10 @@ class MainActivity : Activity() {
                 ),
             )
         }
-        if (drives.isNotEmpty() && !StorageAccess.isGranted(this)) panel.addView(devNote("Grant all-files access (Backup & Storage) to use drives inside the terminal."))
+        if (drives.isNotEmpty() && !data.storageGranted) panel.addView(devNote("Grant all-files access (Backup & Storage) to use drives inside the terminal."))
 
         panel.addView(sectionLabel("USB devices"))
-        val usb = DeviceInfo.usbDevices(this)
+        val usb = data.usb
         if (usb.isEmpty()) panel.addView(devNote("None attached (needs an OTG cable/adapter)."))
         usb.forEach { u ->
             panel.addView(
@@ -2014,18 +2064,18 @@ class MainActivity : Activity() {
         if (usb.isNotEmpty()) panel.addView(devNote("Lists devices and requests Android's per-device access. Formatting and flashing aren't supported yet."))
 
         panel.addView(sectionLabel("Wi-Fi networks nearby"))
-        if (!DeviceInfo.hasLocationPermission(this)) {
+        if (!data.hasLocation) {
             panel.addView(devNote("Android requires the location permission to list Wi-Fi networks."))
             panel.addView(pillButton().apply {
                 text = "Allow & scan"
                 setOnClickListener { ActivityCompat.requestPermissions(this@MainActivity, arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION), LOCATION_PERMISSION_REQUEST_CODE) }
             })
         } else {
-            val wifi = DeviceInfo.wifiScan(this, rescan)
+            val wifi = data.wifi
             if (wifi.isEmpty()) {
                 panel.addView(
                     devNote(
-                        if (!DeviceInfo.locationEnabled(this)) "Location services are switched off — Android returns no Wi-Fi results until they're on (Settings → Location)."
+                        if (!data.locationEnabled) "Location services are switched off — Android returns no Wi-Fi results until they're on (Settings → Location)."
                         else "No results yet — Android throttles scans to a few every couple of minutes. This refreshes on its own.",
                     ),
                 )
@@ -2483,7 +2533,13 @@ class MainActivity : Activity() {
      *  added keeps the setup screen showing one coherent story at a time. */
     private fun resumeSequentially(labels: List<String?>, index: Int) {
         if (index >= labels.size) return
-        addTab(labels[index]) { resumeSequentially(labels, index + 1) }
+        // A failed tab no longer aborts the chain silently: the remaining labels still
+        // resume, and the Retry button from the failed attempt stays available.
+        val next = { resumeSequentially(labels, index + 1) }
+        addTab(labels[index], onStarted = { next() }, onFailed = {
+            android.widget.Toast.makeText(this, "Couldn't reopen "${labels[index] ?: "unnamed"}" — continuing with the rest", android.widget.Toast.LENGTH_SHORT).show()
+            next()
+        })
     }
 
     private fun persistTabLabels() {
@@ -2491,7 +2547,11 @@ class MainActivity : Activity() {
         rebuildSessionsList()
     }
 
-    private fun addTab(initialLabel: String? = null, onStarted: (() -> Unit)? = null) {
+    /**
+     * [onFailed] fires (once) whenever this attempt ends without a tab — setup failure or
+     * shell-start failure — alongside the usual Retry UI. Lets chained callers (session
+     * resume) keep going instead of stalling silently on one bad tab. */
+    private fun addTab(initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null) {
         // Balanced by exactly one decrement wherever this particular attempt's flow actually
         // ends: startSessionNow()'s completion (success or failure) below, or showSetupFailure()
         // if ensureReady() itself fails first. Covers every path that can ever call addTab() — a
@@ -2552,9 +2612,9 @@ class MainActivity : Activity() {
                     // arch, proot missing), not for "the network hiccuped." Stopping here and
                     // making the user explicitly retry is what guarantees a session only ever
                     // starts once Alpine is actually installed and verified.
-                    !rootfsReady -> showSetupFailure(initialLabel, onStarted)
-                    !wasReadyBefore && !StorageAccess.isGranted(this) -> showReadyGate(id, initialLabel, onStarted)
-                    else -> startSessionNow(id, initialLabel, onStarted)
+                    !rootfsReady -> showSetupFailure(initialLabel, onStarted, onFailed)
+                    !wasReadyBefore && !StorageAccess.isGranted(this) -> showReadyGate(id, initialLabel, onStarted, onFailed)
+                    else -> startSessionNow(id, initialLabel, onStarted, onFailed)
                 }
             }
         }
@@ -2570,7 +2630,7 @@ class MainActivity : Activity() {
     /** Alpine's download/extraction failed (network loss, interrupted transfer, unsupported CPU
      *  arch, etc.) — stop and make the user explicitly retry rather than ever silently starting a
      *  degraded system-shell session instead of the Alpine one they asked for. */
-    private fun showSetupFailure(initialLabel: String? = null, onStarted: (() -> Unit)? = null) {
+    private fun showSetupFailure(initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null) {
         // This addTab() attempt's flow ends right here (never reaches startSessionNow(), which is
         // the only other place this decrements) — Retry below calls addTab() fresh, with its own
         // new increment/decrement pair, so this one must close out now or it'd leak upward by one
@@ -2580,21 +2640,22 @@ class MainActivity : Activity() {
         setupStatus.text = "Alpine setup failed: $reason\n\nCheck your internet connection and try again."
         setupProgress.visibility = View.GONE
         retryButton.visibility = View.VISIBLE
-        retryButton.setOnClickListener { addTab(initialLabel, onStarted) }
+        retryButton.setOnClickListener { addTab(initialLabel, onStarted, onFailed) }
+        onFailed?.invoke()
     }
 
-    private fun showReadyGate(id: Int, initialLabel: String? = null, onStarted: (() -> Unit)? = null) {
+    private fun showReadyGate(id: Int, initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null) {
         setupStatus.text = "Alpine is ready. Grant shared storage now so it's available in the shell (or skip — you can grant it later from Settings)."
         grantStorageButton.visibility = View.VISIBLE
         startTerminalButton.visibility = View.VISIBLE
         startTerminalButton.setOnClickListener {
             startTerminalButton.visibility = View.GONE
             grantStorageButton.visibility = View.GONE
-            startSessionNow(id, initialLabel, onStarted)
+            startSessionNow(id, initialLabel, onStarted, onFailed)
         }
     }
 
-    private fun startSessionNow(id: Int, initialLabel: String? = null, onStarted: (() -> Unit)? = null) {
+    private fun startSessionNow(id: Int, initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null) {
         setupStatus.text = "Starting shell…"
         val app = application as AlpineTermApp
         app.backgroundExecutor.execute {
@@ -2635,7 +2696,8 @@ class MainActivity : Activity() {
                     setupStatus.text = "Failed to start a shell: ${e.message}"
                     setupProgress.visibility = View.GONE
                     retryButton.visibility = View.VISIBLE
-                    retryButton.setOnClickListener { addTab(initialLabel, onStarted) }
+                    retryButton.setOnClickListener { addTab(initialLabel, onStarted, onFailed) }
+                    onFailed?.invoke()
                 }
             }
         }

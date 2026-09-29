@@ -268,15 +268,32 @@ class FileBrowserPanel(
         currentDir.parentFile?.let { navigateTo(it) }
     }
 
+    private var reloadTicket = 0
+
     private fun reload() {
-        entries = (currentDir.listFiles()?.toList() ?: emptyList())
-            .sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
-        adapter.notifyDataSetChanged()
-        val base = rootBase()
-        pathText.text = when {
-            !base.isDirectory -> if (root == Root.ALPINE) "Alpine isn't set up yet — open the terminal once first." else "Not available"
-            currentDir.canonicalPath == base.canonicalPath -> "/"
-            else -> currentDir.canonicalPath.removePrefix(base.canonicalPath)
+        // listFiles + sort off the UI thread: the old sortedWith re-stat'ed isDirectory per
+        // comparison (O(n log n) stats) and lowercased per comparison, janking large dirs.
+        // One stat pass here, sorted on the snapshot; a ticket drops results if the user
+        // navigated again while the listing was in flight.
+        val dir = currentDir
+        val ticket = ++reloadTicket
+        ioExecutor.execute {
+            val sorted = (dir.listFiles()?.toList() ?: emptyList())
+                .map { it to (it.isDirectory to it.name.lowercase()) }
+                .sortedWith(compareBy({ !(it.second.first) }, { it.second.second }))
+                .map { it.first }
+            val base = rootBase()
+            val label = when {
+                !base.isDirectory -> if (root == Root.ALPINE) "Alpine isn't set up yet — open the terminal once first." else "Not available"
+                runCatching { dir.canonicalPath == base.canonicalPath }.getOrDefault(false) -> "/"
+                else -> runCatching { dir.canonicalPath.removePrefix(base.canonicalPath) }.getOrDefault(dir.name)
+            }
+            activity.runOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed || ticket != reloadTicket || dir != currentDir) return@runOnUiThread
+                entries = sorted
+                adapter.notifyDataSetChanged()
+                pathText.text = label
+            }
         }
     }
 

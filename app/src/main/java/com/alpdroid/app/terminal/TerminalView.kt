@@ -564,13 +564,23 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
      *  [TerminalEmulator.textInRange] expects, so a selection survives scrolling while it's held. */
     private fun touchToCell(x: Float, y: Float): Pair<Int, Int> {
         val em = emulator ?: return 0 to 0
-        // rows/cols are >= 1 by construction now, but a view laid out at 0 size briefly
-        // reports a 0 grid — coerceIn(0, -1) would throw, so bail out explicitly.
+        val (screenRow, col) = touchToScreenCell(x, y)
+        val logicalRow = (em.scrollbackSize() + screenRow - scrollOffset).coerceIn(0, em.combinedRowCount() - 1)
+        return logicalRow to col
+    }
+
+    /**
+     * Screen-relative cell (no scrollback offset) — what mouse click/wheel reports need.
+     * touchToCell()'s combined coordinates used to go straight into mouseClickSequence(),
+     * so with any scrollback present every click/scroll reported a row hundreds past the
+     * program's grid and full-screen TUIs (opencode) silently ignored all of it.
+     */
+    private fun touchToScreenCell(x: Float, y: Float): Pair<Int, Int> {
+        val em = emulator ?: return 0 to 0
         if (em.rows < 1 || em.cols < 1) return 0 to 0
         val screenRow = ((y + renderShiftPx(em)) / cellHeight).toInt().coerceIn(0, em.rows - 1)
         val col = ((x - gridOffsetX) / cellWidth).toInt().coerceIn(0, em.cols - 1)
-        val logicalRow = (em.scrollbackSize() + screenRow - scrollOffset).coerceIn(0, em.combinedRowCount() - 1)
-        return logicalRow to col
+        return screenRow to col
     }
 
     private fun drawRow(canvas: Canvas, row: Array<Cell>, screenRow: Int) {
@@ -685,7 +695,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
                     // opencode v2 reads wheel-down (65) as "go up"/wheel-up (64) as "go down",
                     // the opposite of the usual physical-mouse-wheel mapping.
                     val button = if (deltaRows > 0) 65 else 64
-                    val (row, col) = touchToCell(e2.x, e2.y)
+                    val (row, col) = touchToScreenCell(e2.x, e2.y)
                     // One pty write for the whole gesture, not one per row: up to 40 separate
                     // writes per motion event used to flood the pty and stall the reader.
                     val sb = StringBuilder()
@@ -726,7 +736,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             // inside such a program; tapping a button in it just opened the keyboard over it.
             val em = emulator
             if (em != null && em.mouseReportingMode != 0) {
-                val (row, col) = touchToCell(e.x, e.y)
+                val (row, col) = touchToScreenCell(e.x, e.y)
                 em.mouseClickSequence(row, col, pressed = true)?.let { send(it.toByteArray(Charsets.UTF_8)) }
                 em.mouseClickSequence(row, col, pressed = false)?.let { send(it.toByteArray(Charsets.UTF_8)) }
                 return true

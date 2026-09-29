@@ -2639,7 +2639,7 @@ class MainActivity : Activity() {
         // resume, and the Retry button from the failed attempt stays available.
         val next = { resumeSequentially(labels, index + 1) }
         addTab(labels[index], onStarted = { next() }, onFailed = {
-            android.widget.Toast.makeText(this, "Couldn't reopen "${labels[index] ?: "unnamed"}" — continuing with the rest", android.widget.Toast.LENGTH_SHORT).show()
+            android.widget.Toast.makeText(this, "Couldn't reopen \"" + (labels[index] ?: "unnamed") + "\" \u2014 continuing with the rest", android.widget.Toast.LENGTH_SHORT).show()
             next()
         })
     }

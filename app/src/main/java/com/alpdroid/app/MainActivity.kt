@@ -3645,7 +3645,6 @@ class MainActivity : Activity() {
                         addTab()
                     }
                 }
-            }
     }
 
     private fun exportSettings() {

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Same mountain-peak + cursor mark as the launcher icon, restructured with named groups/paths
+     so splash_icon_animated.xml (an <animated-vector>) can target them: the mountain scales in
+     from the base with a slight overshoot, and the cursor bar blinks a couple of times after it
+     lands, like a real terminal prompt waiting for input. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:name="mountain_group"
+        android:pivotX="54"
+        android:pivotY="82"
+        android:scaleX="0.3"
+        android:scaleY="0.3">
+        <path
+            android:fillColor="#2A8577"
+            android:pathData="M38,40 L54,82 L20,82 Z" />
+        <path
+            android:fillColor="#3ED0B8"
+            android:pathData="M60,28 L88,82 L32,82 Z" />
+        <path
+            android:fillColor="#EAFBF6"
+            android:pathData="M60,28 L67,41 L53,41 Z" />
+    </group>
+    <path
+        android:name="cursor_bar"
+        android:fillColor="#EAFBF6"
+        android:fillAlpha="0"
+        android:pathData="M42,86 L70,86 L70,92 L42,92 Z" />
+</vector>

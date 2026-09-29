@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Alpine rootfs lives under context.filesDir/alpine-rootfs (see AlpineRootfs.rootDir). -->
+    <files-path name="alpine_root" path="alpine-rootfs/" />
+    <!-- Android's shared storage root, for sharing/opening files from outside the app's own dirs. -->
+    <external-path name="external_root" path="." />
+</paths>

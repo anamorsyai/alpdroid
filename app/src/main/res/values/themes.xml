@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.AlpDroid" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:windowBackground">@color/app_bg</item>
+        <item name="android:statusBarColor">@color/app_bg</item>
+        <item name="android:navigationBarColor">@color/app_bg</item>
+        <item name="colorPrimary">@color/accent</item>
+        <item name="colorOnPrimary">@color/on_accent</item>
+        <item name="colorSecondary">@color/accent</item>
+        <item name="colorOnSecondary">@color/on_accent</item>
+        <item name="colorSurface">@color/panel</item>
+        <item name="colorOnSurface">@color/text_primary</item>
+        <item name="colorSurfaceVariant">@color/panel_2</item>
+        <item name="colorOnSurfaceVariant">@color/text_dim</item>
+        <item name="colorOutline">@color/outline</item>
+        <item name="colorError">@color/danger</item>
+        <item name="materialAlertDialogTheme">@style/ThemeOverlay.AlpDroid.Dialog</item>
+    </style>
+
+    <style name="ThemeOverlay.AlpDroid.Dialog" parent="ThemeOverlay.Material3.Dialog.Alert">
+        <item name="shapeAppearanceOverlay">@style/ShapeAppearance.AlpDroid.Dialog</item>
+        <item name="colorSurface">@color/panel_2</item>
+    </style>
+
+    <style name="ShapeAppearance.AlpDroid.Dialog" parent="">
+        <item name="cornerSize">24dp</item>
+    </style>
+
+    <!-- Applied directly to plain android.widget.Button tags in XML layouts (activity_main.xml
+         doesn't use AppCompat inflation, so <Button> stays a plain framework Button rather than
+         auto-promoting to MaterialButton — styling it this way with native android: attributes
+         gets the pill-chip look either way, without needing AppCompatActivity). -->
+    <style name="Widget.AlpDroid.ChipTab" parent="android:Widget.Material.Button.Borderless">
+        <item name="android:background">@drawable/bg_chip_tab</item>
+        <item name="android:textColor">@color/text_dim</item>
+        <item name="android:textSize">12.5sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:paddingStart">14dp</item>
+        <item name="android:paddingEnd">14dp</item>
+        <item name="android:paddingTop">8dp</item>
+        <item name="android:paddingBottom">8dp</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:minHeight">0dp</item>
+    </style>
+
+    <!-- MainActivity's theme only for the moment it launches (installSplashScreen() in
+         MainActivity.onCreate() swaps this out before setContentView) — a real system splash
+         screen, not a fake "splash Activity" that delays showing the actual UI. The animated
+         icon only actually animates on API 31+ (the platform's own SplashScreen support); on
+         everything from this app's minSdk 24 up to 30, androidx's compat implementation shows
+         the same icon as a static image instead — that's the library's documented behavior, not
+         a bug, so most users on modern devices still see the mountain rise and the cursor blink. -->
+    <style name="Theme.App.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">#12161C</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_icon_animated</item>
+        <item name="windowSplashScreenAnimationDuration">1000</item>
+        <item name="postSplashScreenTheme">@style/Theme.AlpDroid</item>
+    </style>
+</resources>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Scales the mountain group from 0.3x up to 1.0x with a slight overshoot-and-settle, like it's
+     rising into place rather than just popping in at full size. -->
+<set xmlns:android="http://schemas.android.com/apk/res/android">
+    <objectAnimator
+        android:propertyName="scaleX"
+        android:duration="500"
+        android:valueFrom="0.3"
+        android:valueTo="1.0"
+        android:valueType="floatType"
+        android:interpolator="@android:interpolator/overshoot" />
+    <objectAnimator
+        android:propertyName="scaleY"
+        android:duration="500"
+        android:valueFrom="0.3"
+        android:valueTo="1.0"
+        android:valueType="floatType"
+        android:interpolator="@android:interpolator/overshoot" />
+</set>

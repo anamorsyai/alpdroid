@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Alpine (a mountain range, layered for depth) + terminal (a cursor bar standing in for a
+     shell prompt) + Android's own green tone, in the app's existing teal accent rather than
+     introducing a new brand color. Kept to simple straight-edged shapes (triangles, a rectangle)
+     so it reads clearly at every size down to a small launcher icon, not just at full res.
+     Content stays inside the ~72dp safe zone (18..90 on this 108dp canvas) that survives every
+     adaptive-icon mask shape (circle, squircle, rounded square, teardrop, ...). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Back peak, dimmer teal, for depth -->
+    <path
+        android:fillColor="#2A8577"
+        android:pathData="M38,40 L54,82 L20,82 Z" />
+    <!-- Main peak, the app's own teal accent -->
+    <path
+        android:fillColor="#3ED0B8"
+        android:pathData="M60,28 L88,82 L32,82 Z" />
+    <!-- Snow cap -->
+    <path
+        android:fillColor="#EAFBF6"
+        android:pathData="M60,28 L67,41 L53,41 Z" />
+    <!-- Terminal cursor bar -->
+    <path
+        android:fillColor="#EAFBF6"
+        android:pathData="M42,86 L70,86 L70,92 L42,92 Z" />
+</vector>

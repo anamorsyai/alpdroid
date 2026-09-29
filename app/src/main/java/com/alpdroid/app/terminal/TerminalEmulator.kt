@@ -1,0 +1,1005 @@
+package com.alpdroid.app.terminal
+
+import android.util.Log
+import kotlin.math.max
+import kotlin.math.min
+
+/**
+ * One character cell: glyph plus the SGR attributes it was drawn with.
+ *
+ * [fg]/[bg] are the resolved RGB actually drawn — the fast path [TerminalView] reads every
+ * frame. [fgKind]/[bgKind] remember *how* that color was chosen ([KIND_DEFAULT], an ANSI16
+ * index 0-15, or [KIND_FIXED] for an explicit 256-color/truecolor SGR that isn't theme-relative
+ * at all) so [TerminalEmulator.applyPalette] can re-resolve every cell already on screen against
+ * a newly chosen theme — without this, switching themes mid-session only affected text written
+ * *after* the switch, leaving old scrollback/screen content stuck in whatever theme was active
+ * when it was written (a visibly "mixed themes" screen).
+ */
+data class Cell(
+    var ch: Char = ' ',
+    var fg: Int = TerminalColors.DEFAULT_FG,
+    var bg: Int = TerminalColors.DEFAULT_BG,
+    var fgKind: Int = KIND_DEFAULT,
+    var bgKind: Int = KIND_DEFAULT,
+    var bold: Boolean = false,
+    var underline: Boolean = false,
+    var reverse: Boolean = false,
+) {
+    companion object {
+        const val KIND_DEFAULT = -1
+        const val KIND_FIXED = -2
+        // 0..15: an index into TerminalColors.ANSI16
+    }
+}
+
+private fun blankRow(cols: Int, fg: Int, bg: Int, fgKind: Int = Cell.KIND_DEFAULT, bgKind: Int = Cell.KIND_DEFAULT): Array<Cell> =
+    Array(cols) { Cell(fg = fg, bg = bg, fgKind = fgKind, bgKind = bgKind) }
+
+/**
+ * A byte-stream-in, screen-grid-out VT100/ANSI terminal emulator — the model half of a
+ * terminal; [com.alpdroid.app.terminal.TerminalView] is the (dumb) rendering half. Handles
+ * the common subset real-world shell usage needs: cursor movement, scrolling with a scroll
+ * region, insert/delete char/line, SGR colors (16/256/truecolor), the primary+alternate screen
+ * switch full-screen programs use, and DSR cursor-position queries. Deliberately does not
+ * reflow line-wraps on resize, and does not implement terminfo-level esoterica (sixel, DECSLRM,
+ * true rectangular copy) — those would need many times this file's size for marginal benefit
+ * on a phone-sized shell.
+ */
+class TerminalEmulator(
+    rows: Int,
+    cols: Int,
+    private val maxScrollback: Int = 2000,
+    /** Called for DSR-style queries that require writing bytes back to the pty (e.g. cursor position). */
+    private val respond: (String) -> Unit = {},
+    onBell: () -> Unit = {},
+) {
+    /** Called on a BEL byte (0x07) — a CLI agent or a build finishing is exactly what this is
+     *  for. A `var`, not baked in at construction like [respond] above: [respond] only ever
+     *  writes bytes back to the pty (process-level, outlives any one Activity instance just fine),
+     *  but this one calls back into Activity-owned UI (a notification, a toast) — whichever
+     *  MainActivity instance owns the tab when it's first created would otherwise stay wired in
+     *  forever, including after the system destroys and recreates that Activity (backgrounding,
+     *  a config change) and a *different* instance is the one actually on screen. Re-set by
+     *  rebindTabOutputs() alongside TerminalTab.onOutput, the same pattern that field already uses. */
+    var onBell: () -> Unit = onBell
+    var rows: Int = rows
+        private set
+    var cols: Int = cols
+        private set
+
+    var cursorRow = 0
+        private set
+    var cursorCol = 0
+        private set
+    var cursorVisible = true
+        private set
+
+    /** Bumped on every mutation; [com.alpdroid.app.terminal.TerminalView] compares this to know when to redraw. */
+    var generation = 0L
+        private set
+
+    private var screen: MutableList<Array<Cell>> = MutableList(rows) { blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG) }
+    private var altScreen: MutableList<Array<Cell>>? = null
+    // Non-null exactly while the alt screen (1049/1047/47) is the one showing: holds the primary
+    // screen's grid and cursor position so leaving the alt screen restores the real prompt/output
+    // that was there before a full-screen app started, instead of a blank grid. Previously nothing
+    // saved this at all — switchAltScreen() below just overwrote `screen` in both directions, so
+    // exiting any full-screen app (opencode, vim, less) always left an empty primary screen, and a
+    // resize taken while alt-screen was up ran the primary-only reflow/scrollback logic on what was
+    // actually the alt buffer, corrupting both the on-screen alt content and the primary scrollback
+    // with the alt screen's own rows.
+    private var primaryScreen: MutableList<Array<Cell>>? = null
+    private var primaryCursorRow = 0
+    private var primaryCursorCol = 0
+    private val scrollback = ArrayDeque<Array<Cell>>()
+
+    /** True while a full-screen program (opencode, vim, htop, less) has the alt screen up — see
+     *  TerminalView, which uses this to decide whether a keyboard show/hide should send this
+     *  session a real resize (safe and expected here: such a program redraws itself completely on
+     *  the SIGWINCH that causes, unlike a plain shell) instead of just shifting rendering upward. */
+    val inAltScreen: Boolean
+        @Synchronized get() = primaryScreen != null
+
+    /** How many of the newest [scrollback] rows exist only because a keyboard-toggle-driven
+     *  shrink temporarily displaced them, and are therefore still eligible to be pulled back onto
+     *  the main screen the next time it grows — see resizePrimaryScreen() and eraseInDisplay(). */
+    private var pendingRestoreCount = 0
+
+    private var topMargin = 0
+    private var bottomMargin = rows - 1
+
+    private var curFg = TerminalColors.DEFAULT_FG
+    private var curBg = TerminalColors.DEFAULT_BG
+    private var curFgKind = Cell.KIND_DEFAULT
+    private var curBgKind = Cell.KIND_DEFAULT
+    private var curBold = false
+    private var curUnderline = false
+    private var curReverse = false
+
+    private var savedRow = 0
+    private var savedCol = 0
+
+    var applicationCursorKeys = false
+        private set
+
+    /** Mode 2004 — set by any readline-based program (bash, python's REPL, and every interactive
+     *  CLI agent tool this app exists to run) that wants pasted text delivered as one wrapped
+     *  block (ESC[200~...ESC[201~) instead of raw bytes. Without a caller honoring this, pasting
+     *  multi-line text (a whole prompt pasted into an agent chat, in particular) had every
+     *  embedded newline read back as a literal Enter keypress — submitting each line as its own
+     *  separate, incomplete command/message instead of landing as one block of editable text. */
+    var bracketedPasteEnabled = false
+        private set
+
+    /** DECAWM (mode 7, default on in every real terminal) — a program drawing something it never
+     *  wants wrapped onto a new line (a fixed-width status bar, a progress indicator) can turn
+     *  this off for exactly that. */
+    private var autoWrapEnabled = true
+
+    /** 0 = off, else the mode number currently enabled (1000/1002/1003) — see [setMode]. A tap on
+     *  the terminal while this is nonzero should be reported to the program as a mouse click
+     *  ([mouseClickSequence]) instead of TerminalView's own default of opening the soft keyboard;
+     *  without this, any full-screen TUI that expects clickable elements (opencode's own
+     *  collapsible sections, an `fzf --bind`-style picker, mouse-aware vim/less) never receives
+     *  them, and every tap on it just pops the keyboard up instead. */
+    var mouseReportingMode = 0
+        private set
+
+    /** Mode 1006 (SGR extended mouse coordinates) — without it, coordinates beyond ~223 can't be
+     *  represented in the legacy X10 click encoding (which packs col/row into single bytes offset
+     *  by 32), so a wide/tall terminal would silently corrupt or clip the reported position. */
+    var mouseSgrMode = false
+        private set
+
+    /** Builds the escape sequence for a single mouse button press or release at the given
+     *  zero-based cell, or null if the program hasn't asked for click reporting ([mouseReportingMode]
+     *  == 0). `button` 0 is the left button, matching a plain tap. */
+    fun mouseClickSequence(row: Int, col: Int, button: Int = 0, pressed: Boolean = true): String? {
+        if (mouseReportingMode == 0) return null
+        val r = row + 1
+        val c = col + 1
+        return if (mouseSgrMode) {
+            "\u001B[<$button;$c;$r${if (pressed) "M" else "m"}"
+        } else {
+            // Legacy X10 encoding: three bytes after "\x1B[M" — button (32 = release, +32 offset
+            // otherwise), column, row, each offset by 32 and clamped to a single byte so a huge
+            // grid can't produce a value outside the encodable range instead of a garbled report.
+            val buttonByte = (32 + (if (pressed) button else 3)).coerceIn(32, 255)
+            val colByte = (32 + c).coerceIn(32, 255)
+            val rowByte = (32 + r).coerceIn(32, 255)
+            "\u001B[M${buttonByte.toChar()}${colByte.toChar()}${rowByte.toChar()}"
+        }
+    }
+
+    // --- Parser state ---
+    private enum class State { NORMAL, ESCAPE, CSI, OSC, CHARSET }
+    private var state = State.NORMAL
+    private val csiBuf = StringBuilder()
+    private val utf8Pending = ArrayList<Int>(4)
+
+    @Synchronized
+    fun feed(buf: ByteArray, len: Int) {
+        for (i in 0 until len) processByte(buf[i].toInt() and 0xFF)
+        generation++
+    }
+
+    /** Client-side only — clears the view without touching the shell process (the "Clear" context-menu action). */
+    @Synchronized
+    fun clearAll() {
+        for (r in 0 until rows) screen[r] = blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG)
+        scrollback.clear()
+        cursorRow = 0
+        cursorCol = 0
+        generation++
+    }
+
+    /** Scrollback + current screen as plain text, trailing spaces trimmed per line — for the "Copy all" context-menu action. */
+    @Synchronized
+    fun fullText(): String = buildString {
+        for (i in 0 until scrollback.size) { append(rowText(scrollback.elementAt(i))); append('\n') }
+        for (r in 0 until rows) { append(rowText(screen[r])); append('\n') }
+    }
+
+    private fun rowText(row: Array<Cell>): String = buildString { row.forEach { append(it.ch) } }.trimEnd()
+
+    /** Combined-row indices (see [combinedRow]) whose text contains [query], case-insensitive —
+     *  a plain linear scan; only run on an explicit search action, never per-frame, so an O(n)
+     *  pass over a couple thousand scrollback lines is cheap enough not to need an index. */
+    @Synchronized
+    fun findRows(query: String): List<Int> {
+        if (query.isEmpty()) return emptyList()
+        val needle = query.lowercase()
+        val matches = mutableListOf<Int>()
+        for (i in 0 until combinedRowCount()) {
+            if (rowText(combinedRow(i)).lowercase().contains(needle)) matches.add(i)
+        }
+        return matches
+    }
+
+    /** Scrollback (oldest first) followed by the current screen, addressed as one continuous
+     *  0-based sequence — what text selection needs: a single coordinate space a touch position
+     *  maps into directly, regardless of how much of it happens to be scrolled off-screen. */
+    @Synchronized
+    fun combinedRowCount(): Int = scrollback.size + rows
+
+    @Synchronized
+    fun combinedRow(index: Int): Array<Cell> =
+        if (index < scrollback.size) scrollback.elementAt(index) else screen[index - scrollback.size]
+
+    /**
+     * Plain text for the inclusive range from ([startRow],[startCol]) to ([endRow],[endCol]) in
+     * combined-row coordinates — normalizes reversed selections (dragged upward/leftward) itself,
+     * so the caller doesn't need to know which endpoint came first.
+     */
+    @Synchronized
+    fun textInRange(startRow: Int, startCol: Int, endRow: Int, endCol: Int): String {
+        var r1 = startRow; var c1 = startCol; var r2 = endRow; var c2 = endCol
+        if (r1 > r2 || (r1 == r2 && c1 > c2)) {
+            val tr = r1; val tc = c1; r1 = r2; c1 = c2; r2 = tr; c2 = tc
+        }
+        r1 = r1.coerceIn(0, combinedRowCount() - 1)
+        r2 = r2.coerceIn(0, combinedRowCount() - 1)
+        return buildString {
+            for (r in r1..r2) {
+                val row = combinedRow(r)
+                val fromCol = if (r == r1) c1.coerceIn(0, row.size) else 0
+                val toCol = if (r == r2) c2.coerceIn(0, row.size - 1) else row.size - 1
+                for (c in fromCol..toCol) append(row[c].ch)
+                if (r != r2) append('\n')
+            }
+        }.trimEnd()
+    }
+
+    @Synchronized
+    fun resize(newRows: Int, newCols: Int) {
+        if (newRows == rows && newCols == cols) return
+        // The primary screen treats scrollback+screen as one continuous buffer across a resize:
+        // shrinking (the soft keyboard opening, which shrinks the view under adjustResize) pushes
+        // whatever no longer fits at the top into scrollback instead of just discarding it, and
+        // growing back pulls those same rows back out to refill the top instead of padding with
+        // blank lines. Previously every keyboard show/hide silently deleted a chunk of visible
+        // history outright — exactly "terminal output disappearing one line at a time". The
+        // alt-screen (full-screen apps: vim, htop, less) doesn't get this treatment since those
+        // redraw themselves entirely on resize (via SIGWINCH) and were never reading scrollback.
+        if (primaryScreen != null) {
+            // `screen`/cursorRow/cursorCol currently belong to the ALT buffer, not the primary one
+            // — resizing them with the primary-only logic below would push/pull the alt screen's
+            // own rows into the primary scrollback (permanently mixing a full-screen app's output
+            // into ordinary shell history) while leaving the actually-saved primary screen sized
+            // for whatever dimensions it had before this resize. Swap the primary buffer back in
+            // just long enough to run the normal resize logic against it, save the result, then
+            // resize the alt buffer on its own with the plain grid resize it always used — this is
+            // exactly what let a resize taken mid-full-screen-app (the keyboard opening/closing
+            // while opencode/vim/less was up) corrupt both buffers at once and made old primary
+            // scrollback lines bleed into the redrawn alt-screen content.
+            val altBuf = screen
+            val altCursorRow = cursorRow
+            val altCursorCol = cursorCol
+            screen = primaryScreen!!
+            cursorRow = primaryCursorRow
+            cursorCol = primaryCursorCol
+            resizePrimaryBuffer(newRows, newCols)
+            primaryScreen = screen
+            primaryCursorRow = cursorRow
+            primaryCursorCol = cursorCol
+            screen = resizeGrid(altBuf, newRows, newCols)
+            altScreen = screen
+            cursorRow = altCursorRow.coerceIn(0, newRows - 1)
+            cursorCol = altCursorCol.coerceIn(0, newCols - 1)
+        } else {
+            resizePrimaryBuffer(newRows, newCols)
+            altScreen = altScreen?.let { resizeGrid(it, newRows, newCols) }
+        }
+        rows = newRows
+        cols = newCols
+        topMargin = 0
+        bottomMargin = newRows - 1
+        generation++
+    }
+
+    /** Resizes whatever is currently in `screen`/`scrollback`/`cursorRow`/`cursorCol` using the
+     *  primary-screen reflow/row-shift logic — used directly for an ordinary resize, and with the
+     *  primary buffer temporarily swapped into those same fields for a resize taken while the alt
+     *  screen is the one actually showing (see [resize]). */
+    private fun resizePrimaryBuffer(newRows: Int, newCols: Int) {
+        if (newCols != cols) {
+            // A column-count change (rotating the phone, a big enough pinch-zoom) needs actual
+            // reflow, not just the row-preserving shift above — otherwise every wrapped line's
+            // text stays chopped at the OLD column boundaries, visibly mangled at the new width.
+            // No per-row wrap flag is tracked (that would mean threading a parallel structure
+            // through every single line-mutating operation in this file for a phone-only,
+            // rotate-mid-command edge case), so this uses the same heuristic several historic
+            // terminal emulators without explicit wrap tracking have used: a row that's filled
+            // edge-to-edge is treated as continuing onto the next one. Correct for the
+            // overwhelmingly common case (a shell wrapping long output); the rare cost is
+            // occasionally joining two coincidentally full-width, actually-separate lines.
+            // Wrapped in a fallback to the old row-shift behavior since a resize must never
+            // crash the session outright — reflow touches every scrollback row at once and a
+            // missed edge case here shouldn't take the whole terminal down with it.
+            val reflowResult = runCatching { reflow(newRows, newCols) }
+            reflowResult.onFailure {
+                // reflow() only ever mutates scrollback/screen in its last few lines, once every
+                // index it needs (screenStart, newCursorAbsRow, ...) has already been computed
+                // into local variables — an exception here means it failed *before* touching
+                // either field, so falling back to the plain row-shift path below operates on
+                // still-intact state, not a partially-rewritten one. Logging it is what makes a
+                // real occurrence of this (a pathological screen/cursor state this heuristic
+                // wasn't designed for) diagnosable instead of silently looking like ordinary
+                // scrollback loss with nothing to explain why.
+                Log.w("AlpDroid/Terminal", "reflow($newRows, $newCols) failed; falling back to row-shift resize", it)
+            }
+            if (reflowResult.isFailure) {
+                cursorRow = resizePrimaryScreen(newRows, newCols).coerceIn(0, newRows - 1)
+            }
+        } else {
+            cursorRow = resizePrimaryScreen(newRows, newCols).coerceIn(0, newRows - 1)
+        }
+        cursorCol = min(cursorCol, newCols - 1)
+    }
+
+    private fun reflow(newRows: Int, newCols: Int) {
+        val allRows = ArrayList<Array<Cell>>(scrollback.size + screen.size)
+        allRows.addAll(scrollback)
+        allRows.addAll(screen)
+        val cursorAbsRow = scrollback.size + cursorRow
+
+        // Trim pure trailing blank rows beyond the last real content or the cursor's own row.
+        // Any ordinary, mostly-empty session already has a full screen's worth of untouched blank
+        // rows below wherever the cursor is — without this, every one of those gets carried
+        // forward as its own separate logical line (a blank row never counts as "full", so each
+        // one ends its own line rather than joining the next) and faithfully reproduced on every
+        // resize. Repeated zooming in and out on the same session compounds that: each grow pads
+        // fresh blanks on top of blanks that were already there from the last one, so the visible
+        // gap between real content only ever grows, never shrinks back down.
+        var lastContentRow = -1
+        for (i in allRows.indices.reversed()) {
+            if (allRows[i].any { it.ch != ' ' }) { lastContentRow = i; break }
+        }
+        val lastMeaningful = max(lastContentRow, cursorAbsRow)
+        val trimmedRows = if (lastMeaningful + 1 < allRows.size) allRows.subList(0, lastMeaningful + 1) else allRows
+
+        // Flatten into logical lines: a row filled edge-to-edge joins onto the next one.
+        val logicalLines = ArrayList<ArrayList<Cell>>()
+        var current = ArrayList<Cell>()
+        var cursorLogicalLine = 0
+        var cursorLogicalOffset = 0
+        for ((idx, row) in trimmedRows.withIndex()) {
+            if (idx == cursorAbsRow) {
+                cursorLogicalLine = logicalLines.size
+                cursorLogicalOffset = current.size + cursorCol.coerceIn(0, row.size)
+            }
+            current.addAll(row.toList())
+            val full = row.isNotEmpty() && row.last().ch != ' '
+            if (!full) {
+                logicalLines.add(current)
+                current = ArrayList()
+            }
+        }
+        if (current.isNotEmpty() || logicalLines.isEmpty()) logicalLines.add(current)
+
+        // Re-chunk each logical line at the new width, trimming trailing blank cells off the
+        // end first so re-wrapping doesn't pad every line out to a full multiple of newCols.
+        val newAllRows = ArrayList<Array<Cell>>()
+        var newCursorAbsRow = 0
+        var newCursorCol = 0
+        for ((lineIdx, line) in logicalLines.withIndex()) {
+            var end = line.size
+            while (end > 0 && line[end - 1].ch == ' ') end--
+            val trimmed = line.subList(0, end)
+            if (trimmed.isEmpty()) {
+                newAllRows.add(blankRow(newCols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
+                if (lineIdx == cursorLogicalLine) { newCursorAbsRow = newAllRows.size - 1; newCursorCol = 0 }
+                continue
+            }
+            var pos = 0
+            while (pos < trimmed.size) {
+                val chunkEnd = min(pos + newCols, trimmed.size)
+                val rowArr = Array(newCols) { c -> if (pos + c < chunkEnd) trimmed[pos + c].copy() else Cell(fg = TerminalColors.DEFAULT_FG, bg = TerminalColors.DEFAULT_BG) }
+                newAllRows.add(rowArr)
+                if (lineIdx == cursorLogicalLine) {
+                    if (cursorLogicalOffset in pos until (pos + newCols)) {
+                        newCursorAbsRow = newAllRows.size - 1
+                        newCursorCol = cursorLogicalOffset - pos
+                    } else if (cursorLogicalOffset >= trimmed.size && pos + newCols >= trimmed.size) {
+                        // Cursor sits right after the last real character (the common case for
+                        // an active prompt) — what would otherwise be trailing blank space that
+                        // just got trimmed away. Pin it to the end of this, the line's last chunk.
+                        newCursorAbsRow = newAllRows.size - 1
+                        newCursorCol = (trimmed.size - pos).coerceIn(0, newCols - 1)
+                    }
+                }
+                pos += newCols
+            }
+        }
+
+        val screenStart = max(0, newAllRows.size - newRows)
+        scrollback.clear()
+        for (r in newAllRows.subList(0, screenStart)) scrollback.addLast(r)
+        while (scrollback.size > maxScrollback) scrollback.removeFirst()
+        val newScreenRows = newAllRows.subList(screenStart, newAllRows.size).toMutableList()
+        // Growing to a row count bigger than the trimmed real content only ever needs filler
+        // *after* it now (trailing blank rows were cut above, so there's nothing meaningful left
+        // to push down out of the way) — padding at the bottom keeps the cursor's own row exactly
+        // where reflowing it landed, matching how resizePrimaryScreen (the row-count-only path)
+        // already pads a grow, instead of shifting real content down by however much was added.
+        while (newScreenRows.size < newRows) newScreenRows.add(blankRow(newCols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
+        screen = newScreenRows
+
+        cursorRow = (newCursorAbsRow - screenStart).coerceIn(0, newRows - 1)
+        cursorCol = newCursorCol.coerceIn(0, newCols - 1)
+    }
+
+    /** Returns the new cursor row directly (not a shift) — a shrink that pushed rows above an
+     *  already-clamped cursor and then grew back would otherwise compound the clamp into a
+     *  second, larger error, which is what produced the blank gap between prompts after toggling
+     *  the keyboard on a mostly-empty screen (cursor near row 0, nothing pushed to preserve it). */
+    private fun resizePrimaryScreen(newRows: Int, newCols: Int): Int {
+        val resizedOld = screen.map { resizeRow(it, newCols) }
+        return when {
+            newRows < resizedOld.size -> {
+                // Push only as many rows above the cursor as are actually needed to keep the
+                // cursor's own row inside the new, smaller screen — not unconditionally forcing it
+                // all the way down to the last row. A short or freshly-opened session should behave
+                // like an ordinary terminal: the cursor starts at the top and only settles at the
+                // bottom once real typing has actually scrolled it there (lineFeed()'s own
+                // scrollUp() already does exactly that on its own) — resize() has no business
+                // getting ahead of that. If the cursor already fits (cursorRow <= newRows - 1),
+                // needed is 0 and the cursor's row — and everything above it — stays exactly where
+                // it visually was; only the still-blank rows below it get trimmed. A full/busy
+                // screen (cursor already at/near the bottom from real usage) still lands on the
+                // last row, same as before, since needed then equals cursorRow anyway.
+                val totalToRemove = resizedOld.size - newRows
+                val needed = max(0, cursorRow - (newRows - 1))
+                val pushCount = min(totalToRemove, needed)
+                for (i in 0 until pushCount) scrollback.addLast(resizedOld[i])
+                while (scrollback.size > maxScrollback) scrollback.removeFirst()
+                // Tracks specifically how many of the newest scrollback rows exist only because a
+                // shrink temporarily displaced them, as opposed to genuine history that scrolled
+                // off naturally (lineFeed's own scrollUp() never touches this) — see the grow
+                // branch below for why the distinction matters.
+                pendingRestoreCount += pushCount
+                val dropFromBottom = totalToRemove - pushCount
+                screen = resizedOld.subList(pushCount, resizedOld.size - dropFromBottom).toMutableList()
+                cursorRow - pushCount
+            }
+            newRows > resizedOld.size -> {
+                val deficit = newRows - resizedOld.size
+                // Only pulls back rows that are still marked as pending from an earlier shrink —
+                // never more than that, even if plain (unrelated, already-scrolled-off) history
+                // sits underneath them in scrollback. Without this cap, growing back would just
+                // pull from scrollback.size regardless of *why* those rows were there, so a
+                // `clear` typed while shrunk (which only wipes the currently-visible rows, same as
+                // every real terminal — scrollback survives a clear on purpose) got silently
+                // undone the moment the keyboard closed and pulled the pre-clear content back onto
+                // the main screen: exactly "clear didn't work" from the outside, even though
+                // nothing was technically lost. eraseInDisplay()'s full-clear branch zeroes this
+                // out for the same reason.
+                val pullCount = minOf(deficit, pendingRestoreCount, scrollback.size)
+                val pulled = ArrayList<Array<Cell>>(pullCount)
+                repeat(pullCount) { pulled.add(0, scrollback.removeLast()) }
+                pendingRestoreCount -= pullCount
+                // Any remaining deficit pads the bottom, not the top — those rows were never
+                // pushed to scrollback (only real-history rows above the cursor are), so there's
+                // nothing to restore there; padding the top instead would shove the cursor's row
+                // down away from where its content actually still is.
+                val bottomPad = List(deficit - pullCount) { blankRow(newCols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG) }
+                screen = (pulled + resizedOld + bottomPad).toMutableList()
+                cursorRow + pullCount
+            }
+            else -> {
+                screen = resizedOld.toMutableList()
+                cursorRow
+            }
+        }
+    }
+
+    private fun resizeRow(row: Array<Cell>, newCols: Int): Array<Cell> =
+        Array(newCols) { c -> row.getOrNull(c)?.copy() ?: Cell(fg = TerminalColors.DEFAULT_FG, bg = TerminalColors.DEFAULT_BG) }
+
+    /** Plain truncate/pad, no scrollback interaction — used only for the alt-screen, which a
+     *  full-screen program redraws entirely on its own SIGWINCH handler and never reads
+     *  scrollback from anyway. */
+    private fun resizeGrid(old: MutableList<Array<Cell>>, newRows: Int, newCols: Int): MutableList<Array<Cell>> {
+        return MutableList(newRows) { r ->
+            val src = old.getOrNull(r)
+            Array(newCols) { c -> src?.getOrNull(c)?.copy() ?: Cell(fg = TerminalColors.DEFAULT_FG, bg = TerminalColors.DEFAULT_BG) }
+        }
+    }
+
+    // These three are read from TerminalView.onDraw() on the UI thread every single frame while
+    // feed() runs on the pty-reader thread, mutating the very same screen/scrollback collections
+    // (neither ArrayList nor Kotlin's ArrayDeque is thread-safe) — without @Synchronized here to
+    // match feed()'s own lock, a high-output command (a big recursive listing, anything reading
+    // a large/virtual file) makes the two threads far more likely to actually collide mid-mutation,
+    // surfacing as a crash that looks "random"/command-specific but is really just a race whose
+    // odds scale with output volume, not anything particular about the command itself.
+    /** Snapshot for rendering: scrollback (oldest first) is NOT included — the view asks for it separately via [scrollbackRow]. */
+    @Synchronized
+    fun rowAt(index: Int): Array<Cell> = screen[index]
+
+    /** How far down from [cursorRow] the same visible block of content continues, stopping at the
+     *  first fully blank row — used by TerminalView's keyboard-avoidance shift instead of trusting
+     *  [cursorRow] alone. A plain shell prompt has nothing below the cursor worth protecting, so
+     *  this returns exactly cursorRow for that case. But a full-screen TUI box (opencode's input
+     *  box, which has its own status line and a hint row directly under the actual input line)
+     *  often draws a few more non-blank rows right below wherever the cursor happens to sit, and
+     *  those are just as much "the part currently worth keeping above the keyboard" as the cursor's
+     *  own row. Deliberately bounded to a *contiguous* run starting at cursorRow rather than a
+     *  whole-screen scan for the lowest non-blank row anywhere: a full-screen app's own static
+     *  footer (a version string, a status bar) sitting far below the actual UI with blank rows in
+     *  between would otherwise always win that scan, dragging the shift down to clear a footer
+     *  nobody's about to type into while leaving the real input box hidden above it — an actual
+     *  regression this replaces after being tried first. */
+    @Synchronized
+    fun contentBottomRow(): Int {
+        var r = cursorRow
+        while (r + 1 < rows && screen[r + 1].any { it.ch != ' ' }) r++
+        return r
+    }
+
+    @Synchronized
+    fun scrollbackSize(): Int = scrollback.size
+
+    @Synchronized
+    fun scrollbackRow(indexFromOldest: Int): Array<Cell> = scrollback.elementAt(indexFromOldest)
+
+    // --- Byte-level parsing -------------------------------------------------------------
+
+    private fun processByte(b: Int) {
+        when (state) {
+            State.NORMAL -> processNormal(b)
+            State.ESCAPE -> processEscape(b)
+            State.CSI -> processCsi(b)
+            State.OSC -> processOsc(b)
+            State.CHARSET -> state = State.NORMAL // consume the one designator byte, ignore it
+        }
+    }
+
+    private fun processNormal(b: Int) {
+        // Any byte below 0x80 arriving while a multi-byte UTF-8 sequence is only partially
+        // received means that sequence was truncated — an ESC starting a new escape sequence
+        // mid-character, or plain ASCII interrupting one, are both bytes < 0x80 and were routed
+        // here directly (bypassing feedUtf8() entirely), which used to leave those stray pending
+        // bytes sitting around forever, silently prepended onto the *next* genuine multi-byte
+        // sequence's own bytes and corrupting whatever character that produced.
+        if (utf8Pending.isNotEmpty() && b < 0x80) {
+            utf8Pending.clear()
+            putChar('�')
+        }
+        when {
+            b == 0x1B -> { state = State.ESCAPE; csiBuf.clear() }
+            b == 0x07 -> onBell()
+            b == 0x08 -> cursorCol = max(0, cursorCol - 1)
+            b == 0x09 -> { cursorCol = min(cols - 1, ((cursorCol / 8) + 1) * 8) }
+            b == 0x0A -> lineFeed()
+            b == 0x0D -> cursorCol = 0
+            b < 0x20 -> {} // ignore other C0 controls
+            b < 0x80 -> putChar(b.toChar())
+            else -> feedUtf8(b)
+        }
+    }
+
+    private var utf8PendingExpected = 0
+
+    private fun feedUtf8(b: Int) {
+        if (utf8Pending.isEmpty()) {
+            utf8PendingExpected = when {
+                b and 0xE0 == 0xC0 -> 2
+                b and 0xF0 == 0xE0 -> 3
+                b and 0xF8 == 0xF0 -> 4
+                else -> { putChar('�'); return } // stray continuation byte with no lead
+            }
+            utf8Pending.add(b)
+            return
+        }
+        if (b and 0xC0 != 0x80) {
+            // Not a valid continuation byte (10xxxxxx) — the sequence in progress was truncated
+            // (output cut off mid-character at a buffer boundary, or a program emitting raw bytes
+            // without properly encoding them) and this byte is actually the start of the NEXT,
+            // unrelated thing. Discard what was pending and reprocess this byte completely fresh
+            // instead of feeding it into flushUtf8() as a bogus "continuation," which corrupted
+            // whatever character came out the other end.
+            utf8Pending.clear()
+            putChar('�')
+            processNormal(b)
+            return
+        }
+        utf8Pending.add(b)
+        if (utf8Pending.size >= utf8PendingExpected) flushUtf8()
+    }
+
+    private fun flushUtf8() {
+        val bytes = ByteArray(utf8Pending.size) { utf8Pending[it].toByte() }
+        utf8Pending.clear()
+        val decoded = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
+        putChar(decoded?.firstOrNull() ?: '�')
+    }
+
+    private fun processEscape(b: Int) {
+        val c = b.toChar()
+        when (c) {
+            '[' -> { state = State.CSI; csiBuf.clear() }
+            ']' -> { state = State.OSC; csiBuf.clear() }
+            '7' -> { savedRow = cursorRow; savedCol = cursorCol; state = State.NORMAL }
+            '8' -> { cursorRow = min(savedRow, rows - 1); cursorCol = min(savedCol, cols - 1); state = State.NORMAL }
+            'c' -> { resetHard(); state = State.NORMAL }
+            'D' -> { lineFeed(); state = State.NORMAL }
+            'E' -> { cursorCol = 0; lineFeed(); state = State.NORMAL }
+            'M' -> { reverseIndex(); state = State.NORMAL }
+            '(', ')', '*', '+' -> state = State.CHARSET
+            else -> state = State.NORMAL
+        }
+    }
+
+    private fun processOsc(b: Int) {
+        // BEL alone terminates outright. ESC is the *first* half of the standard "ST" terminator
+        // (ESC \) — many modern programs (tmux/fish/nvim's own title-setting, OSC 8 hyperlinks:
+        // `ls --hyperlink`, gcc/clang/rustc's own diagnostics) use ST rather than BEL. Re-entering
+        // ESCAPE state (not straight to NORMAL) lets the following backslash actually get
+        // consumed as part of the terminator via processEscape()'s own unmatched-byte fallback,
+        // instead of falling through to processNormal() and being printed as a literal stray "\"
+        // in front of the next line of real output.
+        if (b == 0x07) state = State.NORMAL
+        else if (b == 0x1B) state = State.ESCAPE
+    }
+
+    private fun processCsi(b: Int) {
+        if (b in 0x30..0x3F || b in 0x20..0x2F) {
+            csiBuf.append(b.toChar())
+            return
+        }
+        if (b in 0x40..0x7E) {
+            dispatchCsi(b.toChar(), csiBuf.toString())
+            state = State.NORMAL
+            return
+        }
+        state = State.NORMAL // malformed; bail out rather than hang in CSI forever
+    }
+
+    private fun dispatchCsi(final: Char, raw: String) {
+        // "?", "<", ">", "=" are all private-parameter leader bytes (ECMA-48's 0x3C-0x3F range),
+        // not just "?" — "<"/">"/"=" are exactly how the kitty keyboard protocol's push/pop/query
+        // (CSI > 1 u / CSI < u / CSI ? u — sent by fish 4, neovim, helix, and any other program
+        // that speaks it) and DECSET-family variants are framed. Treating only "?" as private used
+        // to let a ">"/"<"/"="-prefixed sequence fall through to this file's own *unrelated* plain
+        // handler for the same final byte — CSI > 1 u hit the plain 'u' case (restore cursor),
+        // silently relocating the cursor, and CSI > 4;1 m got applied as SGR bold. None of what
+        // these prefixes actually request is implemented here, so recognizing and ignoring them is
+        // the correct behavior — not "run the plain-sequence handler because the final byte
+        // happens to coincide."
+        val prefixChar = raw.firstOrNull()?.takeIf { it in "?<>=" }
+        if (prefixChar != null && prefixChar != '?') return
+        val private = prefixChar == '?'
+        val body = if (private) raw.substring(1) else raw
+        val params = body.split(";").map { it.toIntOrNull() ?: 0 }
+        fun p(i: Int, default: Int = 0) = params.getOrNull(i)?.takeIf { it != 0 } ?: default
+
+        when (final) {
+            'A' -> cursorRow = max(topMargin, cursorRow - max(1, p(0, 1)))
+            'B' -> cursorRow = min(bottomMargin, cursorRow + max(1, p(0, 1)))
+            'C' -> cursorCol = min(cols - 1, cursorCol + max(1, p(0, 1)))
+            'D' -> cursorCol = max(0, cursorCol - max(1, p(0, 1)))
+            'H', 'f' -> {
+                cursorRow = (p(0, 1) - 1).coerceIn(0, rows - 1)
+                cursorCol = (p(1, 1) - 1).coerceIn(0, cols - 1)
+            }
+            'G' -> cursorCol = (p(0, 1) - 1).coerceIn(0, cols - 1)
+            'd' -> cursorRow = (p(0, 1) - 1).coerceIn(0, rows - 1)
+            'J' -> eraseInDisplay(p(0, 0))
+            'K' -> eraseInLine(p(0, 0))
+            '@' -> insertChars(max(1, p(0, 1)))
+            'P' -> deleteChars(max(1, p(0, 1)))
+            'L' -> insertLines(max(1, p(0, 1)))
+            'M' -> deleteLines(max(1, p(0, 1)))
+            'X' -> eraseChars(max(1, p(0, 1)))
+            'S' -> scrollUp(max(1, p(0, 1)))
+            'T' -> scrollDown(max(1, p(0, 1)))
+            'r' -> {
+                topMargin = (p(0, 1) - 1).coerceIn(0, rows - 1)
+                bottomMargin = (if (params.size > 1 && params[1] != 0) params[1] else rows).coerceIn(1, rows) - 1
+                if (topMargin > bottomMargin) { topMargin = 0; bottomMargin = rows - 1 }
+            }
+            'm' -> applySgr(params)
+            'h' -> setMode(private, params, true)
+            'l' -> setMode(private, params, false)
+            's' -> { savedRow = cursorRow; savedCol = cursorCol }
+            'u' -> { cursorRow = min(savedRow, rows - 1); cursorCol = min(savedCol, cols - 1) }
+            'n' -> if (p(0, 0) == 6) respond("\u001B[${cursorRow + 1};${cursorCol + 1}R")
+            else -> {} // unhandled final byte: ignore rather than crash
+        }
+    }
+
+    private fun setMode(private: Boolean, params: List<Int>, enable: Boolean) {
+        if (!private) return
+        for (mode in params) {
+            when (mode) {
+                25 -> cursorVisible = enable
+                1 -> applicationCursorKeys = enable
+                2004 -> bracketedPasteEnabled = enable
+                // DECAWM — a program drawing a fixed-width status/progress element that doesn't
+                // want it wrapping onto a new line if it happens to be wider than the terminal
+                // (many full-screen/status-line tools disable this deliberately) explicitly
+                // requests it turned off here; previously untracked entirely, so it was silently
+                // ignored and every such program always got hard-wrapped regardless of what it
+                // asked for.
+                7 -> autoWrapEnabled = enable
+                1049, 1047, 47 -> switchAltScreen(enable)
+                // Mouse click reporting (1000: press/release, 1002: +drag, 1003: +plain motion) —
+                // a full-screen TUI (opencode, htop, a mouse-aware vim/less) that turns this on
+                // wants taps translated into click escape sequences sent to it, not swallowed by
+                // this app's own "tap the terminal to open the keyboard" gesture. Only one of these
+                // three is ever active at a time per the spec; disabling whichever one is currently
+                // on (by any of the three numbers — real programs always disable with the same
+                // number they enabled) is what setting it back to 0 means. 1002/1003 aren't given
+                // any drag/motion behavior beyond what a plain tap already provides — real click
+                // reporting is enough to fix "tapping inside the app opens the keyboard instead of
+                // clicking" without tracking every finger movement as synthetic mouse motion.
+                1000, 1002, 1003 -> mouseReportingMode = if (enable) mode else 0
+                1006 -> mouseSgrMode = enable
+                else -> {} // 12 cursor blink, etc: tracked nowhere, harmless to ignore
+            }
+        }
+    }
+
+    /** Fires the moment [switchAltScreen] actually changes state (not on a redundant/nested
+     *  enable or disable) — TerminalView uses this to restore the shell's real terminal size right
+     *  away when a full-screen program exits, rather than waiting for its next draw frame to
+     *  notice via [inAltScreen] and then debouncing another ~150ms on top of that. That gap used to
+     *  be a real, reproducible race: typing a command immediately after leaving a full-screen app
+     *  (before the delayed resize actually landed) executed at whatever the temporarily-reduced
+     *  keyboard-driven row count still was, and if that command was "exit" — ending the shell right
+     *  as the pending resize came due — the reader thread's EOF handling and the resize's own
+     *  onGridSize()/session.resize() call could interleave against a tab already being torn down,
+     *  which looked exactly like the tab hanging instead of closing.
+     *
+     *  @Volatile — set from the main thread (TerminalView's emulator setter) but read and invoked
+     *  from the pty reader thread (inside feed()/switchAltScreen(), same as TerminalTab's own
+     *  onOutput/onExit callbacks) — without it, a plain field has no guarantee the reader thread
+     *  ever observes the assignment promptly, or at all, since nothing else here forces a memory
+     *  barrier between "the main thread wired this callback" and "the reader thread checks it". */
+    @Volatile var onAltScreenChanged: ((Boolean) -> Unit)? = null
+
+    private fun switchAltScreen(enable: Boolean) {
+        if (enable) {
+            if (primaryScreen != null) return // already showing the alt screen; ignore a nested/duplicate enable
+            primaryScreen = screen
+            primaryCursorRow = cursorRow
+            primaryCursorCol = cursorCol
+            if (altScreen == null) altScreen = MutableList(rows) { blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG) }
+            screen = altScreen!!
+            cursorRow = 0
+            cursorCol = 0
+        } else {
+            val savedPrimary = primaryScreen ?: return // not currently in the alt screen; ignore
+            altScreen = screen
+            screen = savedPrimary
+            primaryScreen = null
+            cursorRow = primaryCursorRow.coerceIn(0, rows - 1)
+            cursorCol = primaryCursorCol.coerceIn(0, cols - 1)
+        }
+        onAltScreenChanged?.invoke(enable)
+    }
+
+    private fun applySgr(paramsIn: List<Int>) {
+        val params = if (paramsIn.isEmpty()) listOf(0) else paramsIn
+        var i = 0
+        while (i < params.size) {
+            when (val p = params[i]) {
+                0 -> {
+                    curFg = TerminalColors.DEFAULT_FG; curBg = TerminalColors.DEFAULT_BG
+                    curFgKind = Cell.KIND_DEFAULT; curBgKind = Cell.KIND_DEFAULT
+                    curBold = false; curUnderline = false; curReverse = false
+                }
+                1 -> curBold = true
+                4 -> curUnderline = true
+                7 -> curReverse = true
+                22 -> curBold = false
+                24 -> curUnderline = false
+                27 -> curReverse = false
+                in 30..37 -> { curFg = TerminalColors.ANSI16[p - 30]; curFgKind = p - 30 }
+                39 -> { curFg = TerminalColors.DEFAULT_FG; curFgKind = Cell.KIND_DEFAULT }
+                in 40..47 -> { curBg = TerminalColors.ANSI16[p - 40]; curBgKind = p - 40 }
+                49 -> { curBg = TerminalColors.DEFAULT_BG; curBgKind = Cell.KIND_DEFAULT }
+                in 90..97 -> { curFg = TerminalColors.ANSI16[p - 90 + 8]; curFgKind = p - 90 + 8 }
+                in 100..107 -> { curBg = TerminalColors.ANSI16[p - 100 + 8]; curBgKind = p - 100 + 8 }
+                38, 48 -> {
+                    val isFg = p == 38
+                    if (params.getOrNull(i + 1) == 5 && i + 2 < params.size) {
+                        val color = TerminalColors.ansi256(params[i + 2])
+                        if (isFg) { curFg = color; curFgKind = Cell.KIND_FIXED } else { curBg = color; curBgKind = Cell.KIND_FIXED }
+                        i += 2
+                    } else if (params.getOrNull(i + 1) == 2 && i + 4 < params.size) {
+                        val color = TerminalColors.rgb(params[i + 2], params[i + 3], params[i + 4])
+                        if (isFg) { curFg = color; curFgKind = Cell.KIND_FIXED } else { curBg = color; curBgKind = Cell.KIND_FIXED }
+                        i += 4
+                    }
+                }
+                else -> {}
+            }
+            i++
+        }
+    }
+
+    // --- Screen mutation -----------------------------------------------------------------
+
+    private fun putChar(c: Char) {
+        if (cursorCol >= cols) {
+            if (!autoWrapEnabled) {
+                // Overwrite the last column in place instead of wrapping — standard terminal
+                // behavior with DECAWM off, for a program that explicitly disabled wrap because it
+                // never wants what it draws to spill onto a new line.
+                cursorCol = cols - 1
+            } else {
+                cursorCol = 0
+                lineFeed()
+            }
+        }
+        val cell = screen[cursorRow][cursorCol]
+        cell.ch = c
+        cell.fg = curFg
+        cell.bg = curBg
+        cell.fgKind = curFgKind
+        cell.bgKind = curBgKind
+        cell.bold = curBold
+        cell.underline = curUnderline
+        cell.reverse = curReverse
+        cursorCol++
+    }
+
+    private fun lineFeed() {
+        if (cursorRow == bottomMargin) scrollUp(1) else cursorRow = min(rows - 1, cursorRow + 1)
+    }
+
+    private fun reverseIndex() {
+        if (cursorRow == topMargin) scrollDown(1) else cursorRow = max(0, cursorRow - 1)
+    }
+
+    private fun scrollUp(n: Int) {
+        repeat(min(n, bottomMargin - topMargin + 1)) {
+            val row = screen.removeAt(topMargin)
+            if (topMargin == 0) {
+                scrollback.addLast(row)
+                while (scrollback.size > maxScrollback) scrollback.removeFirst()
+                screen.add(bottomMargin, blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
+            } else {
+                screen.add(
+                    bottomMargin,
+                    row.also { r ->
+                        r.forEach {
+                            it.ch = ' '
+                            it.fg = TerminalColors.DEFAULT_FG; it.bg = TerminalColors.DEFAULT_BG
+                            it.fgKind = Cell.KIND_DEFAULT; it.bgKind = Cell.KIND_DEFAULT
+                        }
+                    },
+                )
+            }
+        }
+    }
+
+    private fun scrollDown(n: Int) {
+        repeat(min(n, bottomMargin - topMargin + 1)) {
+            screen.removeAt(bottomMargin)
+            screen.add(topMargin, blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
+        }
+    }
+
+    private fun insertLines(n: Int) {
+        if (cursorRow < topMargin || cursorRow > bottomMargin) return
+        repeat(min(n, bottomMargin - cursorRow + 1)) {
+            screen.removeAt(bottomMargin)
+            screen.add(cursorRow, blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
+        }
+    }
+
+    private fun deleteLines(n: Int) {
+        if (cursorRow < topMargin || cursorRow > bottomMargin) return
+        repeat(min(n, bottomMargin - cursorRow + 1)) {
+            screen.removeAt(cursorRow)
+            screen.add(bottomMargin, blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
+        }
+    }
+
+    private fun insertChars(n: Int) {
+        val row = screen[cursorRow]
+        val count = min(n, cols - cursorCol)
+        for (i in cols - 1 downTo cursorCol + count) row[i] = row[i - count]
+        for (i in cursorCol until cursorCol + count) row[i] = Cell(fg = curFg, bg = curBg, fgKind = curFgKind, bgKind = curBgKind)
+    }
+
+    private fun deleteChars(n: Int) {
+        val row = screen[cursorRow]
+        val count = min(n, cols - cursorCol)
+        for (i in cursorCol until cols - count) row[i] = row[i + count]
+        for (i in cols - count until cols) row[i] = Cell(fg = curFg, bg = curBg, fgKind = curFgKind, bgKind = curBgKind)
+    }
+
+    private fun eraseChars(n: Int) {
+        val row = screen[cursorRow]
+        for (i in cursorCol until min(cols, cursorCol + n)) row[i] = Cell(fg = curFg, bg = curBg, fgKind = curFgKind, bgKind = curBgKind)
+    }
+
+    private fun eraseInLine(mode: Int) {
+        val row = screen[cursorRow]
+        val range = when (mode) {
+            0 -> cursorCol until cols
+            1 -> 0..cursorCol
+            else -> 0 until cols
+        }
+        for (i in range) row[i] = Cell(fg = curFg, bg = curBg, fgKind = curFgKind, bgKind = curBgKind)
+    }
+
+    private fun eraseInDisplay(mode: Int) {
+        when (mode) {
+            0 -> { eraseInLine(0); for (r in cursorRow + 1 until rows) screen[r] = blankRow(cols, curFg, curBg, curFgKind, curBgKind) }
+            1 -> { eraseInLine(1); for (r in 0 until cursorRow) screen[r] = blankRow(cols, curFg, curBg, curFgKind, curBgKind) }
+            else -> for (r in 0 until rows) screen[r] = blankRow(cols, curFg, curBg, curFgKind, curBgKind)
+        }
+        // The `clear` utility commonly sends cursor-home followed by a *bare* ESC[J (mode 0, erase
+        // from cursor down) rather than ESC[2J — with the cursor sitting at row 0 col 0 right after
+        // the home, mode 0 wipes the same rows mode 2 would, but takes the `0 ->` branch above, not
+        // the explicit full-clear one. Checking the actual result rather than the mode number is
+        // what catches that: whenever an erase leaves the whole visible screen blank, however it got
+        // there, any scrollback rows still pending from a keyboard-driven shrink are no longer
+        // "current" history — without resetting this, closing the keyboard right after a `clear`
+        // pulled that pre-clear content straight back onto the main screen, undoing the clear.
+        if (screen.all { row -> row.all { it.ch == ' ' } }) pendingRestoreCount = 0
+    }
+
+    private fun resetHard() {
+        for (r in 0 until rows) screen[r] = blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG)
+        pendingRestoreCount = 0
+        cursorRow = 0; cursorCol = 0
+        curFg = TerminalColors.DEFAULT_FG; curBg = TerminalColors.DEFAULT_BG
+        curFgKind = Cell.KIND_DEFAULT; curBgKind = Cell.KIND_DEFAULT
+        curBold = false; curUnderline = false; curReverse = false
+        topMargin = 0; bottomMargin = rows - 1
+        cursorVisible = true
+        bracketedPasteEnabled = false
+        autoWrapEnabled = true
+        mouseReportingMode = 0
+        mouseSgrMode = false
+    }
+
+    /**
+     * Re-resolves every cell's displayed [Cell.fg]/[Cell.bg] — across the current screen, the
+     * alternate screen (if a full-screen program has it active), and the whole scrollback —
+     * against whatever theme is active *right now*, using each cell's remembered [Cell.fgKind]/
+     * [Cell.bgKind]. Called once, right after [TerminalColors.applyTheme], so a theme switch
+     * repaints everything already on screen instead of only text written from that point on.
+     * Cells from an explicit 256-color/truecolor SGR ([Cell.KIND_FIXED]) are untouched — they
+     * were never theme-relative in the first place.
+     */
+    @Synchronized
+    fun applyPalette() {
+        fun resolve(kind: Int): Int? = when {
+            kind == Cell.KIND_DEFAULT -> null // caller decides fg vs bg default
+            kind == Cell.KIND_FIXED -> null // leave as-is
+            else -> TerminalColors.ANSI16.getOrNull(kind)
+        }
+        fun recolor(row: Array<Cell>) {
+            for (cell in row) {
+                when (cell.fgKind) {
+                    Cell.KIND_DEFAULT -> cell.fg = TerminalColors.DEFAULT_FG
+                    Cell.KIND_FIXED -> {}
+                    else -> resolve(cell.fgKind)?.let { cell.fg = it }
+                }
+                when (cell.bgKind) {
+                    Cell.KIND_DEFAULT -> cell.bg = TerminalColors.DEFAULT_BG
+                    Cell.KIND_FIXED -> {}
+                    else -> resolve(cell.bgKind)?.let { cell.bg = it }
+                }
+            }
+        }
+        for (row in screen) recolor(row)
+        altScreen?.forEach { recolor(it) }
+        // While a full-screen app has the alt screen up, the primary screen sits in this field
+        // instead of `screen` (see switchAltScreen()) — missing it here meant a theme change made
+        // while inside opencode/vim/less looked applied, but the ordinary shell content it would
+        // return to on exit stayed in the old theme's colors until something else touched it.
+        primaryScreen?.forEach { recolor(it) }
+        for (i in 0 until scrollback.size) recolor(scrollback.elementAt(i))
+        curFg = when (curFgKind) { Cell.KIND_DEFAULT -> TerminalColors.DEFAULT_FG; Cell.KIND_FIXED -> curFg; else -> TerminalColors.ANSI16.getOrElse(curFgKind) { curFg } }
+        curBg = when (curBgKind) { Cell.KIND_DEFAULT -> TerminalColors.DEFAULT_BG; Cell.KIND_FIXED -> curBg; else -> TerminalColors.ANSI16.getOrElse(curBgKind) { curBg } }
+        generation++
+    }
+}

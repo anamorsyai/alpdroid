@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Waits for the mountain to finish landing (startOffset matches its 500ms scale-in), then
+     blinks the cursor bar on/off a few times, like a shell prompt waiting for input. -->
+<objectAnimator xmlns:android="http://schemas.android.com/apk/res/android"
+    android:propertyName="fillAlpha"
+    android:startOffset="500"
+    android:duration="250"
+    android:valueFrom="0"
+    android:valueTo="1"
+    android:valueType="floatType"
+    android:repeatCount="3"
+    android:repeatMode="reverse"
+    android:interpolator="@android:interpolator/linear" />

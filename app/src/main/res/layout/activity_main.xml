@@ -1,0 +1,365 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.drawerlayout.widget.DrawerLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/drawerLayout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <FrameLayout
+        android:id="@+id/rootFrame"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical">
+
+            <HorizontalScrollView
+                android:id="@+id/tabBarScroll"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="10dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:paddingBottom="6dp"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/tabBar"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal" />
+            </HorizontalScrollView>
+
+            <!-- A one-time static inset, not a dynamic one — this padding is set once at layout
+                 and never changes while the keyboard opens/closes (that's extraKeysScroll's own
+                 translationY trick below), so it doesn't reintroduce the SIGWINCH-on-every-toggle
+                 problem; it just gives TerminalView slightly smaller, fixed bounds to draw into,
+                 same as any other static layout change would. -->
+            <FrameLayout
+                android:id="@+id/terminalContainer"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:paddingTop="8dp"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp" />
+
+            <!-- Back inside the vertical LinearLayout, as a plain (non-weighted, wrap_content)
+                 sibling of terminalContainer — its own height is always reserved out of
+                 terminalContainer's share regardless of the keyboard, so the terminal never
+                 renders underneath it even at rest. Floating it above the keyboard is done with
+                 a pure translationY in MainActivity.applyInsetsManually() instead of a margin: a
+                 transform doesn't touch layout at all, so it can't ever make terminalContainer
+                 resize — see TerminalView.imeCoverPx for why a real resize is exactly what must
+                 not happen here (a real SIGWINCH, which most shells react to by moving the
+                 cursor and reprinting the prompt on every single keyboard toggle). -->
+            <HorizontalScrollView
+                android:id="@+id/extraKeysScroll"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/extraKeysRow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:paddingTop="4dp"
+                    android:paddingBottom="4dp" />
+            </HorizontalScrollView>
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/setupContainer"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="32dp">
+
+            <com.alpdroid.app.LiquidFillView
+                android:id="@+id/setupProgress"
+                android:layout_width="120dp"
+                android:layout_height="120dp"
+                android:layout_marginBottom="20dp" />
+
+            <TextView
+                android:id="@+id/setupStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:text="Setting up Alpine…"
+                android:textColor="#D4D4D4"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/grantStorageButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:text="Grant shared-storage access"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/startTerminalButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="Start terminal"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/retryButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:text="Retry"
+                android:visibility="gone" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <LinearLayout
+        android:layout_width="320dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="@color/panel"
+        android:elevation="8dp"
+        android:fitsSystemWindows="true"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingStart="10dp"
+            android:paddingTop="12dp"
+            android:paddingEnd="10dp"
+            android:paddingBottom="8dp">
+
+            <Button
+                android:id="@+id/fbSessionsButton"
+                style="@style/Widget.AlpDroid.ChipTab"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="6dp"
+                android:text="Sessions" />
+
+            <Button
+                android:id="@+id/fbAndroidButton"
+                style="@style/Widget.AlpDroid.ChipTab"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="6dp"
+                android:text="Android" />
+
+            <Button
+                android:id="@+id/fbAlpineButton"
+                style="@style/Widget.AlpDroid.ChipTab"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Alpine" />
+
+            <ImageButton
+                android:id="@+id/fbUpButton"
+                android:layout_width="38dp"
+                android:layout_height="38dp"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/bg_icon_button"
+                android:contentDescription="Up a directory"
+                android:padding="8dp"
+                android:src="@drawable/ic_arrow_up"
+                android:tint="@color/text_primary" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/fbPathText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="start"
+            android:maxLines="1"
+            android:paddingStart="12dp"
+            android:paddingTop="4dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="8dp"
+            android:textColor="#8B93A1"
+            android:textSize="12sp" />
+
+        <ListView
+            android:id="@+id/fbFileList"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:divider="#1F2530"
+            android:dividerHeight="1dp" />
+
+        <LinearLayout
+            android:id="@+id/fbSessionsContainer"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <Button
+                android:id="@+id/fbNewSessionButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_margin="8dp"
+                android:text="+ New session" />
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1">
+
+                <LinearLayout
+                    android:id="@+id/fbSessionsList"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" />
+            </ScrollView>
+        </LinearLayout>
+
+        <HorizontalScrollView
+            android:id="@+id/fbSelectionBarScroll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@color/panel_2"
+            android:scrollbars="none"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:id="@+id/fbSelectionBar"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="10dp">
+
+                <TextView
+                    android:id="@+id/fbSelectionCount"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="10dp"
+                    android:textColor="@color/text_primary"
+                    android:textStyle="bold"
+                    android:textSize="13sp" />
+
+                <ImageButton
+                    android:id="@+id/fbSelectCopyButton"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:layout_marginEnd="4dp"
+                    android:background="@drawable/bg_icon_button"
+                    android:contentDescription="Copy"
+                    android:padding="8dp"
+                    android:src="@drawable/ic_content_copy"
+                    android:tint="@color/text_primary" />
+
+                <ImageButton
+                    android:id="@+id/fbSelectMoveButton"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:layout_marginEnd="4dp"
+                    android:background="@drawable/bg_icon_button"
+                    android:contentDescription="Move"
+                    android:padding="8dp"
+                    android:src="@drawable/ic_drive_file_move"
+                    android:tint="@color/text_primary" />
+
+                <ImageButton
+                    android:id="@+id/fbSelectCompressButton"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:layout_marginEnd="4dp"
+                    android:background="@drawable/bg_icon_button"
+                    android:contentDescription="Zip"
+                    android:padding="8dp"
+                    android:src="@drawable/ic_folder_zip"
+                    android:tint="@color/text_primary" />
+
+                <ImageButton
+                    android:id="@+id/fbSelectShareButton"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:layout_marginEnd="4dp"
+                    android:background="@drawable/bg_icon_button"
+                    android:contentDescription="Share"
+                    android:padding="8dp"
+                    android:src="@drawable/ic_share"
+                    android:tint="@color/text_primary" />
+
+                <ImageButton
+                    android:id="@+id/fbSelectDeleteButton"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:layout_marginEnd="4dp"
+                    android:background="@drawable/bg_icon_button"
+                    android:contentDescription="Delete"
+                    android:padding="8dp"
+                    android:src="@drawable/ic_delete"
+                    android:tint="@color/danger" />
+
+                <ImageButton
+                    android:id="@+id/fbSelectCancelButton"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:background="@drawable/bg_icon_button"
+                    android:contentDescription="Cancel selection"
+                    android:padding="9dp"
+                    android:src="@drawable/ic_close"
+                    android:tint="@color/text_dim" />
+            </LinearLayout>
+        </HorizontalScrollView>
+
+        <LinearLayout
+            android:id="@+id/fbClipboardBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#1B212C"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="10dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/fbClipboardText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="#D4D4D4"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/fbPasteButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Paste" />
+
+            <Button
+                android:id="@+id/fbCancelClipboardButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:text="Cancel" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <ScrollView
+        android:layout_width="280dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="end"
+        android:background="#12161C"
+        android:elevation="8dp"
+        android:fitsSystemWindows="true">
+
+        <LinearLayout
+            android:id="@+id/settingsPanel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="20dp" />
+    </ScrollView>
+</androidx.drawerlayout.widget.DrawerLayout>

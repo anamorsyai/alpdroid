@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The redesign's palette — built around colors already established elsewhere in the app
+     (the teal accent, the drawer-panel dark, the icon/splash colors) rather than a new brand. -->
+<resources>
+    <color name="app_bg">#0B0E13</color>
+    <color name="panel">#12161C</color>
+    <color name="panel_2">#171C24</color>
+    <color name="panel_3">#1D232C</color>
+    <color name="accent">#3ED0B8</color>
+    <color name="accent_dim">#2A8577</color>
+    <color name="accent_wash">#243ED0B8</color>
+    <color name="on_accent">#08211C</color>
+    <color name="text_primary">#E7ECEF</color>
+    <color name="text_dim">#8B93A1</color>
+    <color name="outline">#252C36</color>
+    <color name="danger">#E57B7B</color>
+    <color name="star">#F4C863</color>
+</resources>

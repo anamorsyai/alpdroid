@@ -4,4 +4,6 @@
     <files-path name="alpine_root" path="alpine-rootfs/" />
     <!-- Android's shared storage root, for sharing/opening files from outside the app's own dirs. -->
     <external-path name="external_root" path="." />
+    <!-- Self-update APKs downloaded by AppUpdater, served to the system installer. -->
+    <external-files-path name="updates" path="updates/" />
 </paths>

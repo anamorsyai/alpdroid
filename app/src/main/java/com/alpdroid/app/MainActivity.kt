@@ -132,6 +132,7 @@ class MainActivity : Activity() {
         agentBridge.host = agentHost
         if (settingsStore.agentAccessEnabled) syncAgentBridge()
         mainHandler.postDelayed({ if (!isFinishing && !isDestroyed) maybeAutoBackup() }, 30_000)
+        mainHandler.postDelayed({ if (!isFinishing && !isDestroyed) maybeAutoUpdateCheck() }, 45_000)
         TerminalColors.applyTheme(Themes.byId(settingsStore.themeId))
 
         setContentView(R.layout.activity_main)
@@ -2107,6 +2108,107 @@ class MainActivity : Activity() {
                 setTextColor(0xFF5A6270.toInt())
             },
         )
+        updateStatusText = TextView(this).apply {
+            textSize = 12f
+            setTextColor(0xFF8B93A1.toInt())
+        }
+        panel.addView(updateStatusText)
+        panel.addView(
+            pillButton().apply {
+                text = "Check for updates"
+                setOnClickListener { checkForAppUpdate(manual = true) }
+            },
+        )
+    }
+
+    private var updateStatusText: TextView? = null
+    private var updateCheckInFlight = false
+
+    /**
+     * Compares this APK against the newest GitHub release with an APK asset. Silent unless
+     * [manual] or an update is actually found — the daily auto-check never nags on "none".
+     */
+    private fun checkForAppUpdate(manual: Boolean) {
+        if (updateCheckInFlight) return
+        updateCheckInFlight = true
+        if (manual) updateStatusText?.text = "Checking…"
+        (application as AlpineTermApp).backgroundExecutor.execute {
+            val update = AppUpdater.checkForUpdate(this)
+            mainHandler.post {
+                updateCheckInFlight = false
+                if (isFinishing || isDestroyed) return@post
+                settingsStore.lastUpdateCheckMs = System.currentTimeMillis()
+                if (update == null) {
+                    if (manual) {
+                        updateStatusText?.text = "You're on the newest version."
+                        android.widget.Toast.makeText(this, "No updates found", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    return@post
+                }
+                showUpdateDialog(update)
+            }
+        }
+    }
+
+    /** Daily auto-check: fires once per day from onCreate, only dialogs when newer exists. */
+    private fun maybeAutoUpdateCheck() {
+        val day = 24L * 60 * 60 * 1000
+        if (System.currentTimeMillis() - settingsStore.lastUpdateCheckMs < day) return
+        checkForAppUpdate(manual = false)
+    }
+
+    private var updateDownloadCancelled = false
+
+    private fun showUpdateDialog(update: AppUpdater.Update) {
+        val notes = update.notes.take(1500)
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("Update available: ${update.name}")
+            .setMessage(
+                "You're on AlpDroid $appVersionLabel.${if (notes.isNotBlank()) "\n\nWhat's new:\n$notes" else ""}" +
+                    "\n\nThe app will close to install — your tabs and files are untouched (sessions don't survive any app update, same as a Play Store one).",
+            )
+            .setPositiveButton("Update now") { _, _ -> downloadAndInstallUpdate(update) }
+            .setNegativeButton("Later", null)
+            .setCancelable(true)
+            .show()
+    }
+
+    private fun downloadAndInstallUpdate(update: AppUpdater.Update) {
+        updateDownloadCancelled = false
+        val dialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("Downloading ${update.name}")
+            .setMessage("Starting…")
+            .setNegativeButton("Cancel") { _, _ -> updateDownloadCancelled = true }
+            .setCancelable(false)
+            .show()
+        (application as AlpineTermApp).backgroundExecutor.execute {
+            var lastMs = 0L
+            val apk = runCatching {
+                AppUpdater.download(this, update, { done, total ->
+                    val now = System.currentTimeMillis()
+                    if (now - lastMs >= 300) {
+                        lastMs = now
+                        val label = if (total > 0) "${FileOps.humanSize(done)} of ${FileOps.humanSize(total)}" else FileOps.humanSize(done)
+                        mainHandler.post { if (dialog.isShowing) dialog.setMessage(label) }
+                    }
+                }, { updateDownloadCancelled })
+            }.getOrNull()
+            mainHandler.post {
+                runCatching { dialog.dismiss() }
+                if (isFinishing || isDestroyed) return@post
+                if (apk == null) {
+                    if (!updateDownloadCancelled) {
+                        updateStatusText?.text = "Update check failed — try again later."
+                        android.widget.Toast.makeText(this, "Couldn't download the update", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                    return@post
+                }
+                updateStatusText?.text = "Ready to install ${update.name}."
+                // Returns false only when install permission is missing — the user is already
+                // on their way to Settings then, and taps Update again after allowing.
+                AppUpdater.installApk(this, apk)
+            }
+        }
     }
 
     /** "1.2.3 (45)" from the APK's own versionName/versionCode — read once rather than on every

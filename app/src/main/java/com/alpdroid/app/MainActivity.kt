@@ -2265,7 +2265,7 @@ class MainActivity : Activity() {
             addView(input)
             addView(iconButton("▲") { doSearch(input.text.toString(), forward = false) })
             addView(iconButton("▼") { doSearch(input.text.toString(), forward = true) })
-            val counter = TextView(this).apply {
+            val counter = TextView(this@MainActivity).apply {
                 textSize = 12f
                 setTextColor(0xFF8B93A1.toInt())
                 minWidth = dp(48)

@@ -7,7 +7,11 @@ class AlpineTermApp : Application() {
     override fun onCreate() {
         super.onCreate()
         OperationNotifications.clearStale(this)
+        pluginJobs.start()
     }
+
+    /** Scheduled / keep-running plugin scripts (see PluginJobs). */
+    val pluginJobs = PluginJobs(this)
 
     /** Slow, network-bound work: downloading/extracting Alpine, spawning a session. */
     val backgroundExecutor = Executors.newSingleThreadExecutor()
@@ -28,6 +32,10 @@ class AlpineTermApp : Application() {
      *  persistence, not just "remembered how many tabs to recreate" (see SessionPersistence,
      *  which is the fallback for when the process itself, not just the Activity, actually died). */
     val tabs = mutableListOf<TerminalTab>()
+
+    /** The local control API for programs in the terminal (off unless the user enables it). Owned
+     *  here so it survives Activity recreation; MainActivity attaches/detaches its UI host. */
+    val agentBridge = AgentBridge(this)
     var nextTabId = 1
     var activeTabIndex = -1
 

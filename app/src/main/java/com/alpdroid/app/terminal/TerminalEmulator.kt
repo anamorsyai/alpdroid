@@ -24,6 +24,12 @@ data class Cell(
     var bold: Boolean = false,
     var underline: Boolean = false,
     var reverse: Boolean = false,
+    /** Set on the LAST cell of a row when the program's output auto-wrapped past it onto the next
+     *  row (a genuine soft wrap), so a resize can rejoin exactly those rows — instead of guessing
+     *  from whether the row happens to end in a non-blank character, which failed for any wrapped
+     *  row that ended on a space (most `ls -l`/column output) and left text broken at its old
+     *  width after the terminal got wider. */
+    var wrapped: Boolean = false,
 ) {
     companion object {
         const val KIND_DEFAULT = -1
@@ -369,7 +375,7 @@ class TerminalEmulator(
                 cursorLogicalOffset = current.size + cursorCol.coerceIn(0, row.size)
             }
             current.addAll(row.toList())
-            val full = row.isNotEmpty() && row.last().ch != ' '
+            val full = row.isNotEmpty() && row.last().wrapped
             if (!full) {
                 logicalLines.add(current)
                 current = ArrayList()
@@ -394,7 +400,8 @@ class TerminalEmulator(
             var pos = 0
             while (pos < trimmed.size) {
                 val chunkEnd = min(pos + newCols, trimmed.size)
-                val rowArr = Array(newCols) { c -> if (pos + c < chunkEnd) trimmed[pos + c].copy() else Cell(fg = TerminalColors.DEFAULT_FG, bg = TerminalColors.DEFAULT_BG) }
+                val rowArr = Array(newCols) { c -> if (pos + c < chunkEnd) trimmed[pos + c].copy(wrapped = false) else Cell(fg = TerminalColors.DEFAULT_FG, bg = TerminalColors.DEFAULT_BG) }
+                if (pos + newCols < trimmed.size) rowArr[newCols - 1].wrapped = true
                 newAllRows.add(rowArr)
                 if (lineIdx == cursorLogicalLine) {
                     if (cursorLogicalOffset in pos until (pos + newCols)) {
@@ -830,11 +837,13 @@ class TerminalEmulator(
                 // never wants what it draws to spill onto a new line.
                 cursorCol = cols - 1
             } else {
+                screen[cursorRow][cols - 1].wrapped = true
                 cursorCol = 0
                 lineFeed()
             }
         }
         val cell = screen[cursorRow][cursorCol]
+        cell.wrapped = false
         cell.ch = c
         cell.fg = curFg
         cell.bg = curBg
@@ -867,6 +876,7 @@ class TerminalEmulator(
                     row.also { r ->
                         r.forEach {
                             it.ch = ' '
+                            it.wrapped = false
                             it.fg = TerminalColors.DEFAULT_FG; it.bg = TerminalColors.DEFAULT_BG
                             it.fgKind = Cell.KIND_DEFAULT; it.bgKind = Cell.KIND_DEFAULT
                         }

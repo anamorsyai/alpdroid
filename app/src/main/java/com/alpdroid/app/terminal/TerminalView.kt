@@ -613,7 +613,14 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
 
     // --- Touch: drag to scroll into scrollback ---
 
+    private var scrollRemainderPx = 0f
+
     private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onDown(e: MotionEvent): Boolean {
+            scrollRemainderPx = 0f
+            return false
+        }
+
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
             // GestureDetector never delivers onScroll() once onLongPress has already fired for a
             // gesture (its ACTION_MOVE handling short-circuits while in that state), so extending
@@ -628,8 +635,15 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             // the natural "pull down to see what's above" scrolling every other app on the
             // device uses — adding it had every drag moving the view backwards from what the
             // finger did.
-            val deltaRows = (dy / cellHeight).roundToInt()
-            if (deltaRows == 0) return false
+            // Carried across events: a normal-speed drag delivers well under half a row of
+            // distance per event, so rounding each event on its own to whole rows gave 0 every
+            // time and dropped that distance for good — a slow or ordinary drag scrolled nothing,
+            // only a fast flick did. Whole rows are taken out of the running total and the
+            // remainder stays for the next event.
+            scrollRemainderPx += dy
+            val deltaRows = (scrollRemainderPx / cellHeight).toInt()
+            if (deltaRows == 0) return true
+            scrollRemainderPx -= deltaRows * cellHeight
             if (em.inAltScreen) {
                 // scrollOffset has no meaning here — the alt screen has no scrollback of its own
                 // to reveal (it's a fixed-size buffer the running program redraws entirely on its

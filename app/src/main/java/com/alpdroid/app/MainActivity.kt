@@ -8,6 +8,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import org.json.JSONObject
+import org.json.JSONArray
 import android.content.res.ColorStateList
 import android.util.Log
 import android.graphics.Color
@@ -121,6 +123,9 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         settingsStore = SettingsStore(this)
         registerDeviceEvents()
+        (application as AlpineTermApp).pluginJobs.apply { paused = false; refreshCount() }
+        agentBridge.host = agentHost
+        if (settingsStore.agentAccessEnabled) syncAgentBridge()
         mainHandler.postDelayed({ if (!isFinishing && !isDestroyed) maybeAutoBackup() }, 30_000)
         TerminalColors.applyTheme(Themes.byId(settingsStore.themeId))
 
@@ -317,17 +322,21 @@ class MainActivity : Activity() {
 
     private val settingsCategories: List<SettingsCategory> by lazy {
         listOf(
+            SettingsCategory("Guide", "How every feature works — read this first", R.drawable.ic_info, ::buildGuideCategory),
             SettingsCategory("Display & Theme", "Theme, font, ligatures, extra keys row", R.drawable.ic_palette, ::buildDisplayCategory),
             SettingsCategory("Sessions & Background", "Survive backgrounding, battery, bell", R.drawable.ic_sync, ::buildSessionsCategory),
             SettingsCategory("Packages & Toolchains", "Install tools, search Alpine's package index", R.drawable.ic_download, ::buildPackagesCategory),
             SettingsCategory("Backup & Storage", "Backup/restore Alpine, shared storage, reinstall", R.drawable.ic_backup, ::buildBackupCategory),
             SettingsCategory("Network & SSH", "SSH, DNS, mirrors, local web preview", R.drawable.ic_wifi, ::buildNetworkCategory),
+            SettingsCategory("Agent access & GitHub", "Let terminal agents control the app; sign in to GitHub", R.drawable.ic_link, ::buildAgentCategory),
+            SettingsCategory("Plugins", "Custom panels: fields, buttons and scripts you or an agent add", R.drawable.ic_star, ::buildPluginsCategory),
             SettingsCategory("Devices", "SD cards, USB drives & devices, network adapters, Wi-Fi", R.drawable.ic_folder, ::buildDevicesCategory),
             SettingsCategory("About", "Version", R.drawable.ic_info, ::buildAboutCategory),
         )
     }
 
     private fun showSettingsCategoryList() {
+        devicesPanel = null
         settingsPanel.removeAllViews()
         settingsPanel.addView(
             TextView(this).apply {
@@ -384,6 +393,7 @@ class MainActivity : Activity() {
     }
 
     private fun showSettingsCategory(category: SettingsCategory) {
+        devicesPanel = null
         settingsPanel.removeAllViews()
         settingsPanel.addView(
             LinearLayout(this).apply {
@@ -412,10 +422,15 @@ class MainActivity : Activity() {
             },
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) },
         )
-        category.build(settingsPanel)
+        // Its own container, so a screen that rebuilds itself (Devices, Plugins, Agent access call
+        // removeAllViews() on refresh) clears only its content — not the back header above.
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        settingsPanel.addView(content, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        category.build(content)
     }
 
     private fun buildDisplayCategory(panel: LinearLayout) {
+        panel.addView(guideLink("Display, themes & keys"))
         panel.addView(sectionLabel("Theme"))
         val radioGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
         Themes.ALL.forEach { theme ->
@@ -527,7 +542,7 @@ class MainActivity : Activity() {
         panel.addView(sectionLabel("Custom shortcuts"))
         panel.addView(
             TextView(this).apply {
-                text = "Add your own button to the extra-keys row that types out a whole command in one tap — a fresh session's own working directory and history don't carry over, so this is for the command itself, not \"resume where I was\"."
+                text = "Add your own one-tap command buttons to the key row."
                 setTextColor(0xFF8B93A1.toInt())
                 textSize = 11f
                 setPadding(0, 0, 0, dp(6))
@@ -595,6 +610,7 @@ class MainActivity : Activity() {
     }
 
     private fun buildSessionsCategory(panel: LinearLayout) {
+        panel.addView(guideLink("Sessions & keep-alive"))
         panel.addView(sectionLabel("Background sessions"))
         panel.addView(
             MaterialSwitch(this).apply {
@@ -609,7 +625,7 @@ class MainActivity : Activity() {
         )
         panel.addView(
             TextView(this).apply {
-                text = "Recommended for CLI agents (opencode, Claude Code, Cline) and long builds — without this, Android can kill the app while it's backgrounded mid-task."
+                text = "Recommended for coding agents and long builds."
                 setTextColor(0xFF8B93A1.toInt())
                 textSize = 12f
                 setPadding(0, dp(4), 0, dp(8))
@@ -656,6 +672,7 @@ class MainActivity : Activity() {
     }
 
     private fun buildPackagesCategory(panel: LinearLayout) {
+        panel.addView(guideLink("Packages & Quick Install"))
         panel.addView(sectionLabel("Toolchains & packages"))
         panel.addView(
             TextView(this).apply {
@@ -694,7 +711,7 @@ class MainActivity : Activity() {
         panel.addView(sectionLabel("Search Alpine's package index"))
         panel.addView(
             TextView(this).apply {
-                text = "Searches the real, live Alpine repos (apk search) — anything published there shows up, not just the shortcuts below."
+                text = "Searches all of Alpine's live package repositories."
                 setTextColor(0xFF8B93A1.toInt())
                 textSize = 12f
                 setPadding(0, 0, 0, dp(6))
@@ -890,14 +907,14 @@ class MainActivity : Activity() {
                 // fails with "Error relocating ...: undefined symbol" / "cannot open shared
                 // object file" the first time it's actually launched, long after the installer
                 // itself already reported success.
-                "opencode (v1)" to "apk add --no-cache curl libstdc++ && curl -fsSL https://opencode.ai/install | sh\n",
-                "opencode (v2)" to "apk add --no-cache bash curl libstdc++ && curl -fsSL https://opencode.ai/v2/install | bash\n",
+                "opencode (v1)" to "apk add --no-cache curl libstdc++ && curl -fsSL https://opencode.ai/install | sh; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
+                "opencode (v2)" to "apk add --no-cache bash curl libstdc++ && curl -fsSL https://opencode.ai/v2/install | bash; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
                 "Claude Code CLI" to "apk add --no-cache nodejs npm && npm install -g @anthropic-ai/claude-code\n",
             ),
         )
         panel.addView(
             TextView(this).apply {
-                text = "opencode v1 and v2 use different install URLs and don't share a package name — pick whichever the docs you're following call for. A few names from earlier requests aren't listed: Cline is a VS Code extension with no standalone CLI; \"openclaude\" isn't a real published package; a CLI launcher for a GUI editor like Sublime has nothing to attach to in a terminal-only session."
+                text = "opencode installs to /root/.opencode/bin (commands `opencode` and `opencode2`), which is added to PATH automatically."
                 setTextColor(0xFF8B93A1.toInt())
                 textSize = 11f
                 setPadding(0, 0, 0, dp(6))
@@ -933,6 +950,7 @@ class MainActivity : Activity() {
 
     private fun buildBackupCategory(panel: LinearLayout) {
         panel.addView(sectionLabel("Backup"))
+        panel.addView(guideLink("Backup & restore"))
         panel.addView(
             pillButton().apply {
                 text = "Backup Alpine to shared storage"
@@ -1042,12 +1060,19 @@ class MainActivity : Activity() {
 
     private fun buildNetworkCategory(panel: LinearLayout) {
         panel.addView(sectionLabel("Network"))
+        panel.addView(guideLink("Network, SSH & opencode web"))
         panel.addView(
             TextView(this).apply {
                 val ips = NetworkInfo.localIpv4Addresses()
                 text = if (ips.isEmpty()) "No local network address found." else "Reachable on your network at: ${ips.joinToString(", ")}"
                 setTextColor(0xFFD4D4D4.toInt())
                 textSize = 13f
+            },
+        )
+        panel.addView(
+            pillButton().apply {
+                text = "Start opencode web server (0.0.0.0:4096)"
+                setOnClickListener { confirmOpencodeWeb() }
             },
         )
         panel.addView(
@@ -1171,7 +1196,7 @@ class MainActivity : Activity() {
         panel.addView(sectionLabel("Local web preview"))
         panel.addView(
             TextView(this).apply {
-                text = "Alpine shares Android's own network stack (proot doesn't isolate it) — a dev server bound inside a session is already reachable at 127.0.0.1, no forwarding needed."
+                text = "Dev servers in a tab are reachable at 127.0.0.1 — no forwarding needed."
                 setTextColor(0xFF8B93A1.toInt())
                 textSize = 12f
                 setPadding(0, 0, 0, dp(6))
@@ -1214,6 +1239,515 @@ class MainActivity : Activity() {
         )
     }
 
+    // --- Guide -------------------------------------------------------------------------------
+
+    private var guideOpenSection: String? = null
+
+    /** Jumps to Settings → Guide with [title]'s section expanded. */
+    private fun openGuide(title: String) {
+        guideOpenSection = title
+        settingsCategories.firstOrNull { it.title == "Guide" }?.let { showSettingsCategory(it) }
+    }
+
+    private fun guideLink(title: String, label: String = "Read the guide: $title"): Button =
+        pillButton().apply { text = label; setOnClickListener { openGuide(title) } }
+
+    private fun buildGuideCategory(panel: LinearLayout) {
+        panel.addView(devNote("Tap a section to expand it. Other settings screens stay short and link here for the full explanation."))
+        val open = guideOpenSection
+        GuideContent.sections.forEach { sec ->
+            val body = TextView(this).apply {
+                text = sec.body; textSize = 12.5f; setTextColor(0xFFD4D4D4.toInt()); setTextIsSelectable(true)
+                setPadding(0, dp(8), 0, 0)
+                setLineSpacing(0f, 1.15f)
+                visibility = if (sec.title == open) View.VISIBLE else View.GONE
+            }
+            val arrow = TextView(this).apply { text = if (sec.title == open) "▾" else "▸"; textSize = 16f; setTextColor(0xFF3ED0B8.toInt()); setPadding(0, 0, dp(10), 0) }
+            val header = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                addView(arrow)
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(TextView(this@MainActivity).apply { text = sec.title; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(0xFFE7ECEF.toInt()) })
+                    addView(TextView(this@MainActivity).apply { text = sec.summary; textSize = 12f; setTextColor(0xFF8B93A1.toInt()) })
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            }
+            panel.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = cardBg()
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) }
+                addView(header); addView(body)
+                setOnClickListener {
+                    val show = body.visibility != View.VISIBLE
+                    body.visibility = if (show) View.VISIBLE else View.GONE
+                    arrow.text = if (show) "▾" else "▸"
+                }
+            })
+        }
+        guideOpenSection = null
+    }
+
+
+    // --- Plugins: dynamic panels built from plugin.json, logic in guest scripts ---------------
+
+    private var pluginRun: PtySession? = null
+    private val ansiRe = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]|\u001B\\][^\u0007]*\u0007")
+
+    private fun buildPluginsCategory(panel: LinearLayout) { fillPlugins(panel) }
+
+    private fun fillPlugins(panel: LinearLayout) {
+        panel.removeAllViews()
+        if (!AlpineRootfs.isReady(this)) { panel.addView(devNote("Open a terminal tab once first so Alpine is set up.")); return }
+        panel.addView(sectionLabel("Plugins"))
+        panel.addView(devNote("Custom panels built from a plugin.json plus scripts, kept inside Alpine so backups include them. You review scripts before anything runs."))
+        panel.addView(guideLink("Plugins"))
+        panel.addView(guideLink("Scheduled & background scripts", "Guide: scheduled & background scripts"))
+        panel.addView(pillButton().apply { text = "Rescan"; setOnClickListener { fillPlugins(panel) } })
+        panel.addView(pillButton().apply {
+            text = "Create sample plugin"
+            setOnClickListener {
+                android.widget.Toast.makeText(this@MainActivity, if (Plugins.createSample(this@MainActivity)) "Sample created" else "Couldn't create sample", android.widget.Toast.LENGTH_SHORT).show()
+                fillPlugins(panel)
+            }
+        })
+        val plugins = Plugins.list(this)
+        if (plugins.isEmpty()) panel.addView(devNote("No plugins yet. Create the sample to see the format, or ask an agent to build one."))
+        plugins.forEach { p ->
+            panel.addView(devCard(p.title, chips = if (Plugins.isApproved(this, p)) listOf("approved" to 0xFF3ED0B8.toInt()) else listOf("needs review" to 0xFFE5A94B.toInt()),
+                lines = listOfNotNull(p.description.takeIf { it.isNotBlank() }?.let { "About" to it }, "Folder" to "~/.alpdroid/plugins/${p.id}", "Buttons" to (p.buttons.joinToString { it.label }.ifEmpty { "none" }))))
+            panel.addView(pillButton().apply { text = "Open ${p.title}"; setOnClickListener { showPlugin(panel, p) } })
+            panel.addView(pillButton().apply { text = "Delete"; setOnClickListener {
+                com.google.android.material.dialog.MaterialAlertDialogBuilder(this@MainActivity)
+                    .setTitle("Delete plugin \"${p.title}\"?").setMessage("Removes its folder, scripts and saved values.")
+                    .setPositiveButton("Delete") { _, _ -> Plugins.delete(p); fillPlugins(panel) }
+                    .setNegativeButton("Cancel", null).show()
+            } })
+        }
+    }
+
+    private fun showPlugin(panel: LinearLayout, plugin: Plugins.Plugin) {
+        panel.removeAllViews()
+        pluginRun?.let { runCatching { it.destroy() } }
+        pluginRun = null
+        panel.addView(pillButton().apply { text = "← All plugins"; setOnClickListener { fillPlugins(panel) } })
+        panel.addView(guideLink("Plugins"))
+        panel.addView(sectionLabel(plugin.title))
+        if (plugin.description.isNotBlank()) panel.addView(devNote(plugin.description))
+
+        val values = Plugins.loadState(plugin).toMutableMap()
+        fun save(id: String, v: String) { values[id] = v; Plugins.saveValue(plugin, id, v) }
+        plugin.fields.forEach { f ->
+            panel.addView(TextView(this).apply { text = f.label; textSize = 12.5f; setTextColor(0xFF8B93A1.toInt()); setPadding(0, dp(10), 0, dp(2)) })
+            when (f.type) {
+                "toggle" -> panel.addView(MaterialSwitch(this).apply {
+                    text = f.label; setTextColor(0xFFD4D4D4.toInt())
+                    isChecked = values[f.id] in setOf("1", "true")
+                    setOnCheckedChangeListener { _, c -> save(f.id, if (c) "1" else "0") }
+                })
+                "select" -> {
+                    val group = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+                    f.options.forEach { o -> group.addView(RadioButton(this).apply {
+                        text = o; setTextColor(0xFFD4D4D4.toInt()); id = View.generateViewId()
+                        buttonTintList = ColorStateList.valueOf(ContextCompat.getColor(this@MainActivity, R.color.accent))
+                        isChecked = values[f.id] == o
+                        setOnClickListener { save(f.id, o) }
+                    }) }
+                    panel.addView(group)
+                }
+                else -> panel.addView(android.widget.EditText(this).apply {
+                    setText(values[f.id] ?: "")
+                    setTextColor(0xFFD4D4D4.toInt()); setHintTextColor(0xFF5A6270.toInt()); hint = f.label
+                    inputType = if (f.type == "number") android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED else android.text.InputType.TYPE_CLASS_TEXT
+                    addTextChangedListener(object : android.text.TextWatcher {
+                        override fun afterTextChanged(e: android.text.Editable?) { save(f.id, e?.toString() ?: "") }
+                        override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                        override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                    })
+                })
+            }
+        }
+
+        val output = TextView(this).apply {
+            typeface = Typeface.MONOSPACE; textSize = 12f; setTextColor(0xFFD4D4D4.toInt()); setTextIsSelectable(true)
+            background = cardBg(); setPadding(dp(12), dp(10), dp(12), dp(10))
+            text = "Output appears here."
+        }
+        val stop = pillButton().apply { text = "Stop"; visibility = View.GONE; setOnClickListener { pluginRun?.let { runCatching { it.destroy() } } } }
+
+        fun runButton(b: Plugins.Button) {
+            output.text = "▶ ${b.label}\n"
+            stop.visibility = View.VISIBLE
+            val app = application as AlpineTermApp
+            app.backgroundExecutor.execute {
+                val session = runCatching { Plugins.run(this, plugin, b, values) }.getOrNull()
+                if (session == null) { mainHandler.post { output.append("Couldn't start (is Alpine ready?)\n"); stop.visibility = View.GONE }; return@execute }
+                pluginRun = session
+                val watchdog = Thread({ try { Thread.sleep(120_000); runCatching { session.destroy() } } catch (_: InterruptedException) {} }, "plugin-watchdog").apply { isDaemon = true; start() }
+                var total = 0
+                runCatching {
+                    val buf = ByteArray(4096)
+                    while (true) {
+                        val n = session.stdout.read(buf); if (n <= 0) break
+                        val chunk = ansiRe.replace(String(buf, 0, n, Charsets.UTF_8).replace("\r", ""), "")
+                        total += chunk.length
+                        if (total <= 200_000) mainHandler.post { output.append(chunk) }
+                    }
+                }
+                watchdog.interrupt()
+                runCatching { session.destroy() }
+                mainHandler.post { output.append("\n■ finished\n"); stop.visibility = View.GONE }
+            }
+        }
+
+        panel.addView(sectionLabel("Actions"))
+        val plain = plugin.buttons.filter { !it.background }
+        if (plain.isEmpty()) panel.addView(devNote("This plugin has no one-shot buttons."))
+        plain.forEach { b ->
+            panel.addView(pillButton().apply { text = b.label; setOnClickListener {
+                if (Plugins.isApproved(this@MainActivity, plugin)) runButton(b)
+                else com.google.android.material.dialog.MaterialAlertDialogBuilder(this@MainActivity)
+                    .setTitle("Allow \"${plugin.title}\" to run?")
+                    .setMessage("These scripts will run inside Alpine with access to everything a terminal there can reach (files, network, and the app's control API if agent access is on). Review them:\n\n" + Plugins.reviewText(plugin))
+                    .setPositiveButton("Allow & run") { _, _ -> Plugins.approve(this@MainActivity, plugin); runButton(b) }
+                    .setNegativeButton("Cancel", null).show()
+            } })
+        }
+        val jobs = (application as AlpineTermApp).pluginJobs
+        val allJobs = jobs.jobsOf(plugin)
+        if (allJobs.isNotEmpty()) {
+            panel.addView(sectionLabel("Automation"))
+            panel.addView(devNote("Jobs run in the background while the keep-alive notification shows."))
+            allJobs.forEach { j ->
+                val status = TextView(this).apply { textSize = 12f; setTextColor(0xFF8B93A1.toInt()); text = jobs.status(j) }
+                val title = if (j.everyMinutes != null) "${j.label} — every ${j.everyMinutes} min" else "${j.label} — keep running"
+                panel.addView(MaterialSwitch(this).apply {
+                    text = title; setTextColor(0xFFD4D4D4.toInt())
+                    isChecked = Plugins.isEnabled(plugin, j.id)
+                    setOnCheckedChangeListener { btn, on ->
+                        fun apply(on: Boolean) {
+                            Plugins.setEnabled(plugin, j.id, on)
+                            if (!on) jobs.stop(j)
+                            jobs.refreshCount()
+                            updateKeepAliveService()
+                            status.text = jobs.status(j)
+                        }
+                        if (on && !Plugins.isApproved(this@MainActivity, plugin)) {
+                            btn.isChecked = false
+                            com.google.android.material.dialog.MaterialAlertDialogBuilder(this@MainActivity)
+                                .setTitle("Allow \"${plugin.title}\" to run in the background?")
+                                .setMessage("These scripts will run unattended inside Alpine, repeatedly, with access to everything a terminal there can reach. Review them:\n\n" + Plugins.reviewText(plugin))
+                                .setPositiveButton("Allow & enable") { _, _ -> Plugins.approve(this@MainActivity, plugin); apply(true); btn.isChecked = true }
+                                .setNegativeButton("Cancel", null).show()
+                        } else apply(on)
+                    }
+                })
+                panel.addView(status)
+                panel.addView(pillButton().apply { text = "Run now"; setOnClickListener {
+                    if (!Plugins.isApproved(this@MainActivity, plugin)) android.widget.Toast.makeText(this@MainActivity, "Approve the scripts first (turn the switch on)", android.widget.Toast.LENGTH_SHORT).show()
+                    else { jobs.launch(j); updateKeepAliveService(); status.text = "starting…" }
+                } })
+                panel.addView(pillButton().apply { text = "View log"; setOnClickListener { output.text = "── ${j.label} log ──\n" + jobs.tailLog(j); status.text = jobs.status(j) } })
+            }
+        }
+        panel.addView(stop)
+        panel.addView(output)
+    }
+
+
+    // --- Agent access (local control API), GitHub sign-in, opencode web server ---------------
+
+    private val agentBridge get() = (application as AlpineTermApp).agentBridge
+
+    private val agentHost = object : AgentBridge.Host {
+        override fun <T> onMain(block: () -> T): T {
+            if (Looper.myLooper() == Looper.getMainLooper()) return block()
+            val latch = java.util.concurrent.CountDownLatch(1)
+            val out = java.util.concurrent.atomic.AtomicReference<Result<T>>()
+            runOnUiThread { out.set(runCatching(block)); latch.countDown() }
+            if (!latch.await(10, java.util.concurrent.TimeUnit.SECONDS)) throw IllegalStateException("app is busy")
+            return out.get().getOrThrow()
+        }
+
+        private fun confirm(message: String): Boolean {
+            val latch = java.util.concurrent.CountDownLatch(1)
+            val answer = java.util.concurrent.atomic.AtomicBoolean(false)
+            runOnUiThread {
+                com.google.android.material.dialog.MaterialAlertDialogBuilder(this@MainActivity)
+                    .setTitle("An agent wants to change a setting")
+                    .setMessage(message)
+                    .setPositiveButton("Allow") { _, _ -> answer.set(true); latch.countDown() }
+                    .setNegativeButton("Deny") { _, _ -> latch.countDown() }
+                    .setOnCancelListener { latch.countDown() }
+                    .show()
+            }
+            latch.await(60, java.util.concurrent.TimeUnit.SECONDS)
+            return answer.get()
+        }
+
+        override fun settingsJson(): JSONObject = onMain {
+            JSONObject()
+                .put("theme", settingsStore.themeId).put("themes", JSONArray(Themes.ALL.map { it.id }))
+                .put("font_size", settingsStore.fontSizeSp).put("font_family", settingsStore.fontFamily)
+                .put("show_extra_keys", settingsStore.showExtraKeys).put("ligatures", settingsStore.ligaturesEnabled)
+                .put("bell_sound", settingsStore.bellSoundEnabled).put("keep_alive", settingsStore.keepAliveEnabled)
+                .put("wake_lock", settingsStore.wakeLockEnabled).put("auto_backup", settingsStore.autoBackupEnabled)
+                .put("shortcuts", JSONArray(settingsStore.customSnippets.map { JSONObject().put("label", it.first).put("cmd", it.second) }))
+        }
+
+        override fun setSetting(key: String, value: String): String {
+            val on = value.lowercase() in setOf("1", "true", "on", "yes")
+            val sensitive = mapOf(
+                "keep_alive" to "Keep sessions alive in the background: ${if (on) "ON" else "OFF"}",
+                "wake_lock" to "Hold a wake lock (uses battery): ${if (on) "ON" else "OFF"}",
+                "auto_backup" to "Automatic weekly backup: ${if (on) "ON" else "OFF"}",
+            )
+            sensitive[key]?.let { if (!confirm(it)) return "the user denied this change" }
+            return onMain {
+                when (key) {
+                    "theme" -> Themes.ALL.firstOrNull { it.id == value }?.let { settingsStore.themeId = it.id; applyAllSettings(); "ok" }
+                        ?: "unknown theme; options: ${Themes.ALL.joinToString { it.id }}"
+                    "font_size" -> value.toFloatOrNull()?.takeIf { it in 8f..40f }?.let { settingsStore.fontSizeSp = it; applyAllSettings(); "ok" } ?: "font_size must be 8-40"
+                    "font_family" -> if (value in setOf("monospace", "jetbrains_mono", "fira_code")) { settingsStore.fontFamily = value; applyAllSettings(); "ok" } else "options: monospace, jetbrains_mono, fira_code"
+                    "show_extra_keys" -> { settingsStore.showExtraKeys = on; applyAllSettings(); "ok" }
+                    "ligatures" -> { settingsStore.ligaturesEnabled = on; applyAllSettings(); "ok" }
+                    "bell_sound" -> { settingsStore.bellSoundEnabled = on; "ok" }
+                    "keep_alive" -> { settingsStore.keepAliveEnabled = on; updateKeepAliveService(); "ok" }
+                    "wake_lock" -> { settingsStore.wakeLockEnabled = on; updateKeepAliveService(); "ok" }
+                    "auto_backup" -> { settingsStore.autoBackupEnabled = on; "ok" }
+                    else -> "unknown setting '$key'"
+                }
+            }
+        }
+
+        override fun addShortcut(label: String, cmd: String): String {
+            if (label.isBlank() || cmd.isBlank() || label.length > 40 || cmd.length > 500) return "need a label (<=40 chars) and cmd (<=500 chars)"
+            return onMain { settingsStore.customSnippets = settingsStore.customSnippets + (label to cmd); "ok" }
+        }
+
+        override fun newTab(label: String?): String { runOnUiThread { addTab(label) }; return "starting" }
+        override fun selectTab(id: Int): Boolean = onMain { tabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let { switchToTab(it); true } ?: false }
+        override fun closeTab(id: Int): Boolean = onMain { tabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let { closeTab(it); true } ?: false }
+
+        override fun clipboardGet(): String = onMain {
+            (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).primaryClip?.getItemAt(0)?.coerceToText(this@MainActivity)?.toString() ?: ""
+        }
+        override fun clipboardSet(text: String) = onMain {
+            (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("AlpineTerm", text))
+        }
+        override fun notify(title: String, text: String) = OperationNotifications.alert(this@MainActivity, OperationNotifications.newId(), title.take(80), text.take(300))
+        override fun toast(text: String) = runOnUiThread { android.widget.Toast.makeText(this@MainActivity, text.take(300), android.widget.Toast.LENGTH_LONG).show() }
+        override fun openUrl(url: String): Boolean {
+            if (!url.startsWith("https://") && !url.startsWith("http://")) return false
+            runOnUiThread { runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }
+            return true
+        }
+
+        override fun devicesJson(): JSONObject {
+            val drives = runCatching { DeviceInfo.removableDrives(this@MainActivity) }.getOrDefault(emptyList())
+            return JSONObject()
+                .put("drives", JSONArray(drives.map { JSONObject().put("label", it.label).put("mounted", it.mounted).put("guest_path", "/mnt/${it.mountName}").put("total", it.totalBytes).put("free", it.freeBytes) }))
+                .put("usb", JSONArray(DeviceInfo.usbDevices(this@MainActivity).map { JSONObject().put("id", it.id).put("title", it.title).put("kind", it.kind) }))
+                .put("interfaces", JSONArray(DeviceInfo.interfaces().map { JSONObject().put("name", it.name).put("kind", it.kind).put("up", it.up).put("addresses", JSONArray(it.addresses)) }))
+                .put("network", DeviceInfo.activeNetwork(this@MainActivity)?.let { JSONObject().put("transport", it.transport).put("internet", it.validated).put("dns", JSONArray(it.dns)).put("gateway", it.gateway ?: JSONObject.NULL) } ?: JSONObject.NULL)
+        }
+
+        override fun githubStatus(): JSONObject = JSONObject()
+            .put("signed_in", GitHubAuth.token(this@MainActivity) != null)
+            .put("login", GitHubAuth.login(this@MainActivity) ?: JSONObject.NULL)
+            .put("agents_may_use_token", settingsStore.agentGithubToken)
+
+        override fun githubToken(): String? = if (settingsStore.agentGithubToken) GitHubAuth.token(this@MainActivity) else null
+    }
+
+    /** Re-applies every user-visible setting after one was changed programmatically. */
+    private fun applyAllSettings() {
+        TerminalColors.applyTheme(Themes.byId(settingsStore.themeId))
+        tabs.forEach { it.emulator.applyPalette() }
+        terminalView.setTypeface(typefaceFor(settingsStore.fontFamily))
+        terminalView.setTextSizePx(spToPx(settingsStore.fontSizeSp))
+        terminalView.setLigaturesEnabled(settingsStore.ligaturesEnabled)
+        extraKeysScroll.visibility = if (settingsStore.showExtraKeys) View.VISIBLE else View.GONE
+        buildExtraKeysRow(extraKeysRow)
+        applyChromeColors()
+        terminalView.invalidate()
+    }
+
+    private fun syncAgentBridge() {
+        if (settingsStore.agentAccessEnabled) agentBridge.start(AlpineSession.BRIDGE_PORT, settingsStore.agentToken) else agentBridge.stop()
+        val root = AlpineRootfs.rootDir(this)
+        if (root.isDirectory) (application as AlpineTermApp).backgroundExecutor.execute { AlpineSession.writeAgentFiles(this, root) }
+    }
+
+    private var githubCancelled = false
+
+    /** AlpineTerm's own OAuth App ID (res/values/github.xml); the user-pasted one is only a fallback while that's blank. */
+    private fun githubClientId(): String = getString(R.string.github_client_id).trim().ifBlank { settingsStore.githubClientId }
+    private fun hasBuiltInGithubClient() = getString(R.string.github_client_id).isNotBlank()
+
+    private fun buildAgentCategory(panel: LinearLayout) { fillAgent(panel) }
+
+    private fun fillAgent(panel: LinearLayout) {
+        panel.removeAllViews()
+        panel.addView(sectionLabel("Agent access (local control API)"))
+        panel.addView(
+            MaterialSwitch(this).apply {
+                text = "Let programs in the terminal control AlpineTerm"
+                setTextColor(0xFFD4D4D4.toInt())
+                isChecked = settingsStore.agentAccessEnabled
+                setOnCheckedChangeListener { _, checked ->
+                    settingsStore.agentAccessEnabled = checked
+                    syncAgentBridge()
+                }
+            },
+        )
+        panel.addView(devNote("Off by default. When on, programs in the terminal can use `alpctl` to control the app — anything running there, including installed packages, gets that power."))
+        panel.addView(guideLink("Agent access"))
+        panel.addView(
+            MaterialSwitch(this).apply {
+                text = "Tell coding agents about AlpineTerm (AGENTS.md note)"
+                setTextColor(0xFFD4D4D4.toInt())
+                isChecked = settingsStore.agentContextFiles
+                setOnCheckedChangeListener { _, checked ->
+                    settingsStore.agentContextFiles = checked
+                    val root = AlpineRootfs.rootDir(this@MainActivity)
+                    if (root.isDirectory) (application as AlpineTermApp).backgroundExecutor.execute {
+                        AgentContext.sync(root, AgentContext.appVersion(this@MainActivity), settingsStore.agentAccessEnabled, checked)
+                    }
+                }
+            },
+        )
+        panel.addView(pillButton().apply { text = "Copy access token"; setOnClickListener {
+            (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("token", settingsStore.agentToken))
+            android.widget.Toast.makeText(this@MainActivity, "Token copied", android.widget.Toast.LENGTH_SHORT).show()
+        } })
+        panel.addView(pillButton().apply { text = "Regenerate token (locks out old ones)"; setOnClickListener {
+            val t = settingsStore.regenerateAgentToken()
+            agentBridge.updateToken(t)
+            syncAgentBridge()
+            android.widget.Toast.makeText(this@MainActivity, "New token issued", android.widget.Toast.LENGTH_SHORT).show()
+        } })
+
+        panel.addView(sectionLabel("GitHub"))
+        panel.addView(guideLink("GitHub sign-in"))
+        val login = GitHubAuth.login(this)
+        val signedIn = GitHubAuth.token(this) != null
+        panel.addView(devNote(if (signedIn) "Signed in as ${login ?: "(unknown)"}. Token is stored encrypted in the Android Keystore." else (if (hasBuiltInGithubClient()) "Not signed in. Tap the button — GitHub opens in your browser and asks you to authorize." else "Not signed in. This build has no GitHub OAuth App built in yet, so paste one's Client ID below (see the guide). Once one is built in, sign-in is a single tap.")))
+        if (!signedIn) {
+            val input = if (hasBuiltInGithubClient()) null else android.widget.EditText(this).apply {
+                hint = "OAuth App Client ID (Ov23li…)"
+                setText(settingsStore.githubClientId)
+                setTextColor(0xFFD4D4D4.toInt())
+                setHintTextColor(0xFF5A6270.toInt())
+                isSingleLine = true
+            }
+            input?.let { panel.addView(it) }
+            panel.addView(pillButton().apply { text = "Sign in with GitHub"; setOnClickListener {
+                input?.let { settingsStore.githubClientId = it.text.toString() }
+                startGithubSignIn(panel)
+            } })
+        } else {
+            panel.addView(
+                MaterialSwitch(this).apply {
+                    text = "Let agents use my GitHub token (git push/pull, gh)"
+                    setTextColor(0xFFD4D4D4.toInt())
+                    isChecked = settingsStore.agentGithubToken
+                    setOnCheckedChangeListener { _, checked -> settingsStore.agentGithubToken = checked }
+                },
+            )
+            panel.addView(devNote("With this on (and Agent access on), git in the terminal signs in to github.com automatically."))
+            panel.addView(pillButton().apply { text = "Sign out"; setOnClickListener {
+                GitHubAuth.signOut(this@MainActivity)
+                settingsStore.agentGithubToken = false
+                fillAgent(panel)
+            } })
+        }
+    }
+
+    private fun startGithubSignIn(panel: LinearLayout) {
+        val clientId = githubClientId()
+        if (clientId.isBlank()) { android.widget.Toast.makeText(this, "Enter the Client ID first", android.widget.Toast.LENGTH_SHORT).show(); return }
+        githubCancelled = false
+        Thread {
+            val code = GitHubAuth.requestDeviceCode(clientId)
+            runOnUiThread {
+                if (code == null) { android.widget.Toast.makeText(this, "Couldn't reach GitHub — check the Client ID (Device Flow must be enabled) and network.", android.widget.Toast.LENGTH_LONG).show(); return@runOnUiThread }
+                // One tap: the browser opens straight to GitHub's authorize page with the code already
+                // filled in (it's also copied, in case GitHub doesn't pre-fill it), showing whichever
+                // GitHub account is signed in there. Approving in the browser is all that's left.
+                val url = Uri.parse(code.verificationUri).buildUpon().appendQueryParameter("user_code", code.userCode).build()
+                fun openBrowser() {
+                    (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("code", code.userCode))
+                    runCatching { startActivity(Intent(Intent.ACTION_VIEW, url).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                }
+                val dialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                    .setTitle("Authorize on GitHub")
+                    .setMessage("GitHub is opening in your browser. Check the account shown, then tap Authorize.\n\nYour code: ${code.userCode}\n(copied — paste it if the page asks)\n\nWaiting for approval…")
+                    .setPositiveButton("Open GitHub again", null)
+                    .setNegativeButton("Cancel") { _, _ -> githubCancelled = true }
+                    .setCancelable(false)
+                    .show()
+                dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener { openBrowser() }
+                openBrowser()
+                Thread {
+                    val result = GitHubAuth.pollToken(clientId, code) { githubCancelled }
+                    val login = (result as? GitHubAuth.Poll.Granted)?.let { GitHubAuth.fetchLogin(it.token) }
+                    runOnUiThread {
+                        dialog.dismiss()
+                        when (result) {
+                            is GitHubAuth.Poll.Granted -> {
+                                GitHubAuth.saveToken(this, result.token, login)
+                                android.widget.Toast.makeText(this, "Signed in to GitHub as ${login ?: "?"}", android.widget.Toast.LENGTH_LONG).show()
+                                // Bring the app back after the browser step. Android may refuse a launch from the
+                                // background, so a tap-to-return notification covers that case.
+                                OperationNotifications.finish(this, OperationNotifications.newId(), "Signed in to GitHub", "Signed in as ${login ?: "your account"} — tap to return", true)
+                                runCatching { startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)) }
+                            }
+                            is GitHubAuth.Poll.Failed -> if (!githubCancelled) android.widget.Toast.makeText(this, result.reason, android.widget.Toast.LENGTH_LONG).show()
+                        }
+                        fillAgent(panel)
+                    }
+                }.start()
+            }
+        }.start()
+    }
+
+    private fun confirmOpencodeWeb() {
+        val port = 4096
+        val ips = NetworkInfo.localIpv4Addresses()
+        val urls = if (ips.isEmpty()) "(no network address found)" else ips.joinToString("\n") { "http://$it:$port" }
+        val password = settingsStore.opencodeWebPassword
+        fun start(binary: String) {
+            val root = AlpineRootfs.rootDir(this)
+            (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("pw", password))
+            (application as AlpineTermApp).backgroundExecutor.execute {
+                val envFile = File(root, "root/.opencode-web.env")
+                runCatching {
+                    envFile.parentFile?.mkdirs()
+                    envFile.writeText("export OPENCODE_SERVER_PASSWORD='$password'\n")
+                    envFile.setReadable(false, false); envFile.setReadable(true, true)
+                }
+                mainHandler.post {
+                    android.widget.Toast.makeText(this, "Password copied", android.widget.Toast.LENGTH_SHORT).show()
+                    drawerLayout.closeDrawer(GravityCompat.END)
+                    addTab("$binary web") { runShortcutCommand(". /root/.opencode-web.env && $binary web --hostname 0.0.0.0 --port $port\n") }
+                }
+            }
+        }
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("Start opencode web server?")
+            .setMessage(
+                "Runs `opencode web --hostname 0.0.0.0 --port $port` in a new tab. 0.0.0.0 means anyone on this network can reach it — protected by a password, but only as strong as that and your network.\n\n" +
+                    "URLs:\n$urls\n\nUsername: opencode\nPassword: $password (copied when you start)\n\n" +
+                    "Stop with Ctrl+C in that tab. Pick which command to run:",
+            )
+            .setPositiveButton("opencode") { _, _ -> start("opencode") }
+            .setNeutralButton("opencode2") { _, _ -> start("opencode2") }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+
     // --- Devices: drives, USB, network interfaces, Wi-Fi -------------------------------------
 
     private var devicesPanel: LinearLayout? = null
@@ -1230,7 +1764,8 @@ class MainActivity : Activity() {
                 android.hardware.usb.UsbManager.ACTION_USB_DEVICE_DETACHED ->
                     android.widget.Toast.makeText(this@MainActivity, "USB device detached", android.widget.Toast.LENGTH_SHORT).show()
             }
-            devicesPanel?.let { fillDevices(it) }
+            // Only while the Devices screen is actually showing — otherwise there's nothing to update.
+            devicesPanel?.takeIf { it.isShown }?.let { fillDevices(it) }
         }
     }
 
@@ -1250,62 +1785,222 @@ class MainActivity : Activity() {
 
     private fun buildDevicesCategory(panel: LinearLayout) {
         devicesPanel = panel
-        fillDevices(panel)
+        fillDevices(panel, rescan = true)
     }
 
-    private fun fillDevices(panel: LinearLayout) {
-        panel.removeAllViews()
-        fun note(text: String) = TextView(this).apply {
-            this.text = text
-            textSize = 12f
-            setTextColor(0xFF8B93A1.toInt())
-            setPadding(0, dp(2), 0, dp(6))
+
+    private fun cardBg(): GradientDrawable = GradientDrawable().apply {
+        cornerRadius = dp(12).toFloat()
+        setColor(ContextCompat.getColor(this@MainActivity, R.color.panel_2))
+    }
+
+    private fun chip(text: String, color: Int = 0xFF3ED0B8.toInt()): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 10.5f
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(color)
+        setPadding(dp(8), dp(2), dp(8), dp(2))
+        background = GradientDrawable().apply { cornerRadius = dp(8).toFloat(); setStroke(dp(1), color) }
+    }
+
+    /** One rounded card: bold title, optional status chips, aligned key/value lines, optional
+     *  usage bar (0..100). Values are selectable so an IP/DNS can be copied out. */
+    private fun devCard(
+        title: String,
+        chips: List<Pair<String, Int>> = emptyList(),
+        lines: List<Pair<String, String>> = emptyList(),
+        barPercent: Int? = null,
+    ): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = cardBg()
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) }
+        addView(
+            LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(this@MainActivity).apply {
+                    text = title
+                    textSize = 15f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(0xFFE7ECEF.toInt())
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                chips.forEach { (t, c) -> addView(chip(t, c), LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(6) }) }
+            },
+        )
+        if (barPercent != null) {
+            addView(
+                android.widget.ProgressBar(this@MainActivity, null, android.R.attr.progressBarStyleHorizontal).apply {
+                    max = 100
+                    progress = barPercent.coerceIn(0, 100)
+                    progressTintList = ColorStateList.valueOf(if (barPercent >= 90) 0xFFE5534B.toInt() else 0xFF3ED0B8.toInt())
+                    progressBackgroundTintList = ColorStateList.valueOf(0xFF2A303C.toInt())
+                },
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(6)).apply { topMargin = dp(8); bottomMargin = dp(2) },
+            )
         }
-        fun row(title: String, detail: String) = TextView(this).apply {
-            this.text = "$title\n$detail"
-            textSize = 13f
-            setTextColor(0xFFD4D4D4.toInt())
-            setPadding(0, dp(6), 0, dp(6))
+        lines.forEach { (k, v) ->
+            addView(
+                LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(0, dp(4), 0, 0)
+                    addView(TextView(this@MainActivity).apply {
+                        text = k
+                        textSize = 12f
+                        setTextColor(0xFF8B93A1.toInt())
+                    }, LinearLayout.LayoutParams(dp(92), LinearLayout.LayoutParams.WRAP_CONTENT))
+                    addView(TextView(this@MainActivity).apply {
+                        text = v
+                        textSize = 12.5f
+                        typeface = Typeface.MONOSPACE
+                        setTextColor(0xFFD4D4D4.toInt())
+                        setTextIsSelectable(true)
+                    }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                },
+            )
+        }
+    }
+
+    private fun devNote(text: String): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 12f
+        setTextColor(0xFF8B93A1.toInt())
+        setPadding(dp(2), dp(2), dp(2), dp(10))
+    }
+
+    private fun signalLabel(dbm: Int) = when {
+        dbm >= -55 -> "Excellent"
+        dbm >= -67 -> "Good"
+        dbm >= -78 -> "Fair"
+        else -> "Weak"
+    }
+
+    private fun fillDevices(panel: LinearLayout, rescan: Boolean = false) {
+        panel.removeAllViews()
+        val ok = 0xFF3ED0B8.toInt()
+        val warn = 0xFFE5A94B.toInt()
+        val bad = 0xFFE5534B.toInt()
+
+        panel.addView(pillButton().apply { text = "Refresh"; setOnClickListener { fillDevices(panel, rescan = true) } })
+        panel.addView(guideLink("Devices"))
+
+
+        panel.addView(sectionLabel("This phone"))
+        panel.addView(devCard("${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}", lines = DeviceInfo.deviceSummary(this)))
+
+        panel.addView(sectionLabel("Active connection"))
+        val net = DeviceInfo.activeNetwork(this)
+        if (net == null) {
+            panel.addView(devCard("Offline", chips = listOf("no network" to bad)))
+        } else {
+            val link = if (net.transport == "Wi-Fi") DeviceInfo.wifiLink(this) else null
+            panel.addView(
+                devCard(
+                    net.transport,
+                    chips = listOf(
+                        (if (net.validated) "internet OK" else "no internet") to (if (net.validated) ok else warn),
+                    ) + (if (net.metered) listOf("metered" to warn) else emptyList()),
+                    lines = buildList {
+                        link?.let {
+                            add("Network" to it.ssid)
+                            add("Signal" to "${it.rssi} dBm (${signalLabel(it.rssi)})")
+                            add("Link speed" to "${it.speedMbps} Mbps • ${it.band}")
+                        }
+                        net.gateway?.let { add("Gateway" to it) }
+                        if (net.dns.isNotEmpty()) add("DNS" to net.dns.joinToString("\n"))
+                        if (net.downKbps > 0) add("Est. speed" to "↓ ${net.downKbps / 1000} Mbps  ↑ ${net.upKbps / 1000} Mbps")
+                    },
+                ),
+            )
         }
 
-        panel.addView(pillButton().apply { text = "Refresh"; setOnClickListener { fillDevices(panel) } })
+        panel.addView(sectionLabel("Network adapters"))
+        val ifaces = DeviceInfo.interfaces()
+        if (ifaces.isEmpty()) panel.addView(devNote("No adapters reported."))
+        ifaces.forEach { i ->
+            panel.addView(
+                devCard(
+                    "${i.name}  •  ${i.kind}",
+                    chips = listOf((if (i.up) "up" else "down") to (if (i.up) ok else 0xFF8B93A1.toInt())),
+                    lines = buildList {
+                        i.addresses.forEach { a -> add((if (a.contains(':')) "IPv6" else "IPv4") to a) }
+                        if (i.mtu > 0) add("MTU" to "${i.mtu}")
+                        if (i.rxBytes >= 0) add("Traffic" to "↓ ${DeviceInfo.humanBytes(i.rxBytes)}   ↑ ${DeviceInfo.humanBytes(i.txBytes.coerceAtLeast(0))}")
+                    },
+                ),
+            )
+        }
 
         panel.addView(sectionLabel("Drives (SD card / USB flash)"))
         val drives = runCatching { DeviceInfo.removableDrives(this) }.getOrDefault(emptyList())
-        if (drives.isEmpty()) panel.addView(note("None detected. Only drives Android itself can mount appear here (usually FAT32/exFAT; sometimes ext4/NTFS)."))
+        if (drives.isEmpty()) panel.addView(devNote("None detected. Plug in an SD card or USB drive (OTG); only drives Android itself can mount appear here."))
         drives.forEach { d ->
-            val size = if (d.mounted) "${FileOps.humanSize(d.freeBytes)} free of ${FileOps.humanSize(d.totalBytes)}" else "not mounted"
-            panel.addView(row(d.label, "$size\n${if (d.mounted) "In new tabs: /mnt/${d.mountName}   (host: ${d.path})" else "Unavailable to the terminal"}"))
+            val used = d.totalBytes - d.freeBytes
+            panel.addView(
+                devCard(
+                    d.label,
+                    chips = listOf((if (d.mounted) "mounted" else "not mounted") to (if (d.mounted) ok else warn)),
+                    barPercent = if (d.mounted && d.totalBytes > 0) (used * 100 / d.totalBytes).toInt() else null,
+                    lines = buildList {
+                        if (d.mounted) {
+                            add("Space" to "${DeviceInfo.humanBytes(d.freeBytes)} free of ${DeviceInfo.humanBytes(d.totalBytes)}")
+                            add("In terminal" to "/mnt/${d.mountName}  (new tabs)")
+                            add("Android path" to "${d.path}")
+                        } else add("Status" to "Unavailable to the terminal")
+                        d.uuid?.let { add("UUID" to it) }
+                    },
+                ),
+            )
         }
-        if (drives.isNotEmpty() && !StorageAccess.isGranted(this)) panel.addView(note("Grant all-files access (Backup & Storage) to use drives inside the terminal."))
+        if (drives.isNotEmpty() && !StorageAccess.isGranted(this)) panel.addView(devNote("Grant all-files access (Backup & Storage) to use drives inside the terminal."))
 
         panel.addView(sectionLabel("USB devices"))
         val usb = DeviceInfo.usbDevices(this)
-        if (usb.isEmpty()) panel.addView(note("None attached (needs an OTG cable/adapter)."))
+        if (usb.isEmpty()) panel.addView(devNote("None attached (needs an OTG cable/adapter)."))
         usb.forEach { u ->
-            panel.addView(row(u.title, "${u.id} • ${u.kind}\n${if (u.hasPermission) "Access granted" else "Access not granted yet"}"))
-            if (!u.hasPermission) panel.addView(pillButton().apply { text = "Grant access"; setOnClickListener { DeviceInfo.requestUsbPermission(this@MainActivity, u.device) } })
+            panel.addView(
+                devCard(
+                    u.title,
+                    chips = listOf(u.kind to ok, (if (u.hasPermission) "access granted" else "no access") to (if (u.hasPermission) ok else warn)),
+                    lines = u.details,
+                ),
+            )
+            if (!u.hasPermission) panel.addView(pillButton().apply { text = "Grant access to ${u.id}"; setOnClickListener { DeviceInfo.requestUsbPermission(this@MainActivity, u.device) } })
         }
-        if (usb.isNotEmpty()) panel.addView(note("Raw access (formatting, flashing ISOs, adapters without an Android driver) is not implemented yet — this only lists devices and grants Android's per-device permission."))
-
-        panel.addView(sectionLabel("Network interfaces"))
-        val ifaces = DeviceInfo.interfaces()
-        if (ifaces.isEmpty()) panel.addView(note("No interfaces reported."))
-        ifaces.forEach { i -> panel.addView(row("${i.name} — ${i.kind}", "${if (i.up) "up" else "down"}${if (i.addresses.isNotEmpty()) "\n" + i.addresses.joinToString("\n") else ""}")) }
+        if (usb.isNotEmpty()) panel.addView(devNote("Lists devices and requests Android's per-device access. Formatting and flashing aren't supported yet."))
 
         panel.addView(sectionLabel("Wi-Fi networks nearby"))
         if (!DeviceInfo.hasLocationPermission(this)) {
-            panel.addView(note("Android requires location permission to list Wi-Fi networks."))
+            panel.addView(devNote("Android requires the location permission to list Wi-Fi networks."))
             panel.addView(pillButton().apply {
                 text = "Allow & scan"
                 setOnClickListener { ActivityCompat.requestPermissions(this@MainActivity, arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION), LOCATION_PERMISSION_REQUEST_CODE) }
             })
         } else {
-            val wifi = DeviceInfo.wifiScan(this)
-            if (wifi.isEmpty()) panel.addView(note("No results yet — Android throttles scans; tap Refresh in a moment."))
-            wifi.forEach { w -> panel.addView(row(w.ssid, "${w.level} dBm • ${if (w.secured) "secured" else "open"}")) }
+            val wifi = DeviceInfo.wifiScan(this, rescan)
+            if (wifi.isEmpty()) {
+                panel.addView(
+                    devNote(
+                        if (!DeviceInfo.locationEnabled(this)) "Location services are switched off — Android returns no Wi-Fi results until they're on (Settings → Location)."
+                        else "No results yet — Android throttles scans to a few every couple of minutes. This refreshes on its own.",
+                    ),
+                )
+            }
+            wifi.take(20).forEach { w ->
+                panel.addView(
+                    devCard(
+                        w.ssid,
+                        chips = (if (w.connected) listOf("connected" to ok) else emptyList()) +
+                            listOf(w.security to (if (w.security == "Open") warn else 0xFF8B93A1.toInt())),
+                        lines = listOf(
+                            "Signal" to "${w.level} dBm (${signalLabel(w.level)})",
+                            "Band" to "${w.band}${if (w.channel > 0) " • channel ${w.channel}" else ""}",
+                        ),
+                    ),
+                )
+            }
             panel.addView(pillButton().apply { text = "Connect… (Android Wi-Fi settings)"; setOnClickListener { startActivity(Intent(android.provider.Settings.ACTION_WIFI_SETTINGS)) } })
-            panel.addView(note("Apps can't join arbitrary networks on modern Android, and the terminal can't drive a second Wi-Fi adapter without a kernel driver — connections are made in system settings."))
+            panel.addView(devNote("Connections are made in Android's Wi-Fi settings."))
         }
     }
 
@@ -1557,7 +2252,7 @@ class MainActivity : Activity() {
 
     private fun updateKeepAliveService() {
         val intent = Intent(this, TerminalKeepAliveService::class.java)
-        if (settingsStore.keepAliveEnabled && tabs.isNotEmpty()) {
+        if (settingsStore.keepAliveEnabled && (tabs.isNotEmpty() || (application as AlpineTermApp).pluginJobs.hasActive())) {
             requestNotificationPermissionIfNeeded()
             intent.putExtra(TerminalKeepAliveService.EXTRA_WAKE_LOCK, settingsStore.wakeLockEnabled)
             // This can run well after a long first-run Alpine download finishes (posted from a
@@ -2451,6 +3146,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         super.onDestroy()
         runCatching { unregisterReceiver(deviceEventReceiver) }
+        if (agentBridge.host === agentHost) agentBridge.host = null
         // Without this, a pending statusPoller tick or a delayed finish() from onTabExited could
         // still fire after the activity is gone and touch now-destroyed views.
         mainHandler.removeCallbacksAndMessages(null)
@@ -2468,7 +3164,7 @@ class MainActivity : Activity() {
         // task removal, the system reclaiming a backgrounded Activity's memory — leaves tabs
         // running for the next onCreate to re-attach to via rebindTabOutputs()/switchToTab().
         if (deliberateExit) {
-            stopService(Intent(this, TerminalKeepAliveService::class.java))
+            if (!(application as AlpineTermApp).pluginJobs.hasActive()) stopService(Intent(this, TerminalKeepAliveService::class.java))
             tabs.forEach { it.session.destroy() }
         }
     }
@@ -2530,7 +3226,6 @@ class MainActivity : Activity() {
         if (!settingsStore.autoBackupEnabled || !AlpineRootfs.isReady(this)) return
         val week = 7L * 24 * 60 * 60 * 1000
         if (System.currentTimeMillis() - settingsStore.lastAutoBackupMs < week) return
-        settingsStore.lastAutoBackupMs = System.currentTimeMillis()
         doBackupAlpine(AlpineRootfs.rootDir(this), AlpineBackup.backupsDir(this), keepLast = 3)
     }
 
@@ -2546,8 +3241,11 @@ class MainActivity : Activity() {
     }
 
     private fun doBackupAlpine(root: File, destDir: File, keepLast: Int = 0) {
+        val auto = keepLast > 0
         val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
-        val dest = File(destDir, "alpineterm-backup-$stamp.tar.gz")
+        // Automatic ones get their own prefix so the "keep the newest 3" cleanup can never touch a
+        // backup the user made by hand.
+        val dest = File(destDir, (if (auto) "alpineterm-auto-" else "alpineterm-backup-") + "$stamp.tar.gz")
         // Written under a name restoreAlpinePicker() doesn't recognize (it only lists ".tar.gz"),
         // then renamed to the real name only once the archive is fully, successfully written. A
         // backup that never gets to finish — an exception partway through, but just as easily the
@@ -2584,8 +3282,10 @@ class MainActivity : Activity() {
                 }
             }.isSuccess && partial.renameTo(dest)
             if (!ok) partial.delete()
-            if (ok && keepLast > 0) {
-                destDir.listFiles { f -> f.name.startsWith("alpineterm-backup-") && f.name.endsWith(".tar.gz") }
+            if (ok && auto) {
+                // Only counted as done once it really finished, so a failed or killed run retries at the next app start.
+                settingsStore.lastAutoBackupMs = System.currentTimeMillis()
+                destDir.listFiles { f -> f.name.startsWith("alpineterm-auto-") && f.name.endsWith(".tar.gz") }
                     ?.sortedByDescending { it.lastModified() }?.drop(keepLast)?.forEach { it.delete() }
             }
             OperationNotifications.finish(

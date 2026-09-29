@@ -47,6 +47,7 @@ class TerminalKeepAliveService : Service() {
             // "exit" already goes through, instead of this duplicating that bookkeeping itself and
             // risking getting it out of sync with the real one.
             (application as AlpineTermApp).tabs.forEach { it.session.destroy() }
+            (application as AlpineTermApp).pluginJobs.apply { paused = true; stopAll() }
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
@@ -96,7 +97,9 @@ class TerminalKeepAliveService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val tabCount = (application as AlpineTermApp).tabs.size
-        val title = if (tabCount == 1) "1 session running" else "$tabCount sessions running"
+        val jobs = (application as AlpineTermApp).pluginJobs.enabledCount
+        val title = (if (tabCount == 1) "1 session running" else "$tabCount sessions running") +
+            (if (jobs > 0) " • $jobs plugin job${if (jobs == 1) "" else "s"}" else "")
         // NotificationCompat.Builder rather than the plain platform Notification.Builder(this,
         // channelId) two-arg constructor, which doesn't exist before API 26 (a NoSuchMethodError
         // waiting to happen on the API 24/25 devices this app's own minSdk claims to support) —

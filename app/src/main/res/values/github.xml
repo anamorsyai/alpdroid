@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Client ID of AlpineTerm's own GitHub OAuth App (Device Flow enabled). Public, not a secret.
+         While blank, Settings shows a field to paste one; once filled, sign-in is a single tap. -->
+    <string name="github_client_id" translatable="false">Ov23li9jrQqFJ1SPtFKF</string>
+</resources>

@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 object OperationNotifications {
     private const val CHANNEL_ID = "alpdroid_operations"
+    private const val ALERT_CHANNEL_ID = "alpdroid_agent_alerts"
     private val nextId = AtomicInteger(9000)
 
     /** A fresh notification id for one operation's whole lifetime (update calls then one finish/
@@ -87,6 +88,34 @@ object OperationNotifications {
             .setContentIntent(openAppIntent(context))
             .build()
         runCatching { ensureChannel(context).notify(id, notification) }
+    }
+
+    /** A notification meant to be noticed — what an agent sends with `alpctl notify` when a task
+     *  finishes or needs the user. Its own channel with sound and a heads-up popup, unlike the quiet
+     *  progress channel above (a channel's importance can't be raised after creation, so this is a
+     *  separate one rather than a change to that one). */
+    fun alert(context: Context, id: Int, title: String, text: String) {
+        if (!canNotify(context)) return
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && nm.getNotificationChannel(ALERT_CHANNEL_ID) == null) {
+            nm.createNotificationChannel(
+                NotificationChannel(ALERT_CHANNEL_ID, "Agent alerts", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "Messages sent by coding agents and scripts running in a terminal tab"
+                    enableVibration(true)
+                },
+            )
+        }
+        val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setAutoCancel(true)
+            .setContentIntent(openAppIntent(context))
+            .build()
+        runCatching { nm.notify(id, notification) }
     }
 
     /** Operations never survive a process death, but their notifications do — a backup killed

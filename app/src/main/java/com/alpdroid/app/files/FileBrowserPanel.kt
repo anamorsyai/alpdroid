@@ -95,6 +95,16 @@ class FileBrowserPanel(
     // nothing leaks — it just lets already-queued work actually finish first.
     fun shutdown() = ioExecutor.shutdown()
 
+    /** Runs [block] and posts the operation's final notification from the worker thread itself. The UI
+     *  callbacks are skipped once the Activity is gone (the process lives on under the keep-alive
+     *  service), and a finish() that only lived there left a non-dismissible "Copying…" up forever. */
+    private fun <T> tracked(notifId: Int, title: String, block: () -> T): T = try {
+        block().also { OperationNotifications.finish(activity, notifId, title, "Done", true) }
+    } catch (e: Throwable) {
+        OperationNotifications.finish(activity, notifId, title, e.message ?: "Failed", false)
+        throw e
+    }
+
     private fun runInBackground(action: () -> Unit, onSuccess: () -> Unit, onError: (Throwable) -> Unit) {
         ioExecutor.execute {
             val result = runCatching(action)
@@ -190,19 +200,15 @@ class FileBrowserPanel(
         OperationNotifications.progress(activity, notifId, "Compressing", "0 / ${files.size}")
         runInBackground(
             {
-                val destZip = File(destDir, "archive-${System.currentTimeMillis()}.zip")
-                FileOps.zip(files, destZip) { done, total ->
-                    OperationNotifications.progress(activity, notifId, "Compressing", "$done / $total")
+                tracked(notifId, "Compressing") {
+                    val destZip = File(destDir, "archive-${System.currentTimeMillis()}.zip")
+                    FileOps.zip(files, destZip) { done, total ->
+                        OperationNotifications.progress(activity, notifId, "Compressing", "$done / $total")
+                    }
                 }
             },
-            {
-                clearSelection(); reload(); toast("Compressed")
-                OperationNotifications.finish(activity, notifId, "Compressing", "Done", true)
-            },
-            {
-                OperationNotifications.finish(activity, notifId, "Compressing", it.message ?: "Failed", false)
-                toast(it.message ?: "Compress failed")
-            },
+            { clearSelection(); reload(); toast("Compressed") },
+            { toast(it.message ?: "Compress failed") },
         )
     }
 
@@ -423,18 +429,14 @@ class FileBrowserPanel(
         OperationNotifications.progress(activity, notifId, "Compressing", file.name)
         runInBackground(
             {
-                val destZip = File(file.parentFile, "${file.name}.zip")
-                if (destZip.exists()) throw IllegalStateException("${destZip.name} already exists")
-                FileOps.zip(file, destZip)
+                tracked(notifId, "Compressing") {
+                    val destZip = File(file.parentFile, "${file.name}.zip")
+                    if (destZip.exists()) throw IllegalStateException("${destZip.name} already exists")
+                    FileOps.zip(file, destZip)
+                }
             },
-            {
-                reload(); toast("Compressed")
-                OperationNotifications.finish(activity, notifId, "Compressing", "Done", true)
-            },
-            {
-                OperationNotifications.finish(activity, notifId, "Compressing", it.message ?: "Failed", false)
-                toast(it.message ?: "Compress failed")
-            },
+            { reload(); toast("Compressed") },
+            { toast(it.message ?: "Compress failed") },
         )
     }
 
@@ -444,23 +446,19 @@ class FileBrowserPanel(
         OperationNotifications.progress(activity, notifId, "Extracting", file.name)
         runInBackground(
             {
-                var lastUpdateMs = 0L
-                FileOps.unzip(file, file.parentFile!!) { count ->
-                    val now = System.currentTimeMillis()
-                    if (now - lastUpdateMs >= 300) {
-                        lastUpdateMs = now
-                        OperationNotifications.progress(activity, notifId, "Extracting", "$count entries extracted…")
+                tracked(notifId, "Extracting") {
+                    var lastUpdateMs = 0L
+                    FileOps.unzip(file, file.parentFile!!) { count ->
+                        val now = System.currentTimeMillis()
+                        if (now - lastUpdateMs >= 300) {
+                            lastUpdateMs = now
+                            OperationNotifications.progress(activity, notifId, "Extracting", "$count entries extracted…")
+                        }
                     }
                 }
             },
-            {
-                reload(); toast("Extracted")
-                OperationNotifications.finish(activity, notifId, "Extracting", "Done", true)
-            },
-            {
-                OperationNotifications.finish(activity, notifId, "Extracting", it.message ?: "Failed", false)
-                toast(it.message ?: "Extract failed")
-            },
+            { reload(); toast("Extracted") },
+            { toast(it.message ?: "Extract failed") },
         )
     }
 
@@ -514,21 +512,19 @@ class FileBrowserPanel(
         OperationNotifications.progress(activity, notifId, verb, "0 / ${c.files.size}")
         runInBackground(
             {
-                c.files.forEachIndexed { index, file ->
-                    if (c.cut) FileOps.move(file, targetDir) else FileOps.copy(file, targetDir)
-                    OperationNotifications.progress(activity, notifId, verb, "${index + 1} / ${c.files.size}")
+                tracked(notifId, verb) {
+                    c.files.forEachIndexed { index, file ->
+                        if (c.cut) FileOps.move(file, targetDir) else FileOps.copy(file, targetDir)
+                        OperationNotifications.progress(activity, notifId, verb, "${index + 1} / ${c.files.size}")
+                    }
                 }
             },
             {
                 clipboard = null
                 updateClipboardBar()
                 reload()
-                OperationNotifications.finish(activity, notifId, verb, "Done", true)
             },
-            {
-                OperationNotifications.finish(activity, notifId, verb, it.message ?: "Failed", false)
-                toast(it.message ?: "Paste failed")
-            },
+            { toast(it.message ?: "Paste failed") },
         )
     }
 

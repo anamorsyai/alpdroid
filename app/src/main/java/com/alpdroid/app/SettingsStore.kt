@@ -43,6 +43,49 @@ class SettingsStore(context: Context) {
         get() = prefs.getLong(KEY_LAST_AUTO_BACKUP, 0L)
         set(value) = prefs.edit().putLong(KEY_LAST_AUTO_BACKUP, value).apply()
 
+    /** Off by default: lets programs inside the terminal call this app's local control API
+     *  (see AgentBridge) — the user-approved "agent access" feature. */
+    var agentAccessEnabled: Boolean
+        get() = prefs.getBoolean(KEY_AGENT, false)
+        set(value) = prefs.edit().putBoolean(KEY_AGENT, value).apply()
+
+    /** On by default: writes a short note about this environment into the standard files coding
+     *  agents read on their own (AGENTS.md, CLAUDE.md, ...), between markers so anything the user
+     *  wrote in those files is left alone. */
+    var agentContextFiles: Boolean
+        get() = prefs.getBoolean(KEY_AGENT_CTX, true)
+        set(value) = prefs.edit().putBoolean(KEY_AGENT_CTX, value).apply()
+
+    /** Whether the control API may hand the stored GitHub token to programs in the terminal. */
+    var agentGithubToken: Boolean
+        get() = prefs.getBoolean(KEY_AGENT_GH, false)
+        set(value) = prefs.edit().putBoolean(KEY_AGENT_GH, value).apply()
+
+    /** Random per install; rotating it locks out anything holding the old one. */
+    val agentToken: String
+        get() = prefs.getString(KEY_AGENT_TOKEN, null) ?: regenerateAgentToken()
+
+    fun regenerateAgentToken(): String {
+        val bytes = ByteArray(24).also { java.security.SecureRandom().nextBytes(it) }
+        val token = android.util.Base64.encodeToString(bytes, android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP)
+        prefs.edit().putString(KEY_AGENT_TOKEN, token).apply()
+        return token
+    }
+
+    var githubClientId: String
+        get() = prefs.getString(KEY_GH_CLIENT, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_GH_CLIENT, value.trim()).apply()
+
+    /** Password protecting the LAN-exposed opencode web server (user "opencode"). */
+    val opencodeWebPassword: String
+        get() = prefs.getString(KEY_OC_PASS, null) ?: run {
+            val chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+            val r = java.security.SecureRandom()
+            val pw = (1..20).map { chars[r.nextInt(chars.length)] }.joinToString("")
+            prefs.edit().putString(KEY_OC_PASS, pw).apply()
+            pw
+        }
+
     /** On by default — Fira Code is bundled specifically for its ligatures. */
     var ligaturesEnabled: Boolean
         get() = prefs.getBoolean(KEY_LIGATURES, true)
@@ -85,6 +128,12 @@ class SettingsStore(context: Context) {
         private const val KEY_FONT_FAMILY = "font_family"
         private const val KEY_KEEP_ALIVE = "keep_alive_enabled"
         private const val KEY_WAKE_LOCK = "wake_lock_enabled"
+        private const val KEY_AGENT = "agent_access"
+        private const val KEY_AGENT_CTX = "agent_context_files"
+        private const val KEY_AGENT_GH = "agent_github_token"
+        private const val KEY_AGENT_TOKEN = "agent_token"
+        private const val KEY_GH_CLIENT = "github_client_id"
+        private const val KEY_OC_PASS = "opencode_web_password"
         private const val KEY_AUTO_BACKUP = "auto_backup_enabled"
         private const val KEY_LAST_AUTO_BACKUP = "last_auto_backup_ms"
         private const val KEY_LIGATURES = "ligatures_enabled"

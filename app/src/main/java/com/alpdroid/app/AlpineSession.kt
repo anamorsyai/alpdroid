@@ -66,6 +66,7 @@ object AlpineSession {
         writeResolvConf(context, root)
         writeApkHostsIPv4Only(root)
         writeShellProfile(root)
+        writeAgentFiles(context, root)
 
         // Shared across tabs (one common guest /tmp, like real Alpine sessions), unlike the
         // per-session proot scratch dir below.
@@ -130,7 +131,7 @@ object AlpineSession {
             // approximation — this terminal already fully implements 38;2/48;2 truecolor SGR.
             "COLORTERM" to "truecolor",
             "ENV" to "/etc/profile", // ash sources this for interactive shells (see writeShellProfile)
-            "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.opencode/bin",
             "LD_LIBRARY_PATH" to nativeLibDir.absolutePath, // proot's own libtalloc/libandroid-shmem live here
             "PROOT_LOADER" to File(nativeLibDir, "libalpineterm_proot_loader.so").absolutePath,
             "PROOT_TMP_DIR" to prootScratch.absolutePath,
@@ -165,6 +166,41 @@ object AlpineSession {
             "LINES" to rows.toString(),
         )
         return PtySession.start(bridge, context.cacheDir, rows, cols, listOf("/system/bin/sh"), context.filesDir, env)
+    }
+
+    /** Runs one shell command non-interactively in the guest (plugin buttons) with extra env vars,
+     *  returning the live session so the caller can stream its output and stop it. Null when
+     *  Alpine isn't ready. */
+    fun startScript(context: Context, command: String, extraEnv: Map<String, String>): PtySession? {
+        if (!AlpineRootfs.isReady(context)) return null
+        val nativeLibDir = File(context.applicationInfo.nativeLibraryDir)
+        val bridge = File(nativeLibDir, "libpty_bridge.so")
+        val proot = File(nativeLibDir, "libalpineterm_proot.so")
+        if (!bridge.isFile || !proot.isFile) return null
+        val root = AlpineRootfs.rootDir(context)
+        writeResolvConf(context, root)
+        writeAgentFiles(context, root)
+        val guestTmp = File(context.cacheDir, "guest-tmp").apply { mkdirs() }
+        val prootScratch = File(context.cacheDir, "proot-scratch-plugin-${System.nanoTime()}").apply { mkdirs() }
+        val storageRoot = StorageAccess.sharedStorageRoot()
+        val argv = mutableListOf(
+            proot.absolutePath, "-r", root.absolutePath, "-0", "-k", "3.10",
+            "-b", "/dev", "-b", "/proc", "-b", "/sys", "-b", "${guestTmp.absolutePath}:/tmp",
+        )
+        if (StorageAccess.isGranted(context) && storageRoot.isDirectory) argv += listOf("-b", "${storageRoot.absolutePath}:/sdcard")
+        argv += removableDriveBinds(context, root)
+        argv += listOf("-w", "/root", "/bin/sh", "-c", command)
+        val env = mapOf(
+            "HOME" to "/root",
+            "TERM" to "dumb",
+            "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.opencode/bin",
+            "LD_LIBRARY_PATH" to nativeLibDir.absolutePath,
+            "PROOT_LOADER" to File(nativeLibDir, "libalpineterm_proot_loader.so").absolutePath,
+            "PROOT_TMP_DIR" to prootScratch.absolutePath,
+            "PROOT_NO_SECCOMP" to "1",
+            "SSL_CERT_FILE" to "/etc/ssl/cert.pem",
+        ) + extraEnv
+        return PtySession.start(bridge, context.cacheDir, 24, 200, argv, context.filesDir, env)
     }
 
     /**
@@ -209,7 +245,7 @@ object AlpineSession {
         val env = mapOf(
             "HOME" to "/root",
             "TERM" to "dumb",
-            "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.opencode/bin",
             "LD_LIBRARY_PATH" to nativeLibDir.absolutePath,
             "PROOT_LOADER" to File(nativeLibDir, "libalpineterm_proot_loader.so").absolutePath,
             "PROOT_TMP_DIR" to prootScratch.absolutePath,
@@ -331,6 +367,109 @@ object AlpineSession {
         }.onFailure { Log.w(TAG, "could not force IPv4 apk hosts", it) }
     }
 
+    /** Installs the `alpctl` client + git credential helper in the guest (always — they're inert
+     *  without a config file) and writes/removes /etc/alpdroid/bridge depending on whether the user
+     *  has agent access switched on. Cheap; called at every session start and whenever the switch or
+     *  token changes. */
+    fun writeAgentFiles(context: Context, root: File) {
+        runCatching {
+            val bin = File(root, "usr/local/bin").apply { mkdirs() }
+            File(bin, "alpctl").apply { writeText(ALPCTL_SCRIPT); setExecutable(true, false) }
+            File(bin, "git-credential-alpdroid").apply { writeText(GIT_HELPER_SCRIPT); setExecutable(true, false) }
+            val gitconfig = File(root, "etc/gitconfig")
+            if (!gitconfig.exists() || gitconfig.readText().contains("# alpdroid")) {
+                gitconfig.writeText("# alpdroid\n[credential \"https://github.com\"]\n\thelper = alpdroid\n")
+            }
+            val dir = File(root, "etc/alpdroid").apply { mkdirs() }
+            val conf = File(dir, "bridge")
+            val settings = SettingsStore(context)
+            AgentContext.sync(root, AgentContext.appVersion(context), settings.agentAccessEnabled, settings.agentContextFiles)
+            if (settings.agentAccessEnabled) {
+                conf.writeText("URL=http://127.0.0.1:$BRIDGE_PORT\nTOKEN=${settings.agentToken}\n")
+                conf.setReadable(false, false); conf.setReadable(true, true)
+            } else {
+                conf.delete()
+            }
+        }
+    }
+
+    const val BRIDGE_PORT = 47615
+    private const val ALPCTL_SCRIPT = """#!/bin/sh
+# alpctl — control the AlpineTerm app from inside the terminal. Needs "Agent access" switched on
+# in the app (Settings → Agent access). Config is read fresh on every call from /etc/alpdroid/bridge.
+CONF=/etc/alpdroid/bridge
+[ "${"$"}1" = about ] && { cat /etc/alpdroid/about.md 2>/dev/null || echo "alpctl: no about note yet (open a new tab)"; exit 0; }
+[ -r "${"$"}CONF" ] || { echo "alpctl: agent access is off (enable it in AlpineTerm → Settings → Agent access)" >&2; exit 2; }
+. "${"$"}CONF"
+esc() { printf '%s' "${"$"}1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' | awk '{printf "%s%s", (NR>1?"\\n":""), ${"$"}0}'; }
+call() { case "${"$"}1" in *'"error"'*) printf '%s\n' "${"$"}1" >&2; return 1;; esac; printf '%s\n' "${"$"}1"; }
+get()  { R=${"$"}(wget -qO- --header "Authorization: Bearer ${"$"}TOKEN" "${"$"}URL${"$"}1" 2>/dev/null) || { echo "alpctl: no answer — is Agent access on, and is the app still running?" >&2; return 1; }; call "${"$"}R"; }
+post() { R=${"$"}(wget -qO- --header "Authorization: Bearer ${"$"}TOKEN" --header "Content-Type: application/json" --post-data "${"$"}2" "${"$"}URL${"$"}1" 2>/dev/null) || { echo "alpctl: no answer — is Agent access on, and is the app still running?" >&2; return 1; }; call "${"$"}R"; }
+usage() { cat <<'EOF'
+alpctl about                    what this environment is (for agents)
+alpctl state | settings | devices
+alpctl set KEY VALUE            theme, font_size, font_family, show_extra_keys, ligatures, bell_sound
+                                (keep_alive, wake_lock, auto_backup ask the user to confirm on screen)
+alpctl shortcut add LABEL CMD   add a one-tap command button
+alpctl tabs                     list tabs (id, label, active)
+alpctl tab new [LABEL] | select ID | close ID
+alpctl tab send ID TEXT [--raw] type into a tab (Enter appended unless --raw)
+alpctl tab screen ID [LINES]    read a tab's screen + scrollback text
+alpctl clip get | clip set TEXT
+alpctl notify TITLE TEXT | toast TEXT | open URL
+alpctl github status | github token   (token only if the user allowed agents to use it)
+alpctl plugin list | path | add DIR | remove ID   (plugins: plugin.json + scripts; see Settings → Plugins)
+EOF
+}
+case "${"$"}1" in
+  state) get /v1/state ;;
+  settings) get /v1/settings ;;
+  devices) get /v1/devices ;;
+  set) post /v1/settings "{\"key\":\"${"$"}(esc "${"$"}2")\",\"value\":\"${"$"}(esc "${"$"}3")\"}" ;;
+  shortcut) [ "${"$"}2" = add ] && post /v1/shortcuts "{\"label\":\"${"$"}(esc "${"$"}3")\",\"cmd\":\"${"$"}(esc "${"$"}4")\"}" || usage ;;
+  tabs) get /v1/tabs ;;
+  tab)
+    case "${"$"}2" in
+      new) post /v1/tabs "{\"label\":\"${"$"}(esc "${"$"}3")\"}" ;;
+      select) post "/v1/tabs/${"$"}3/select" "{}" ;;
+      close) post "/v1/tabs/${"$"}3/close" "{}" ;;
+      send) if [ "${"$"}5" = "--raw" ]; then E=false; else E=true; fi; post "/v1/tabs/${"$"}3/send" "{\"text\":\"${"$"}(esc "${"$"}4")\",\"enter\":${"$"}E}" ;;
+      screen) get "/v1/tabs/${"$"}3/screen?lines=${"$"}{4:-200}" ;;
+      *) usage ;;
+    esac ;;
+  clip) case "${"$"}2" in get) get /v1/clipboard ;; set) post /v1/clipboard "{\"text\":\"${"$"}(esc "${"$"}3")\"}" ;; *) usage ;; esac ;;
+  notify) post /v1/notify "{\"title\":\"${"$"}(esc "${"$"}2")\",\"text\":\"${"$"}(esc "${"$"}3")\"}" ;;
+  toast) post /v1/toast "{\"text\":\"${"$"}(esc "${"$"}2")\"}" ;;
+  open) post /v1/open "{\"url\":\"${"$"}(esc "${"$"}2")\"}" ;;
+  github)
+    case "${"$"}2" in
+      status) get /v1/github ;;
+      token) get /v1/github/token | sed -n 's/.*"token": *"\([^"]*\)".*/\1/p' ;;
+      *) usage ;;
+    esac ;;
+  plugin)
+    P="${"$"}HOME/.alpdroid/plugins"
+    case "${"$"}2" in
+      path) echo "${"$"}P" ;;
+      list) for d in "${"$"}P"/*/; do [ -f "${"$"}{d}plugin.json" ] && basename "${"$"}d"; done ;;
+      add) [ -f "${"$"}3/plugin.json" ] || { echo "alpctl: ${"$"}3/plugin.json not found" >&2; exit 1; }
+           ID=${"$"}(basename "${"$"}(cd "${"$"}3" && pwd)"); mkdir -p "${"$"}P" && rm -rf "${"$"}P/${"$"}ID" && cp -r "${"$"}3" "${"$"}P/${"$"}ID" \
+             && echo "installed ${"$"}ID — open AlpineTerm → Settings → Plugins to review and use it" ;;
+      remove) [ -n "${"$"}3" ] && rm -rf "${"$"}P/${"$"}3" && echo removed ;;
+      *) usage ;;
+    esac ;;
+  *) usage ;;
+esac
+"""
+    private const val GIT_HELPER_SCRIPT = """#!/bin/sh
+# git credential helper: supplies the GitHub token the user signed in with (if they allowed agents to use it).
+[ "${"$"}1" = get ] || exit 0
+T=${"$"}(alpctl github token 2>/dev/null)
+[ -n "${"$"}T" ] || exit 0
+echo "username=x-access-token"
+echo "password=${"$"}T"
+"""
+
     /** SD cards / USB drives mounted right now, bound at /mnt/<label> — a drive plugged in after a
      *  session started needs a new tab to appear (proot binds are fixed at launch). The guest
      *  mountpoint is created up front: proot won't invent it. */
@@ -359,7 +498,11 @@ object AlpineSession {
                 // as visible text, so it thought a wrapped history line was that much wider — it
                 // forced its wrap too early and moved the cursor up the wrong number of rows on
                 // redraw, leaving a stale copy of the line behind on every Up/Down arrow press.
-                "PS1='\\[\u001B[1;32m\\]\\u@alpineterm\\[\u001B[0m\\]:\\[\u001B[1;34m\\]\\w\\[\u001B[0m\\]\\$ '\n" +
+                // opencode's installer puts its binaries (opencode, opencode2) in /root/.opencode/bin, which no
+                // stock Alpine PATH includes — added here for every new shell (Alpine's own /etc/profile
+                // resets PATH, which is why the process environment alone isn't enough).
+                "case \":\$PATH:\" in *:/root/.opencode/bin:*) ;; *) PATH=\"\$PATH:/root/.opencode/bin\" ;; esac\nexport PATH\n" +
+                    "PS1='\\[\u001B[1;32m\\]\\u@alpineterm\\[\u001B[0m\\]:\\[\u001B[1;34m\\]\\w\\[\u001B[0m\\]\\$ '\n" +
                     "export PS1\n",
             )
             // Guarantees the drop-in above (and everything else under /etc/profile.d/) actually

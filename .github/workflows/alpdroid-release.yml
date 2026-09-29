@@ -1,0 +1,59 @@
+name: Create AlpineTerm release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag (e.g. v1.7.1)"
+        required: true
+        default: "v1.7.1"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android NDK, CMake and platform
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "ndk;26.3.11579264" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Build signed release APK
+        working-directory: .
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Create release with the APK attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag_name }}
+        run: |
+          APK="AlpineTerm-${TAG}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$APK"
+          cat > notes.md <<'EOF'
+          AlpineTerm — real Alpine Linux on your phone, no root. Install the attached APK (it updates an existing install signed with the same key).
+
+          **Highlights since v1.1.0**
+          - **Agent access:** coding agents in a tab can control the app through `alpctl` (off by default, token-guarded), and learn about the environment automatically via managed AGENTS.md / CLAUDE.md notes
+          - **GitHub sign-in in one tap** (device flow, token encrypted in the Android Keystore) with automatic git authentication
+          - **Plugins:** your own settings panels with fields and buttons that run scripts, including scheduled and background jobs; included in backups; scripts need your approval
+          - **opencode:** installs put it on PATH automatically; start its web server on your network from Settings
+          - **Devices panel:** SD cards / USB drives (mounted at /mnt/...), USB devices, network adapters, Wi-Fi scan
+          - **Progress notifications** for copy, move, compress, extract, backup and restore; safer backups (no corrupt files, low-storage warning, optional weekly auto-backup)
+          - Plain-language **Guide** in Settings
+          - Many fixes: scrolling in the terminal and in opencode, wrapped text re-joining on resize, prompt redraw glitches, and a full security/bug review pass
+
+          Tabs are temporary sessions — running programs stop when the app is closed or updated. See Settings → Guide inside the app.
+          EOF
+          gh release create "$TAG" "$APK" --target main --title "AlpineTerm $TAG" --notes-file notes.md

@@ -33,8 +33,8 @@ android {
         applicationId = "com.alpdroid.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 9
-        versionName = "1.3.1"
+        versionCode = 23
+        versionName = "1.7.2"
 
         ndk {
             // Keep in sync with fetch_proot.py's ANDROID_ABI_TO_TERMUX_ARCH — no point building
@@ -50,10 +50,10 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
-        // Reads from keystore.properties (git-ignored — see .gitignore) rather than hardcoding a
-        // real signing secret into a file that ends up in git history forever. That file doesn't
-        // exist on a fresh clone or in CI unless deliberately provided, so a release build only
-        // works where it's actually meant to.
+        // Reads from keystore.properties. NOTE: this project deliberately commits keystore.properties and the
+        // .jks (private repo, owner's decision) — if the repo ever becomes public, rotate the key first.
+        // (Originally this file was git-ignored so the secret never entered history.) Without the file,
+        // a release build comes out unsigned.
         val keystorePropsFile = rootProject.file("keystore.properties")
         if (keystorePropsFile.exists()) {
             val keystoreProps = Properties().apply { load(keystorePropsFile.inputStream()) }

@@ -31,8 +31,13 @@ object AlpineBackup {
         }
     }
 
+    /** Live secrets that are regenerated at every session start — never copied into a backup that sits
+     *  in shared storage: the agent-API token and the LAN opencode-web password. */
+    private val NEVER_BACKED_UP = setOf("etc/alpdroid/bridge", "root/.opencode-web.env")
+
     private fun addTree(writer: UstarWriter, base: File, file: File, count: IntArray, onEntry: (Int) -> Unit) {
         val relative = if (file == base) "" else file.relativeTo(base).path
+        if (relative in NEVER_BACKED_UP) return
         if (relative.isNotEmpty()) {
             // The real permission bits, not a guessed 755/644/755 — a restored ~/.ssh/id_* at 0644
             // instead of its real 0600 gets rejected outright by ssh ("UNPROTECTED PRIVATE KEY

@@ -1382,7 +1382,7 @@ class MainActivity : Activity() {
             background = cardBg(); setPadding(dp(12), dp(10), dp(12), dp(10))
             text = "Output appears here."
         }
-        val stop = pillButton().apply { text = "Stop"; visibility = View.GONE; setOnClickListener { stopPluginRun(); stop.visibility = View.GONE } }
+        val stop = pillButton().apply { text = "Stop"; visibility = View.GONE; setOnClickListener { stopPluginRun(); (it as View).visibility = View.GONE } }
 
         fun runButton(b: Plugins.Button) {
             output.text = "▶ ${b.label}\n"

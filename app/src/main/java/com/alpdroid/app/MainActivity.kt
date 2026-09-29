@@ -123,7 +123,12 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         settingsStore = SettingsStore(this)
         registerDeviceEvents()
-        (application as AlpineTermApp).pluginJobs.apply { paused = false; refreshCount() }
+        // Plugin counting walks every plugin dir (reads + hashes) — off the main thread;
+        // enabledCount is @Volatile so readers never see a torn value, just 0 briefly.
+        (application as AlpineTermApp).pluginJobs.apply {
+            paused = false
+            (application as AlpineTermApp).backgroundExecutor.execute { refreshCount() }
+        }
         agentBridge.host = agentHost
         if (settingsStore.agentAccessEnabled) syncAgentBridge()
         mainHandler.postDelayed({ if (!isFinishing && !isDestroyed) maybeAutoBackup() }, 30_000)
@@ -3139,10 +3144,13 @@ class MainActivity : Activity() {
         addKey("TAB") { terminalView.sendControlAware(byteArrayOf(0x09)) }
         addToggleKey("CTRL", { terminalView.ctrlArmed }, { terminalView.ctrlArmed = !terminalView.ctrlArmed })
         addToggleKey("ALT", { terminalView.altArmed }, { terminalView.altArmed = !terminalView.altArmed })
-        addIconKey(R.drawable.ic_arrow_up) { terminalView.sendControlAware("\u001B[A") }
-        addIconKey(R.drawable.ic_arrow_down) { terminalView.sendControlAware("\u001B[B") }
-        addIconKey(R.drawable.ic_arrow_left) { terminalView.sendControlAware("\u001B[D") }
-        addIconKey(R.drawable.ic_arrow_right) { terminalView.sendControlAware("\u001B[C") }
+        // Respect DECCKM like onKeyDown() and the alt-scroll fallback do: programs that
+        // switched cursor keys to application mode (vim, fzf-style pickers) expect SS3.
+        fun arrow(app: String, normal: String) = if (terminalView.emulator?.applicationCursorKeys == true) app else normal
+        addIconKey(R.drawable.ic_arrow_up) { terminalView.sendControlAware(arrow("\u001BOA", "\u001B[A")) }
+        addIconKey(R.drawable.ic_arrow_down) { terminalView.sendControlAware(arrow("\u001BOB", "\u001B[B")) }
+        addIconKey(R.drawable.ic_arrow_left) { terminalView.sendControlAware(arrow("\u001BOD", "\u001B[D")) }
+        addIconKey(R.drawable.ic_arrow_right) { terminalView.sendControlAware(arrow("\u001BOC", "\u001B[C")) }
         addKey("HOME") { terminalView.sendControlAware("\u001B[H") }
         addKey("END") { terminalView.sendControlAware("\u001B[F") }
         addKey("/") { terminalView.sendControlAware("/") }

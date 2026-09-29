@@ -90,12 +90,10 @@ object Plugins {
     fun fingerprint(p: Plugin): String = fingerprintCached(p)
 
     // isApproved() → fingerprint() runs on every scheduler tick per job and on several UI
-    // paths — a full directory walk + read + SHA-256 each time. Cached on the newest
-    // mtime under the plugin dir: content changes bump mtime, so a hit means nothing to
+    // paths — a full directory walk + read + SHA-256 each time. Cached per plugin on the
+    // newest mtime under its dir: content changes bump mtime, so a hit means nothing to
     // re-hash. state.json/logs are excluded from both the hash and the mtime check.
-    private var fpCacheId = ""
-    private var fpCacheMtime = 0L
-    private var fpCacheHash = ""
+    private val fpCache = mutableMapOf<String, Pair<Long, String>>()
 
     @Synchronized
     private fun fingerprintCached(p: Plugin): String {
@@ -103,15 +101,17 @@ object Plugins {
         p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }.forEach {
             if (it.isFile && it.name != "state.json") mtime = maxOf(mtime, it.lastModified())
         }
-        if (p.id == fpCacheId && mtime == fpCacheMtime && fpCacheHash.isNotEmpty()) return fpCacheHash
+        fpCache[p.id]?.let { (cachedMtime, hash) ->
+            if (cachedMtime == mtime && hash.isNotEmpty()) return hash
+        }
         val md = MessageDigest.getInstance("SHA-256")
         p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }.filter { it.isFile && it.name != "state.json" }.sortedBy { it.path }.forEach {
             md.update(it.relativeTo(p.dir).path.toByteArray()); md.update(runCatching { it.readBytes() }.getOrDefault(ByteArray(0)))
         }
-        fpCacheId = p.id
-        fpCacheMtime = mtime
-        fpCacheHash = md.digest().joinToString("") { "%02x".format(it) }
-        return fpCacheHash
+        val hash = md.digest().joinToString("") { "%02x".format(it) }
+        if (fpCache.size > 64) fpCache.clear()
+        fpCache[p.id] = mtime to hash
+        return hash
     }
 
     fun isApproved(c: Context, p: Plugin) = prefs(c).getString("approved_${p.id}", null) == fingerprint(p)

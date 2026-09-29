@@ -927,12 +927,22 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         // text delivered as one marked block. Without this wrapping, each newline in a pasted
         // multi-line prompt read back as a literal Enter keypress, submitting every line as its
         // own separate, incomplete command/message instead of landing as one editable block.
+        // One single send() for markers+content (not three separate writeAsync tasks):
+        // concurrent typing used to interleave between ESC[200~ and ESC[201~, breaking
+        // region atomicity. Any literal terminator inside the clipboard is stripped so
+        // pasted text can't end the region early (injection). Capped: one unbounded
+        // write would block the tab's sole writer thread, queueing all later keystrokes
+        // behind a megabyte paste.
+        var paste = text
+        if (paste.length > MAX_PASTE_CHARS) {
+            paste = paste.take(MAX_PASTE_CHARS)
+            Toast.makeText(context, "Pasted text truncated", Toast.LENGTH_SHORT).show()
+        }
         if (emulator?.bracketedPasteEnabled == true) {
-            send("\u001B[200~".toByteArray(Charsets.UTF_8))
-            sendText(text)
-            send("\u001B[201~".toByteArray(Charsets.UTF_8))
+            paste = paste.replace("\u001B[201~", "")
+            send(("\u001B[200~" + paste + "\u001B[201~").toByteArray(Charsets.UTF_8))
         } else {
-            sendText(text)
+            sendText(paste)
         }
     }
 
@@ -1104,10 +1114,14 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             else -> {
                 val unicode = event.unicodeChar
                 if (unicode != 0 && event.action == KeyEvent.ACTION_DOWN) {
-                    if (event.isCtrlPressed && unicode in 'a'.code..'z'.code) {
+                    // Lowercased before the range check: with Shift held the unicodeChar is
+                    // 'A'..'Z', which used to fall through and type a literal, clearing the
+                    // armed flags for nothing — Ctrl+Shift+C never produced a control code.
+                    val lower = unicode.toChar().lowercaseChar()
+                    if (event.isCtrlPressed && lower in 'a'..'z') {
                         ctrlArmed = false
                         altArmed = false
-                        send(byteArrayOf((unicode - 'a'.code + 1).toByte()))
+                        send(byteArrayOf((lower - 'a' + 1).toByte()))
                     } else {
                         sendControlAware(String(Character.toChars(unicode)))
                     }
@@ -1123,6 +1137,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         /** Combined row+column distance (in cells) within which a long-press is treated as
          *  grabbing an existing selection's endpoint rather than starting a fresh one. */
         private const val NEAR_ENDPOINT_THRESHOLD = 3
+        private const val MAX_PASTE_CHARS = 1_000_000
 
         /** How long applyGridSize() waits for the pixel size to stop changing before actually
          *  resizing the emulator and the PTY — covers a pinch gesture's continuous stream of calls

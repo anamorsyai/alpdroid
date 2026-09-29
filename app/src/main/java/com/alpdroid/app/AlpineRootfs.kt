@@ -240,9 +240,12 @@ object AlpineRootfs {
         totalBytes = connection.contentLengthLong.coerceAtLeast(0)
         try {
             connection.inputStream.use { raw ->
-                val counted = ProgressInputStream(raw) { n -> downloadedBytes += n }
+                // Buffered + big inflate buffer: GZIPInputStream's 512B default turned a ~3MB
+                // minirootfs into hundreds of thousands of tiny reads on first-time setup.
+                val buffered = java.io.BufferedInputStream(raw, 64 * 1024)
+                val counted = ProgressInputStream(buffered) { n -> downloadedBytes += n }
                 val hashed: InputStream = if (digest != null) java.security.DigestInputStream(counted, digest) else counted
-                GZIPInputStream(hashed).use { gz -> extractUstar(gz, root) }
+                GZIPInputStream(hashed, 64 * 1024).use { gz -> extractUstar(gz, root) }
             }
         } finally {
             connection.disconnect()

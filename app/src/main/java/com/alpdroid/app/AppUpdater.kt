@@ -53,7 +53,9 @@ object AppUpdater {
         val releases = org.json.JSONArray(text)
         for (i in 0 until releases.length()) {
             val r = releases.optJSONObject(i) ?: continue
-            if (r.optBoolean("draft")) continue
+            // Drafts AND prereleases are skipped: a prerelease with a higher tag would
+            // otherwise be offered as a stable update to every auto-checking client.
+            if (r.optBoolean("draft") || r.optBoolean("prerelease")) continue
             val tag = r.optString("tag_name")
             if (!isNewer(tag, currentName)) continue
             val assets = r.optJSONArray("assets") ?: continue
@@ -112,6 +114,9 @@ object AppUpdater {
             val code = c.responseCode
             if (code in 300..399) {
                 url = c.getHeaderField("Location") ?: throw IllegalStateException("redirect without location")
+                // Defense in depth: the api endpoint is HTTPS with pinned system trust, but a
+                // forged Location could otherwise downgrade the byte fetch to cleartext http.
+                if (!url.startsWith("https://")) throw IllegalStateException("insecure redirect")
                 accept = "application/octet-stream"
                 c.disconnect()
             } else {
@@ -137,12 +142,29 @@ object AppUpdater {
                     }
                 }
             }
+            if (update.size > 0 && tmp.length() != update.size) {
+                tmp.delete()
+                throw IllegalStateException("download size mismatch")
+            }
             if (!tmp.renameTo(dest)) throw IllegalStateException("could not finalize download")
             return dest
         } finally {
             connection.disconnect()
         }
     }
+
+    /**
+     * Downgrade guard: refuses to hand the installer an APK older than (or equal to) the
+     * running one — a substituted release asset (higher tag, stale build) otherwise
+     * installs over newer code with only the Update tap as gate. Needs the real version,
+     * not the tag string, so it is read from the package itself.
+     */
+    fun apkVersionCode(context: Context, apk: File): Long = runCatching {
+        val info = context.packageManager.getPackageArchiveInfo(apk.absolutePath, 0)
+            ?: throw IllegalStateException("not a valid APK")
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) info.longVersionCode
+        else @Suppress("DEPRECATION") info.versionCode.toLong()
+    }.getOrElse { throw IllegalStateException("not a valid APK") }
 
     /** Hands [apk] to the system installer. Returns false when install permission is missing
      *  (user gets sent to Settings to grant it, then taps Update again). */

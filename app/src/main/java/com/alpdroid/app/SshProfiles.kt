@@ -18,13 +18,14 @@ data class SshProfile(val name: String, val host: String, val port: String, val 
 }
 
 object SshProfiles {
-    fun list(context: Context): List<SshProfile> {
+    @Volatile private var cache: List<SshProfile>? = null
+    fun list(context: Context): List<SshProfile> = cache ?: run {
         val raw = prefs(context).getString(KEY_PROFILES, null) ?: return emptyList()
         val array = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
-        return (0 until array.length()).mapNotNull { i ->
+        (0 until array.length()).mapNotNull { i ->
             val o = array.optJSONObject(i) ?: return@mapNotNull null
             SshProfile(o.optString("name"), o.optString("host"), o.optString("port"), o.optString("user"))
-        }
+        }.also { cache = it }
     }
 
     fun add(context: Context, profile: SshProfile) = save(context, list(context) + profile)
@@ -37,6 +38,7 @@ object SshProfiles {
             array.put(JSONObject().apply { put("name", p.name); put("host", p.host); put("port", p.port); put("user", p.user) })
         }
         prefs(context).edit().putString(KEY_PROFILES, array.toString()).apply()
+        cache = profiles
     }
 
     private fun prefs(context: Context) = context.getSharedPreferences("alpineterm_ssh_profiles", Context.MODE_PRIVATE)

@@ -294,10 +294,20 @@ class MainActivity : Activity() {
     private fun spToPx(sp: Float): Float =
         android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, sp, resources.displayMetrics)
 
-    private fun typefaceFor(fontId: String): Typeface = when (fontId) {
-        "jetbrains_mono" -> ResourcesCompat.getFont(this, R.font.jetbrains_mono) ?: Typeface.MONOSPACE
-        "fira_code" -> ResourcesCompat.getFont(this, R.font.fira_code) ?: Typeface.MONOSPACE
-        else -> Typeface.MONOSPACE
+    // Font asset inflate/parse used to run synchronously on every cold start and every
+    // theme/agent change that rebuilds settings — cached process-wide after first load.
+    private var cachedTypefaceId: String? = null
+    private var cachedTypeface: Typeface? = null
+    private fun typefaceFor(fontId: String): Typeface {
+        if (fontId == cachedTypefaceId) return cachedTypeface ?: Typeface.MONOSPACE
+        val tf = when (fontId) {
+            "jetbrains_mono" -> ResourcesCompat.getFont(this, R.font.jetbrains_mono) ?: Typeface.MONOSPACE
+            "fira_code" -> ResourcesCompat.getFont(this, R.font.fira_code) ?: Typeface.MONOSPACE
+            else -> Typeface.MONOSPACE
+        }
+        cachedTypefaceId = fontId
+        cachedTypeface = tf
+        return tf
     }
 
     /**
@@ -749,7 +759,7 @@ class MainActivity : Activity() {
             app.searchExecutor.execute {
                 val names = runCatching { AlpineSession.searchPackages(this@MainActivity, query) }.getOrDefault(emptyList())
                 val parsed = names.mapNotNull { line ->
-                    Regex("^(.*)-[^-]+-r[0-9]+$").find(line)?.groupValues?.get(1) ?: line.takeIf { it.isNotBlank() }
+                    PKG_VERSION_RE.find(line)?.groupValues?.get(1) ?: line.takeIf { it.isNotBlank() }
                 }.distinct()
                 mainHandler.post {
                     searchStatus.text = if (parsed.isEmpty()) "No matches (or Alpine isn't set up yet)" else "${parsed.size} result(s)"
@@ -1321,6 +1331,7 @@ class MainActivity : Activity() {
     private var pluginRun: PtySession? = null
     private var pluginWatchdog: Thread? = null
     private val ansiRe = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]|\u001B\\][^\u0007]*\u0007")
+    private val PKG_VERSION_RE = Regex("^(.*)-[^-]+-r[0-9]+$")
 
     /** Stops a foreground one-shot run including its watchdog — destroying the session alone
      *  left the 120s watchdog thread sleeping to the end, one zombie per Stop tap. */
@@ -1486,7 +1497,18 @@ class MainActivity : Activity() {
                     if (!Plugins.isApproved(this@MainActivity, plugin)) android.widget.Toast.makeText(this@MainActivity, "Approve the scripts first (turn the switch on)", android.widget.Toast.LENGTH_SHORT).show()
                     else { jobs.launch(j); updateKeepAliveService(); status.text = "starting…" }
                 } })
-                panel.addView(pillButton().apply { text = "View log"; setOnClickListener { output.text = "── ${j.label} log ──\n" + jobs.tailLog(j); status.text = jobs.status(j) } })
+                panel.addView(pillButton().apply { text = "View log"; setOnClickListener {
+                    // tailLog reads + decodes the whole (up to 200KB) log file — off the UI thread.
+                    output.text = "── ${j.label} log ──\n(loading…)"
+                    (application as AlpineTermApp).backgroundExecutor.execute {
+                        val text = "── ${j.label} log ──\n" + jobs.tailLog(j)
+                        val st = jobs.status(j)
+                        mainHandler.post {
+                            output.text = text
+                            status.text = st
+                        }
+                    }
+                } })
             }
         }
         panel.addView(stop)
@@ -1641,7 +1663,7 @@ class MainActivity : Activity() {
                 }
             },
         )
-        panel.addView(devNote("Off by default. When on, programs in the terminal can use `alpctl` to control the app — anything running there, including installed packages, gets that power."))
+        panel.addView(devNote("Off by default. When on, programs in the terminal can use `alpctl` to control the app — anything running there, including installed packages, gets that power: tabs, screen content, clipboard, browser, and your GitHub token if enabled. Only switch on for sessions you trust."))
         panel.addView(guideLink("Agent access"))
         panel.addView(
             MaterialSwitch(this).apply {
@@ -1773,7 +1795,7 @@ class MainActivity : Activity() {
                 runCatching {
                     envFile.parentFile?.mkdirs()
                     envFile.writeText("export OPENCODE_SERVER_PASSWORD='$password'\n")
-                    envFile.setReadable(false, false); envFile.setReadable(true, true)
+                    envFile.setReadable(true, false); envFile.setWritable(true, false); envFile.setExecutable(false, false)
                 }
                 mainHandler.post {
                     android.widget.Toast.makeText(this, "Password copied", android.widget.Toast.LENGTH_SHORT).show()
@@ -2243,6 +2265,14 @@ class MainActivity : Activity() {
                     return@post
                 }
                 updateStatusText?.text = "Ready to install ${update.name}."
+                val (_, currentCode) = AppUpdater.currentVersion(this)
+                val apkCode = runCatching { AppUpdater.apkVersionCode(this, apk) }.getOrNull()
+                if (apkCode == null || apkCode <= currentCode) {
+                    updateStatusText?.text = "Download rejected: not newer than installed."
+                    android.widget.Toast.makeText(this, "Downloaded file isn't a newer app version — aborted", android.widget.Toast.LENGTH_LONG).show()
+                    runCatching { apk.delete() }
+                    return@post
+                }
                 // Returns false only when install permission is missing — the user is already
                 // on their way to Settings then, and taps Update again after allowing.
                 AppUpdater.installApk(this, apk)
@@ -3577,8 +3607,9 @@ class MainActivity : Activity() {
     }
 
     private fun restoreAlpinePicker() {
-        val backups = AlpineBackup.backupsDir(this).listFiles { f -> f.name.endsWith(".tar.gz") }
-            ?.sortedByDescending { it.lastModified() } ?: emptyList()
+        val dirs = listOfNotNull(AlpineBackup.backupsDir(this), AlpineBackup.legacyBackupsDir(this)).distinct()
+        val backups = dirs.flatMap { d -> d.listFiles { f -> f.name.endsWith(".tar.gz") }?.toList() ?: emptyList() }
+            .sortedByDescending { it.lastModified() }
         if (backups.isEmpty()) {
             android.widget.Toast.makeText(this, "No backups found in ${AlpineBackup.backupsDir(this)}", android.widget.Toast.LENGTH_LONG).show()
             return
@@ -3722,8 +3753,11 @@ class MainActivity : Activity() {
             android.widget.Toast.makeText(this, "Settings file is invalid", android.widget.Toast.LENGTH_LONG).show()
             return
         }
+        // Same bounds the UI enforces when creating these by hand — the file lives where
+        // the guest can plant it, so unbounded values must not flow straight into settings.
+        // (Unknown theme/font ids already fall back safely in Themes.byId/typefaceFor.)
         settingsStore.themeId = json.optString("theme", settingsStore.themeId)
-        settingsStore.fontSizeSp = json.optDouble("font_size_sp", settingsStore.fontSizeSp.toDouble()).toFloat()
+        settingsStore.fontSizeSp = json.optDouble("font_size_sp", settingsStore.fontSizeSp.toDouble()).toFloat().coerceIn(8f, 40f)
         settingsStore.fontFamily = json.optString("font_family", settingsStore.fontFamily)
         settingsStore.showExtraKeys = json.optBoolean("show_extra_keys", settingsStore.showExtraKeys)
         settingsStore.keepAliveEnabled = json.optBoolean("keep_alive_enabled", settingsStore.keepAliveEnabled)
@@ -3731,10 +3765,10 @@ class MainActivity : Activity() {
         settingsStore.ligaturesEnabled = json.optBoolean("ligatures_enabled", settingsStore.ligaturesEnabled)
         settingsStore.bellSoundEnabled = json.optBoolean("bell_sound_enabled", settingsStore.bellSoundEnabled)
         json.optJSONArray("custom_snippets")?.let { arr ->
-            settingsStore.customSnippets = (0 until arr.length()).mapNotNull { i ->
+            settingsStore.customSnippets = (0 until minOf(arr.length(), 100)).mapNotNull { i ->
                 val obj = arr.optJSONObject(i) ?: return@mapNotNull null
                 val label = obj.optString("label"); val cmd = obj.optString("cmd")
-                if (label.isEmpty() || cmd.isEmpty()) null else label to cmd
+                if (label.isBlank() || cmd.isBlank() || label.length > 40 || cmd.length > 500) null else label to cmd
             }
         }
         TerminalColors.applyTheme(Themes.byId(settingsStore.themeId))

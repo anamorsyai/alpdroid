@@ -115,6 +115,27 @@ object Plugins {
     }
 
     fun isApproved(c: Context, p: Plugin) = prefs(c).getString("approved_${p.id}", null) == fingerprint(p)
+
+    /** Approval against a freshly computed hash — the exec-time gate. The mtime cache in
+     *  [fingerprintCached] is only a fast path for display/scheduler checks. */
+    fun isApprovedFresh(c: Context, p: Plugin): Boolean {
+        val ok = prefs(c).getString("approved_${p.id}", null) == fingerprintUncached(p)
+        if (!ok) prefs(c).edit().remove("approved_${p.id}").apply()
+        return ok
+    }
+
+    private fun fingerprintUncached(p: Plugin): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        var mtime = 0L
+        p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }.filter { it.isFile && it.name != "state.json" }.sortedBy { it.path }.forEach {
+            mtime = maxOf(mtime, it.lastModified())
+            md.update(it.relativeTo(p.dir).path.toByteArray()); md.update(runCatching { it.readBytes() }.getOrDefault(ByteArray(0)))
+        }
+        val hash = md.digest().joinToString("") { "%02x".format(it) }
+        if (fpCache.size > 64) fpCache.clear()
+        fpCache[p.id] = mtime to hash
+        return hash
+    }
     fun approve(c: Context, p: Plugin) = prefs(c).edit().putString("approved_${p.id}", fingerprint(p)).apply()
 
     /** Everything the user is being asked to allow: the manifest, every script a button OR a schedule
@@ -190,8 +211,10 @@ exit 0
     fun runScript(context: Context, p: Plugin, script: String, buttonId: String, values: Map<String, String>): PtySession? {
         // Enforced here, not just at the UI call sites: an agent (or anything else) can drop
         // a plugin in, and a future caller that forgets the isApproved() check must fail
-        // closed rather than run unreviewed code.
-        if (!isApproved(context, p)) return null
+        // closed rather than run unreviewed code. Re-hashed fresh (not the mtime cache):
+        // the guest can modify an approved script and spoof its mtime back (`touch -r`),
+        // which would otherwise keep a stale approval alive for unattended execution.
+        if (!isApprovedFresh(context, p)) return null
         val env = HashMap<String, String>()
         env["PLUGIN_ID"] = p.id
         env["PLUGIN_DIR"] = "/root/.alpdroid/plugins/${p.id}"

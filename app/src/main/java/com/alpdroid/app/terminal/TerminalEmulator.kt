@@ -233,12 +233,26 @@ class TerminalEmulator(
     @Synchronized
     fun findRows(query: String): List<Int> {
         if (query.isEmpty()) return emptyList()
-        val needle = query.lowercase()
+        // No per-row lowercase copies: regionMatches compares case-insensitively
+        // straight off the cells. A 2000-row scan used to allocate 3 strings per row.
         val matches = mutableListOf<Int>()
         for (i in 0 until combinedRowCount()) {
-            if (rowText(combinedRow(i)).lowercase().contains(needle)) matches.add(i)
+            if (rowContains(combinedRow(i), query)) matches.add(i)
         }
         return matches
+    }
+
+    private fun rowContains(row: Array<Cell>, query: String): Boolean {
+        if (query.length > row.size) return false
+        outer@ for (start in 0..row.size - query.length) {
+            for (j in query.indices) {
+                val a = row[start + j].ch
+                val b = query[j]
+                if (a != b && a.lowercaseChar() != b.lowercaseChar()) continue@outer
+            }
+            return true
+        }
+        return false
     }
 
     /** Scrollback (oldest first) followed by the current screen, addressed as one continuous

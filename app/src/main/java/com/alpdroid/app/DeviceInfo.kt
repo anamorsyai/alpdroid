@@ -23,11 +23,12 @@ import java.net.NetworkInterface
  * Android can mount ever show up), USB devices from the USB host API, interfaces from java.net.
  */
 object DeviceInfo {
+    private val MOUNT_SAFE_RE = Regex("[^A-Za-z0-9._-]")
     const val ACTION_USB_PERMISSION = "com.alpdroid.app.USB_PERMISSION"
 
     data class Drive(val label: String, val uuid: String?, val path: File?, val mounted: Boolean, val totalBytes: Long, val freeBytes: Long) {
         /** Guest mount name: /mnt/<this>. Sanitized — labels are arbitrary user text. */
-        val mountName: String get() = (label.ifBlank { uuid ?: "drive" }).replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val mountName: String get() = (label.ifBlank { uuid ?: "drive" }).replace(MOUNT_SAFE_RE, "_")
     }
 
     data class Usb(val name: String, val id: String, val title: String, val kind: String, val hasPermission: Boolean, val device: UsbDevice, val details: List<Pair<String, String>>)

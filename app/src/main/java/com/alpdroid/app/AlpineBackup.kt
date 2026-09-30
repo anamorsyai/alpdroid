@@ -17,10 +17,19 @@ import java.util.zip.GZIPOutputStream
  */
 object AlpineBackup {
     fun backupsDir(context: Context): File {
-        // getExternalFilesDir() can return null if shared storage is temporarily unavailable
-        // (unmounted, being shared over USB, ...) — filesDir always exists.
-        val base = if (StorageAccess.isGranted(context)) StorageAccess.sharedStorageRoot() else context.getExternalFilesDir(null) ?: context.filesDir
-        return File(base, "AlpDroidBackups").apply { mkdirs() }
+        // App-scoped storage, NOT shared storage: the guest can read/write /sdcard, so
+        // backups (and settings exports) kept there could be overwritten or planted by
+        // anything in the terminal. Still visible over MTP for copying off-device.
+        // getExternalFilesDir() can return null if shared storage is temporarily
+        // unavailable (unmounted, being shared over USB, ...) — filesDir always exists.
+        return File(context.getExternalFilesDir(null) ?: context.filesDir, "AlpDroidBackups").apply { mkdirs() }
+    }
+
+    /** Legacy shared-storage location (pre-move): listed by the restore picker so old
+     *  backups aren't orphaned, but never written to anymore. */
+    fun legacyBackupsDir(context: Context): File? {
+        if (!StorageAccess.isGranted(context)) return null
+        return File(StorageAccess.sharedStorageRoot(), "AlpDroidBackups").takeIf { it.isDirectory }
     }
 
     fun backup(root: File, destTarGz: File, onEntry: (count: Int) -> Unit = {}, isCancelled: () -> Boolean = { false }) {
@@ -78,11 +87,16 @@ object AlpineBackup {
         }
     }
 
-    /** Wipes [destRoot] first — a partial restore mixed with whatever was there before would be
-     *  worse than a clean failure. */
+    /** Extracts into a sidecar next to [destRoot] and swaps it in only on full success —
+     *  a partial restore never touches the live tree (a failed validation previously left
+     *  nothing usable behind, since the wipe came first). */
     fun restore(srcTarGz: File, destRoot: File, onEntry: (count: Int) -> Unit = {}, isCancelled: () -> Boolean = { false }) {
-        destRoot.deleteRecursivelyNoFollow()
-        destRoot.mkdirs()
+        // Extract into a sidecar, swap only on success: a crafted archive that throws on
+        // entry N used to leave the live rootfs already wiped with nothing usable behind.
+        val staging = File(destRoot.parentFile, destRoot.name + ".restoring")
+        staging.deleteRecursivelyNoFollow()
+        staging.mkdirs()
+        val root = staging
         var count = 0
         var totalBytes = 0L
         // Compared lexically (Path.normalize(), never touching the filesystem) rather than via
@@ -93,7 +107,8 @@ object AlpineBackup {
         // through that symlink — canonicalPath would legitimately resolve through it and pass the
         // check, since by then the escape really does exist on disk. Pure lexical comparison of the
         // declared name never depends on what's already been written.
-        val rootNormalized = destRoot.toPath().normalize()
+        val rootNormalized = root.toPath().normalize()
+        val verifiedDirs = mutableSetOf<String>()
         GZIPInputStream(srcTarGz.inputStream().buffered()).use { input ->
             val header = ByteArray(512)
             while (true) {
@@ -112,16 +127,23 @@ object AlpineBackup {
                 if (count % 256 == 0 && isCancelled()) throw java.util.concurrent.CancellationException("restore cancelled")
                 totalBytes += size
                 if (totalBytes > MAX_RESTORE_BYTES) throw IllegalStateException("archive extracts more than ${MAX_RESTORE_BYTES / (1024 * 1024)} MB")
-                val dest = File(destRoot, name)
+                val dest = File(root, name)
                 val destNormalized = dest.toPath().normalize()
                 if (destNormalized != rootNormalized && !destNormalized.startsWith(rootNormalized)) {
                     throw SecurityException("backup entry escapes destination: $name")
+                }
+                // Symlink-planted parents: entry 1 `m -> /sdcard` (absolute targets are
+                // rebased inside, so allowed) followed by file `m/pwn` (lexically inside)
+                // would otherwise write through `m` onto the host filesystem, since the
+                // lexical check never looks at intermediate components.
+                if ((type == '5' || type == '0' || type == '\u0000') && hasSymlinkParent(destNormalized, rootNormalized, verifiedDirs)) {
+                    throw SecurityException("backup entry runs through a symlink: $name")
                 }
 
                 when (type) {
                     // 0xFFF (not 0b1111111111/0o1777) so setuid/setgid survive a restore too, not
                     // just the sticky bit and permission bits — matching addTree()'s own mask above.
-                    '5' -> { dest.mkdirs(); runCatching { Os.chmod(dest.absolutePath, mode and 0xFFF) } }
+                    '5' -> { dest.mkdirs(); verifiedDirs.add(destNormalized.toString()); runCatching { Os.chmod(dest.absolutePath, mode and 0xFFF) } }
                     '0', '\u0000' -> {
                         dest.parentFile?.mkdirs()
                         dest.outputStream().use { out -> copySized(input, out, size) }
@@ -144,7 +166,7 @@ object AlpineBackup {
                         // already been wiped by the deleteRecursivelyNoFollow() above. Same lexical
                         // (not canonical) comparison as the entry-path check above, for the same
                         // already-extracted-symlink reason.
-                        val resolvedTarget = if (linkName.startsWith("/")) File(destRoot, linkName) else File(dest.parentFile, linkName)
+                        val resolvedTarget = if (linkName.startsWith("/")) File(root, linkName) else File(dest.parentFile, linkName)
                         val resolvedNormalized = resolvedTarget.toPath().normalize()
                         if (resolvedNormalized != rootNormalized && !resolvedNormalized.startsWith(rootNormalized)) {
                             throw SecurityException("backup symlink target escapes destination: $name -> $linkName")
@@ -152,17 +174,49 @@ object AlpineBackup {
                         dest.parentFile?.mkdirs()
                         dest.delete()
                         Os.symlink(linkName, dest.absolutePath)
+                        // A path that was a verified real dir may now be a link — drop it and
+                        // everything beneath it from the cache so later entries re-check.
+                        verifiedDirs.removeAll { it == destNormalized.toString() || it.startsWith(destNormalized.toString() + "/") }
                     }
                     else -> throw IllegalStateException("unsupported backup entry type '$type': $name")
                 }
                 onEntry(count)
             }
         }
+        // Atomic-ish swap: same filesystem, so rename is instant. Only reached when every
+        // entry extracted cleanly — a failure above leaves the live tree untouched.
+        destRoot.deleteRecursivelyNoFollow()
+        if (!staging.renameTo(destRoot)) throw IllegalStateException("could not swap in restored system")
     }
 
     /** Tar-bomb caps for [restore] — mirrors FileOps' zip caps, sized for a whole rootfs. */
     private const val MAX_RESTORE_ENTRIES = 500_000
     private const val MAX_RESTORE_BYTES = 8L * 1024 * 1024 * 1024
+
+    /**
+     * True when any component of [path] below [root] is a symlink (NOFOLLOW — what is
+     * actually on disk right now, not where links resolve). [verified] caches directories
+     * already proven link-free; creating a symlink evicts it and its subtree (see
+     * restore()), so hitting the cache is proof the whole chain above is still clean.
+     */
+    private fun hasSymlinkParent(path: java.nio.file.Path, root: java.nio.file.Path, verified: MutableSet<String>): Boolean {
+        var dir = path.parent
+        while (dir != null && dir != root && dir.startsWith(root)) {
+            val key = dir.toString()
+            // Verified dir: proven link-free, and symlink creation evicts its subtree —
+            // nothing above it can have changed without evicting this entry. Safe to stop.
+            if (key in verified) return false
+            if (java.nio.file.Files.isSymbolicLink(dir)) return true
+            dir = dir.parent
+        }
+        // Mark the whole chain clean so later files beneath these dirs skip re-statting.
+        var mark: java.nio.file.Path? = path.parent
+        while (mark != null && mark != root && mark.startsWith(root)) {
+            verified.add(mark.toString())
+            mark = mark.parent
+        }
+        return false
+    }
 
     private fun ustarName(header: ByteArray): String {
         val prefix = header.readString(345, 155).trimEnd('\u0000')

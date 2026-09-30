@@ -42,7 +42,9 @@ class AgentBridge(private val app: AlpineTermApp) {
     @Volatile var host: Host? = null
     @Volatile private var token: String = ""
     private var server: ServerSocket? = null
-    private val pool = Executors.newCachedThreadPool { r -> Thread(r, "agent-bridge").apply { isDaemon = true } }
+    // Fixed small pool, not cached: request handlers block up to 10s in onMain(), so a
+    // connection flood against the unbounded pool used to spawn threads without limit.
+    private val pool = Executors.newFixedThreadPool(8) { r -> Thread(r, "agent-bridge").apply { isDaemon = true } }
 
     val isRunning: Boolean get() = server?.isClosed == false
 
@@ -107,6 +109,13 @@ class AgentBridge(private val app: AlpineTermApp) {
             val i = line.indexOf(':')
             if (i > 0) headers[line.substring(0, i).trim().lowercase()] = line.substring(i + 1).trim()
         }
+        val supplied = (headers["authorization"]?.removePrefix("Bearer ") ?: headers["x-alp-token"] ?: "").trim()
+        // Authenticated before a single body byte is read: previously any loopback client
+        // (any app on the phone, no token) could force up to 1MB of allocation + thread time.
+        if (token.isEmpty() || !MessageDigest.isEqual(supplied.toByteArray(), token.toByteArray())) {
+            return respond(sock, 401, error("missing or wrong token"))
+        }
+
         val length = headers["content-length"]?.toIntOrNull() ?: 0
         if (length < 0 || length > 1_000_000) return respond(sock, 413, error("body too large"))
         val body = if (length > 0) {
@@ -115,11 +124,6 @@ class AgentBridge(private val app: AlpineTermApp) {
             while (off < length) { val n = input.read(bytes, off, length - off); if (n < 0) break; off += n }
             String(bytes, 0, off, Charsets.UTF_8)
         } else ""
-
-        val supplied = (headers["authorization"]?.removePrefix("Bearer ") ?: headers["x-alp-token"] ?: "").trim()
-        if (token.isEmpty() || !MessageDigest.isEqual(supplied.toByteArray(), token.toByteArray())) {
-            return respond(sock, 401, error("missing or wrong token"))
-        }
 
         val target = parts[1]
         val path = target.substringBefore('?')

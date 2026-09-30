@@ -380,11 +380,25 @@ class FileBrowserPanel(
 
     private fun uriFor(file: File): Uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", file)
 
+    /**
+     * Symlinks are never opened/shared directly: a planted link (e.g. /sdcard/innocent.pdf
+     * -> rootfs SSH key) would otherwise hand a third-party viewer the link TARGET with
+     * no indication it isn't the file shown. The user can share the real file instead.
+     */
+    private fun requireRealFile(file: File): Boolean {
+        if (java.nio.file.Files.isSymbolicLink(file.toPath())) {
+            toast("This is a link — open the real file instead")
+            return false
+        }
+        return true
+    }
+
     private fun mimeTypeFor(file: File): String =
         MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase()) ?: "*/*"
 
     private fun viewFile(file: File) {
         if (file.isDirectory) { navigateTo(file); return }
+        if (!requireRealFile(file)) return
         runCatching {
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uriFor(file), mimeTypeFor(file))
@@ -395,6 +409,7 @@ class FileBrowserPanel(
     }
 
     private fun openWith(file: File) {
+        if (!requireRealFile(file)) return
         runCatching {
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uriFor(file), mimeTypeFor(file))
@@ -405,6 +420,7 @@ class FileBrowserPanel(
     }
 
     private fun shareFile(file: File) {
+        if (!requireRealFile(file)) return
         runCatching {
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = mimeTypeFor(file)

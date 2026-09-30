@@ -110,16 +110,17 @@ class SettingsStore(context: Context) {
      *  "git status\n") — stored as a JSON array of {"label","cmd"} objects since SharedPreferences
      *  has no native list type. Order is preserved (JSONArray, not a Set) so the row always shows
      *  them in the order they were added. */
+    @Volatile private var snippetsCache: List<Pair<String, String>>? = null
     var customSnippets: List<Pair<String, String>>
-        get() {
+        get() = snippetsCache ?: run {
             val raw = prefs.getString(KEY_SNIPPETS, null) ?: return emptyList()
-            return runCatching {
+            runCatching {
                 val arr = JSONArray(raw)
                 (0 until arr.length()).map { i ->
                     val obj = arr.getJSONObject(i)
                     obj.getString("label") to obj.getString("cmd")
                 }
-            }.getOrDefault(emptyList())
+            }.getOrDefault(emptyList()).also { snippetsCache = it }
         }
         set(value) {
             val arr = JSONArray()
@@ -127,6 +128,7 @@ class SettingsStore(context: Context) {
                 arr.put(org.json.JSONObject().apply { put("label", label); put("cmd", cmd) })
             }
             prefs.edit().putString(KEY_SNIPPETS, arr.toString()).apply()
+            snippetsCache = value
         }
 
     companion object {

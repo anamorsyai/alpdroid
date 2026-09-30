@@ -302,10 +302,13 @@ object AlpineSession {
      *  A no-op if Alpine was never actually set up (system-shell fallback has no rootfs). */
     fun refreshNetwork(context: Context) {
         if (!AlpineRootfs.isReady(context)) return
+        dnsCache.clear()
         val root = AlpineRootfs.rootDir(context)
         writeResolvConf(context, root)
         writeApkHostsIPv4Only(root)
     }
+
+    private val dnsCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     /**
      * Refreshed every session start: the guest has no netd of its own to resolve DNS with.
@@ -318,12 +321,18 @@ object AlpineSession {
      * so a flaky first entry now has somewhere to fall through to instead of every lookup just
      * failing outright.
      */
+    /** Writes only when content differs — session start rewrote these on every tab open. */
+    private fun writeIfDifferent(file: File, text: String): Boolean {
+        if (file.isFile && runCatching { file.readText() }.getOrNull() == text) return false
+        file.parentFile?.mkdirs()
+        file.writeText(text)
+        return true
+    }
+
     private fun writeResolvConf(context: Context, root: File) = synchronized(networkConfigLock) {
         runCatching {
             val servers = (NetworkInfo.dnsServers(context) + listOf("1.1.1.1", "8.8.8.8")).distinct()
-            val resolv = File(root, "etc/resolv.conf")
-            resolv.parentFile?.mkdirs()
-            resolv.writeText(servers.take(3).joinToString("\n") { "nameserver $it" } + "\n")
+            writeIfDifferent(File(root, "etc/resolv.conf"), servers.take(3).joinToString("\n") { "nameserver $it" } + "\n")
         }.onFailure { Log.w(TAG, "could not write guest resolv.conf", it) }
     }
 
@@ -348,7 +357,7 @@ object AlpineSession {
             val repoFile = File(root, "etc/apk/repositories")
             if (!repoFile.isFile) return
             val hosts = repoFile.readLines()
-                .mapNotNull { Regex("""^https?://([^/]+)/""").find(it.trim())?.groupValues?.get(1) }
+                .mapNotNull { REPO_HOST_RE.find(it.trim())?.groupValues?.get(1) }
                 .distinct()
             if (hosts.isEmpty()) return
 
@@ -371,10 +380,14 @@ object AlpineSession {
                 else -> existingLines.takeWhile { it != oldSingleMarker } to emptyList()
             }
             val entries = hosts.mapNotNull { host ->
-                val ipv4 = runCatching { java.net.InetAddress.getAllByName(host) }.getOrNull()
-                    ?.firstOrNull { it is java.net.Inet4Address }
-                    ?.hostAddress
-                ipv4?.let { "$it $host" }
+                // Cached per process: DNS latency used to sit on every tab-open path.
+                // Cleared by refreshNetwork() (network change) below.
+                val ipv4 = dnsCache.getOrPut(host) {
+                    runCatching { java.net.InetAddress.getAllByName(host) }.getOrNull()
+                        ?.firstOrNull { it is java.net.Inet4Address }
+                        ?.hostAddress ?: ""
+                }
+                if (ipv4.isNotEmpty()) "$ipv4 $host" else null
             }
             if (entries.isEmpty()) return
             hostsFile.writeText((before + beginMarker + entries + endMarker + after).joinToString("\n") + "\n")
@@ -388,8 +401,8 @@ object AlpineSession {
     fun writeAgentFiles(context: Context, root: File) {
         runCatching {
             val bin = File(root, "usr/local/bin").apply { mkdirs() }
-            File(bin, "alpctl").apply { writeText(ALPCTL_SCRIPT); setExecutable(true, false) }
-            File(bin, "git-credential-alpdroid").apply { writeText(GIT_HELPER_SCRIPT); setExecutable(true, false) }
+            if (writeIfDifferent(File(bin, "alpctl"), ALPCTL_SCRIPT)) File(bin, "alpctl").setExecutable(true, false)
+            if (writeIfDifferent(File(bin, "git-credential-alpdroid"), GIT_HELPER_SCRIPT)) File(bin, "git-credential-alpdroid").setExecutable(true, false)
             val gitconfig = File(root, "etc/gitconfig")
             if (!gitconfig.exists() || gitconfig.readText().contains("# alpdroid")) {
                 gitconfig.writeText("# alpdroid\n[credential \"https://github.com\"]\n\thelper = alpdroid\n")
@@ -400,7 +413,10 @@ object AlpineSession {
             AgentContext.sync(root, AgentContext.appVersion(context), settings.agentAccessEnabled, settings.agentContextFiles)
             if (settings.agentAccessEnabled) {
                 conf.writeText("URL=http://127.0.0.1:$BRIDGE_PORT\nTOKEN=${settings.agentToken}\n")
-                conf.setReadable(false, false); conf.setReadable(true, true)
+                // Owner-only on disk. Note this is traceability, not isolation: every guest
+                // process shares one uid under proot, so anything in the guest can read it —
+                // enabling agent access trusts the whole guest, documented in the Guide.
+                conf.setReadable(true, false); conf.setWritable(true, false); conf.setExecutable(false, false)
             } else {
                 conf.delete()
             }
@@ -412,6 +428,7 @@ object AlpineSession {
     }
 
     const val BRIDGE_PORT = 47615
+    private val REPO_HOST_RE = Regex("""^https?://([^/]+)/""")
     private const val ALPCTL_SCRIPT = """#!/bin/sh
 # alpctl — control the AlpineTerm app from inside the terminal. Needs "Agent access" switched on
 # in the app (Settings → Agent access). Config is read fresh on every call from /etc/alpdroid/bridge.
@@ -471,9 +488,11 @@ case "${"$"}1" in
       path) echo "${"$"}P" ;;
       list) for d in "${"$"}P"/*/; do [ -f "${"$"}{d}plugin.json" ] && basename "${"$"}d"; done ;;
       add) [ -f "${"$"}3/plugin.json" ] || { echo "alpctl: ${"$"}3/plugin.json not found" >&2; exit 1; }
-           ID=${"$"}(basename "${"$"}(cd "${"$"}3" && pwd)"); mkdir -p "${"$"}P" && rm -rf "${"$"}P/${"$"}ID" && cp -r "${"$"}3" "${"$"}P/${"$"}ID" \
+           ID=${"$"}(basename "${"$"}(cd "${"$"}3" && pwd)")
+           case "${"$"}ID" in ""|.|..|*/*|*..*) echo "alpctl: bad plugin id" >&2; exit 1;; esac
+           mkdir -p "${"$"}P" && rm -rf "${"$"}P/${"$"}ID" && cp -r "${"$"}3" "${"$"}P/${"$"}ID" \
              && echo "installed ${"$"}ID — open AlpineTerm → Settings → Plugins to review and use it" ;;
-      remove) [ -n "${"$"}3" ] && rm -rf "${"$"}P/${"$"}3" && echo removed ;;
+      remove) case "${"$"}3" in ""|*/*|*..*) echo "alpctl: bad plugin id" >&2; exit 1;; *) rm -rf "${"$"}P/${"$"}3" && echo removed;; esac ;;
       *) usage ;;
     esac ;;
   *) usage ;;
@@ -481,7 +500,17 @@ esac
 """
     private const val GIT_HELPER_SCRIPT = """#!/bin/sh
 # git credential helper: supplies the GitHub token the user signed in with (if they allowed agents to use it).
+# Scoped: answers only https://github.com (or *.github.com) requests — previously ANY git
+# operation, even against unrelated hosts, received the full-scope token. Reads the
+# credential request git pipes on stdin; anything else gets silence.
 [ "${"$"}1" = get ] || exit 0
+host=""; proto=""
+while IFS='=' read -r k v; do
+  [ -z "${"$"}k" ] && break
+  case "${"$"}k" in host) host="${"$"}v";; protocol) proto="${"$"}v";; esac
+done
+case "${"$"}host" in github.com|*.github.com) ;; *) exit 0;; esac
+[ "${"$"}proto" = "https" ] || exit 0
 T=${"$"}(alpctl github token 2>/dev/null)
 [ -n "${"$"}T" ] || exit 0
 echo "username=x-access-token"

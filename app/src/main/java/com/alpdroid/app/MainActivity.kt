@@ -151,6 +151,7 @@ class MainActivity : Activity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
         drawerLayout = findViewById(R.id.drawerLayout)
+        setupDrawerGestures()
         rootFrame = findViewById(R.id.rootFrame)
         setupContainer = findViewById(R.id.setupContainer)
         setupStatus = findViewById(R.id.setupStatus)
@@ -3423,16 +3424,47 @@ class MainActivity : Activity() {
         terminalView.onModifierStateChanged = { modifierRefreshers.forEach { it() } }
     }
 
-    @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
-    override fun onBackPressed() {
-        when {
-            drawerLayout.isDrawerOpen(GravityCompat.END) -> drawerLayout.closeDrawer(GravityCompat.END)
-            // Inside a subdirectory: back navigates up a level first, same as tapping the file
-            // browser's own Up button — only closes the drawer once already at a root.
-            drawerLayout.isDrawerOpen(GravityCompat.START) ->
-                if (!fileBrowserPanel.onBackPressed()) drawerLayout.closeDrawer(GravityCompat.START)
-            else -> super.onBackPressed()
+    /**
+     * Gesture-nav phones eat edge swipes as system Back before the drawers ever see them, so
+     * edge-dragging a drawer open never works and every swipe just exits. Two-part fix, no
+     * extra buttons anywhere:
+     * 1. System-gesture exclusion strips on both vertical edges hand those swipes to
+     *    DrawerLayout, which opens the drawer with its own native animation. 32dp matches
+     *    roughly the drawer's own edge zone; the rest of the screen still backs normally.
+     * 2. Predictive-back dispatcher (with enableOnBackInvokedCallback in the manifest):
+     *    Back with a drawer open closes it (file browser goes up a level first), Back
+     *    otherwise exits as before — same logic the old onBackPressed override had.
+     */
+    private fun setupDrawerGestures() {
+        drawerLayout.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+            val strip = dp(32)
+            val w = v.width
+            val h = v.height
+            if (w > 0 && h > 0) {
+                v.systemGestureExclusionRects = listOf(
+                    android.graphics.Rect(0, 0, strip, h),
+                    android.graphics.Rect(w - strip, 0, w, h),
+                )
+            }
         }
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : androidx.activity.OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    when {
+                        drawerLayout.isDrawerOpen(GravityCompat.END) -> drawerLayout.closeDrawer(GravityCompat.END)
+                        // Inside a subdirectory: back navigates up a level first, same as tapping the file
+                        // browser's own Up button — only closes the drawer once already at a root.
+                        drawerLayout.isDrawerOpen(GravityCompat.START) ->
+                            if (!fileBrowserPanel.onBackPressed()) drawerLayout.closeDrawer(GravityCompat.START)
+                        else -> {
+                            isEnabled = false
+                            onBackPressedDispatcher.onBackPressed()
+                        }
+                    }
+                }
+            },
+        )
     }
 
     override fun onDestroy() {

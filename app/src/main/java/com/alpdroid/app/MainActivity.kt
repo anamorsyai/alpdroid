@@ -132,7 +132,7 @@ class MainActivity : Activity() {
         agentBridge.host = agentHost
         if (settingsStore.agentAccessEnabled) syncAgentBridge()
         mainHandler.postDelayed({ if (!isFinishing && !isDestroyed) maybeAutoBackup() }, 30_000)
-        mainHandler.postDelayed({ if (!isFinishing && !isDestroyed) maybeAutoUpdateCheck() }, 45_000)
+        mainHandler.postDelayed({ if (!isFinishing && !isDestroyed) maybeAutoUpdateCheck() }, 10_000)
         TerminalColors.applyTheme(Themes.byId(settingsStore.themeId))
 
         setContentView(R.layout.activity_main)
@@ -2111,8 +2111,15 @@ class MainActivity : Activity() {
         updateStatusText = TextView(this).apply {
             textSize = 12f
             setTextColor(0xFF8B93A1.toInt())
+            text = lastUpdateStatus()
         }
         panel.addView(updateStatusText)
+        // Opening About re-checks when the daily auto-check hasn't run in over an hour —
+        // opening Settings is exactly when a user wonders about updates, so don't make
+        // them wait for the daily timer or hunt the manual button.
+        if (System.currentTimeMillis() - settingsStore.lastUpdateCheckMs > 60 * 60 * 1000) {
+            checkForAppUpdate(manual = false)
+        }
         panel.addView(
             pillButton().apply {
                 text = "Check for updates"
@@ -2123,6 +2130,14 @@ class MainActivity : Activity() {
 
     private var updateStatusText: TextView? = null
     private var updateCheckInFlight = false
+
+    private fun lastUpdateStatus(): String {
+        val last = settingsStore.lastUpdateCheckMs
+        if (last == 0L) return "Never checked for updates."
+        val agoMin = (System.currentTimeMillis() - last) / 60000
+        val ago = if (agoMin < 1) "just now" else if (agoMin < 60) "$agoMin min ago" else "${agoMin / 60} h ago"
+        return "Last checked $ago — you're on AlpDroid $appVersionLabel."
+    }
 
     /**
      * Compares this APK against the newest GitHub release with an APK asset. Silent unless
@@ -2139,8 +2154,8 @@ class MainActivity : Activity() {
                 if (isFinishing || isDestroyed) return@post
                 settingsStore.lastUpdateCheckMs = System.currentTimeMillis()
                 if (update == null) {
+                    updateStatusText?.text = lastUpdateStatus()
                     if (manual) {
-                        updateStatusText?.text = "You're on the newest version."
                         android.widget.Toast.makeText(this, "No updates found", android.widget.Toast.LENGTH_SHORT).show()
                     }
                     return@post

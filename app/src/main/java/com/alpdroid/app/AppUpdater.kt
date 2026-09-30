@@ -105,7 +105,7 @@ object AppUpdater {
         var conn: HttpURLConnection? = null
         // Bounded manual loop (not repeat{}): a bare `return@repeat` on success would
         // keep opening connections for the remaining iterations, leaking each one.
-        for (_ in 0 until 5) {
+        for (attempt in 0 until 5) {
             val c = (URL(url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 15_000
                 readTimeout = 30_000

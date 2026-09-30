@@ -3437,6 +3437,9 @@ class MainActivity : Activity() {
      */
     private fun setupDrawerGestures() {
         drawerLayout.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+            // systemGestureExclusionRects is API 29+; older devices have button navigation
+            // with no edge-swipe conflict, so there is nothing to exclude there.
+            if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) return@addOnLayoutChangeListener
             val strip = dp(32)
             val w = v.width
             val h = v.height

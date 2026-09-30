@@ -1,118 +1,108 @@
 # AlpDroid
 
-A standalone, Termux-style Android terminal app: real **Alpine Linux**, running directly on the
-device via `proot` — no root needed — with shared storage and the device's live network already
-available inside it. Built from scratch: its own terminal emulator, its own PTY bridge, no
-third-party terminal library, no root, no VM.
+![version](https://img.shields.io/static/v1?label=version&message=1.7.14&color=blue)
+![license](https://img.shields.io/static/v1?label=license&message=MIT&color=green)
+![platform](https://img.shields.io/static/v1?label=platform&message=Android&color=brightgreen)
+![minSdk](https://img.shields.io/static/v1?label=minSdk&message=24&color=orange)
+
+Real Alpine Linux on your phone. No root, no VM, no third-party terminal library.
+
+AlpDroid runs an Alpine Linux userland directly on the device via `proot`, with its own
+from-scratch VT100 terminal emulator and PTY bridge, shared storage at `/sdcard`, and the
+device's live network inside the guest.
+
+## Screenshots
+
+Screenshots live in `assets/screenshots/` (captured on device):
+
+- `assets/screenshots/tabs.png` — multi-tab terminal sessions
+- `assets/screenshots/files.png` — file browser (Android + Alpine rootfs)
+- `assets/screenshots/settings.png` — Settings, plugins, and agent API
+
+Note: capture on device before release; placeholders only until then.
 
 ## Features
 
-- **Multi-tab sessions** — run several independent shells side by side, each with its own working
-  directory, scrollback, and environment. Tabs survive backgrounding and Activity recreation (a
-  foreground keep-alive service and session persistence mean a killed/recreated process reattaches
-  to still-running shells instead of losing them).
-- **Full VT100/ANSI terminal emulator**, written from scratch — scrollback, 256-color and
-  truecolor SGR, bracketed paste, DECAWM auto-wrap, mouse click reporting (so full-screen TUIs with
-  clickable elements work correctly instead of every tap just opening the keyboard), and
-  reflow-on-resize (existing wrapped text re-wraps to a new column width, not just future output).
-- **Built for CLI coding agents** — one-tap installers (Settings → Quick Install) for Node.js,
-  Python, git/curl, and agent tools like opencode and Claude Code CLI. Full-screen TUI apps get a
-  real terminal resize when the keyboard opens/closes (so their content redraws correctly instead
-  of being pushed off-screen), and dragging inside one translates to arrow-key scrolling instead of
-  doing nothing.
-- **Pinch-to-zoom** font sizing with existing content reflowing to the new width, not just new
-  output.
-- **File browser** (drawer, right edge) — browse both the Android side and the Alpine rootfs, copy/
-  move/zip/share files across the two, backed by real shared-storage access (`/sdcard` is
-  bind-mounted straight into the guest).
-- **Backup & restore** — the whole Alpine rootfs to a single `.tar.gz`, symlink-safe.
-- **SSH quick-connect profiles** — save host/port/user, reconnect in one tap; a dropped connection
-  can be retried from the tab menu without hunting back through Settings.
-- **Home-screen widget** — jump straight into a new session without opening the app first.
-- **Customizable**: multiple color themes, adjustable font size, Fira Code with ligatures on by
-  default, custom one-tap command shortcuts (Settings → Custom shortcuts).
-- **Session resume** — after the whole process is killed (not just backgrounded), the app offers to
-  reopen the same number of named tabs on next launch.
+- **Multi-tab terminal** — independent shells with own working directory, scrollback, and
+  environment; tabs survive backgrounding and Activity recreation via a foreground
+  keep-alive service and session persistence.
+- **Own VT100 emulator** — written from scratch: scrollback, 256-color and truecolor SGR,
+  bracketed paste, auto-wrap, mouse click reporting for full-screen TUIs, reflow-on-resize,
+  pinch-to-zoom font sizing.
+- **Alpine via proot, no root** — minirootfs downloaded on first launch (latest-stable
+  metadata read at runtime); `proot` fetched at build time from Termux packages.
+- **File browser** — browse Android and Alpine sides, copy/move/zip/share across both;
+  `/sdcard` is bind-mounted into the guest.
+- **Plugins with approval** — Settings panels from `plugin.json` (fields, script buttons,
+  scheduled/background jobs); added scripts need user approval; values included in backups.
+- **Agent API (`alpctl`)** — local token-guarded control API for tabs, settings, clipboard,
+  notifications, devices, and plugins, usable by CLI coding agents in a tab.
+- **GitHub one-tap sign-in** — device flow with token encrypted in the Android Keystore and
+  automatic git authentication.
+- **In-app updater** — check and install release APKs from Settings.
+- **Backup / restore** — whole Alpine rootfs to a single symlink-safe `.tar.gz`, with
+  optional automatic weekly backup.
+- **Devices panel** — SD cards / USB drives (`/mnt/...`), USB devices, network adapters,
+  Wi-Fi scan.
+- **SSH profiles** — saved host/port/user quick-connect with one-tap retry.
+- **Home-screen widget** — jump straight into a new session.
+- **Themes** — multiple color themes, adjustable font size, Fira Code with ligatures.
 
-## How it works
+## Quick start
 
-- **Terminal UI**: `TerminalView` (`app/src/main/java/com/alpdroid/app/terminal/`) is a
-  from-scratch `View` — its own VT100/ANSI screen-buffer model (`TerminalEmulator`) and its own
-  Canvas-based renderer, each character positioned on its own fixed grid cell (not left to the
-  font's own text-shaping) so box-drawing/block art renders correctly.
-- **Real PTY, not just a pipe**: the Android SDK has no public API to fork a process with a
-  controlling terminal already attached (no `forkpty()`, no pre-exec hook on `ProcessBuilder`).
-  `app/src/main/cpp/pty_bridge.c` is a small native helper — allocates a PTY, execs the guest
-  shell attached to it, then relays bytes between the PTY and its own stdin/stdout (which is
-  all a plain `ProcessBuilder` subprocess gives Kotlin). A window resize goes over a separate
-  named-pipe control channel so it can never be confused with terminal data.
-- **Alpine itself**: downloaded straight to app-private storage on first launch —
-  `AlpineRootfs.kt` reads Alpine's `latest-stable` release metadata at runtime (no version to
-  hardcode/bump) and extracts the minirootfs tarball with a small built-in `ustar` parser.
-  Nothing is bundled as an APK asset (APK assets can't hold symlinks; a real filesystem has no
-  such problem), so there's no build-time rootfs-fetch step at all.
-- **`proot`**: fetched at **Gradle build time** (`scripts/fetch_proot.py`) from Termux's own
-  package repository and packaged as `libalpineterm_proot.so` under `jniLibs/<abi>/` — Android's
-  installer extracts and marks files there executable regardless of their actual content, the
-  standard way to run a binary the app didn't statically link. This step needs real network
-  access (Android Studio / CI); see below.
-- **Shared storage**: requests "All files access" (`MANAGE_EXTERNAL_STORAGE`) and bind-mounts
-  the device's real shared storage into the guest at `/sdcard` (`-b <storage>:/sdcard`, same
-  convention Termux uses) — a file manager, USB transfer, or another app sees exactly what the
-  guest writes there, live, and vice versa.
-- **Shared network**: automatic. `proot` never isolates the network namespace, so the guest
-  already shares the device's live network stack — same interfaces, same IP, same reachability.
-  The only thing that doesn't work out of the box is DNS (no `netd` inside the guest), so
-  `AlpineSession.kt` refreshes `/etc/resolv.conf` with the host's own DNS servers on every
-  session start.
-- **Foreground keep-alive**: `TerminalKeepAliveService` holds the process at foreground priority
-  while a shell or long CLI operation is running, so Android is far less likely to kill it while
-  backgrounded — the notification shows the live session count and has an Exit action to close
-  every session at once.
+1. Download the APK from [Releases](../../releases) and install it on your device.
+2. Open AlpDroid. On first launch it downloads the Alpine minirootfs into app-private
+   storage (needs internet once).
+3. Your first tab opens a shell inside Alpine. Grant "All files access" when prompted to
+   enable `/sdcard` sharing.
+4. Open Settings → Quick Install to add Node.js, Python, git/curl, or agent tools.
 
-## Building
+Tabs are temporary sessions — running programs stop when the app is closed or updated.
+See Settings → Guide inside the app.
 
-This can't be built inside a sandbox with restricted network access — `fetch_proot.py` needs to
-reach `packages.termux.dev`, and the Android Gradle Plugin needs Google's Maven repo. Open it in
-Android Studio, or run in CI with normal internet access:
+## Building from source
 
-```
-./gradlew :app:assembleDebug     # debug build
-./gradlew :app:assembleRelease   # release build (needs keystore.properties — see below)
+Requirements: Java 17, Android SDK 34, NDK `26.3.11579264`, CMake `3.22.1`.
+
+```sh
+./gradlew :app:assembleDebug
 ```
 
-The NDK (CMake, for `pty_bridge`) is required — Android Studio will prompt to install it if
-missing.
+`proot` is fetched at build time (`scripts/fetch_proot.py`) and needs normal internet
+access to `packages.termux.dev` and Google's Maven repo — sandboxed/offline builds fail.
 
-### Release signing
+Release signing uses env vars (`ALPDROID_*`); see `.github/workflows/` for the exact
+names and the CI release flow. Debug builds use the committed `app/debug.keystore`.
 
-`app/build.gradle.kts` reads signing credentials from `keystore.properties` at the repo root
-(git-ignored, never committed). Without it, `assembleRelease` still builds — useful for CI
-checks — but produces an unsigned APK that can't be installed as-is. To sign real releases,
-create `keystore.properties`:
+## Architecture
 
-```
-storeFile=path/to/your.jks
-storePassword=...
-keyAlias=...
-keyPassword=...
-```
+See [assets/architecture.svg](assets/architecture.svg) for the component diagram.
 
-## Known limitations
+Summary: `TerminalView` (Canvas renderer + `TerminalEmulator` screen buffer) talks to a
+native `pty_bridge` PTY helper over stdin/stdout, with window resize on a separate
+named-pipe control channel. Sessions spawn the guest shell under `proot` with the
+minirootfs extracted by a built-in `ustar` parser. Storage is shared via bind-mount;
+network is shared (same stack), with `/etc/resolv.conf` refreshed from host DNS.
 
-- No sixel, no true rectangular copy — the VT100 subset covers what a shell, `less`, `vim`, `top`,
-  and modern CLI agent tools actually use, not the full terminfo esoterica list.
-- `proot`'s exact Termux-published dependency set can change; `fetch_proot.py` resolves it from
-  the live package index rather than a hardcoded list, but a build can still fail if Termux
-  restructures that package — the app falls back to a plain (but still real-PTY) system shell
-  in that case rather than refusing to start.
-- A CLI tool that starts its own long-running background daemon (rather than a plain child
-  process) is responsible for its own clean shutdown — some (opencode's own background server
-  included) provide an explicit stop command (e.g. `opencode service stop`) that should be run
-  before `exit`, since Ctrl+C alone may only detach the interactive front end.
+## Security model
 
-## Licensing
+Guest is trusted (same as Termux): code running in the terminal runs as your UID with
+access to shared storage, so only run software you trust. Secrets (GitHub token, API
+tokens) are stored encrypted in the Android Keystore. Agent/plugin capabilities
+(`alpctl`, plugin scripts) are off by default or need explicit approval, with an audit
+trail. Full details: [SECURITY.md](SECURITY.md).
 
-`proot` is GPL-2.0, invoked here as a subprocess (never linked into this app's own code);
-`libtalloc`/`libandroid-shmem` (its runtime deps) are LGPL-3.0. Everything under
-`app/src/main/java` and `app/src/main/cpp` is this project's own code.
+## Privacy
+
+No analytics, no tracking, no ads. Network use is downloads you trigger (Alpine
+rootfs, packages, updater checks) plus DNS. Backups stay on your storage. Full
+details: [PRIVACY.md](PRIVACY.md).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build, test, and pull-request conventions.
+
+## License
+
+MIT — see [LICENSE](LICENSE). `proot` (GPL-2.0) and its runtime libs (LGPL-3.0) are
+invoked as subprocesses, never linked into app code.

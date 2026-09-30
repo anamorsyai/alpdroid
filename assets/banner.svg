@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="600" viewBox="0 0 1600 600">
+  <rect x="0" y="0" width="1600" height="600" fill="#0D1117"/>
+  <rect x="0" y="0" width="1600" height="8" fill="#3ED0B8"/>
+  <rect x="0" y="592" width="1600" height="8" fill="#3ED0B8"/>
+  <g>
+    <rect x="90" y="130" width="340" height="340" rx="78" fill="#0D1117" stroke="#3ED0B8" stroke-width="10"/>
+    <text x="128" y="352" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="110" font-weight="bold" fill="#3ED0B8">~ $</text>
+    <rect x="300" y="276" width="52" height="88" rx="6" fill="#3ED0B8"/>
+  </g>
+  <text x="500" y="300" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="150" font-weight="bold" fill="#FFFFFF">Alp<tspan fill="#3ED0B8">Droid</tspan></text>
+  <text x="505" y="380" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="44" fill="#8B949E">Real Alpine Linux on your phone. No root.</text>
+  <rect x="505" y="420" width="200" height="6" fill="#3ED0B8"/>
+</svg>

@@ -1,0 +1,1 @@
+AlpDroid puts a real Alpine Linux shell on your phone: multi-tab terminal with a from-scratch VT100 emulator, Alpine running via proot (no root, no VM), a file browser for Android and Alpine storage, scriptable plugins with your approval, one-tap GitHub sign-in, backup and restore, SSH profiles, widgets, themes, and an agent control API (alpctl) for CLI coding agents.

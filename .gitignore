@@ -9,11 +9,10 @@ app/.cxx/
 __pycache__/
 *.pyc
 
-# Release signing — committed on purpose (owner's decision; private repo, see below).
-# Original note: never committed. keystore.properties holds the passwords in plaintext, and
-# the .jks itself is the one artifact needed to ever ship an update under this app's identity
-# again; losing it (or leaking it into git history, which is forever) is unrecoverable.
+# Release signing secrets — NEVER committed. The release keystore + passwords live only in
+# GitHub Actions secrets (KEYSTORE_BASE64, ALPDROID_* — see .github/workflows) and, for local
+# release builds, an untracked keystore.properties. History still contains a previously
+# committed key: rotate the app signing key before publishing this repo.
 *.jks
-!app/alpineterm-release.jks
 *.keystore
-!app/debug.keystore
+keystore.properties

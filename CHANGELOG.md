@@ -1,0 +1,78 @@
+# Changelog
+
+## 1.7.7
+
+- Async terminal search with match counter.
+- IME composing-text support for CJK/complex input.
+- Backup/restore made cancellable with restore preflight checks.
+- Devices view moved off the UI thread; browser snapshot reload.
+- Session resume-all now survives individual tab failures.
+
+## 1.7.6
+
+- Fixed mouse clicks and scroll being ignored in full-screen TUIs.
+- Click reporting now uses screen rows instead of scrollback-offset rows.
+- Scroll gesture translation to arrow keys restored.
+- Clickable TUI elements (menus, pickers) work correctly again.
+
+## 1.7.5 — Performance Round
+
+- Cursor rendering switched to rect-blink (no full redraw).
+- Screen-only `tailText` instead of full scrollback scans.
+- Terminal fingerprint cache for faster re-layout.
+- SSH command quoting fixes and USB-drive deduplication.
+- Tar extraction caps against archive bombs.
+
+## 1.7.4 — Thread/Memory Fixes
+
+- Watchdog lifecycle tied to session lifetime (no leaked threads).
+- Daemon executors so background pools can't block process exit.
+- Tar-bomb caps and bounded reads on PTY/bridge streams.
+- Preference saves moved off the UI thread.
+- Integer-overflow guards in buffer arithmetic.
+
+## 1.7.3 — Audit Fixes
+
+- Terminal race and out-of-bounds guards in the emulator core.
+- PTY file-descriptor and stderr-stream leak fixes.
+- Atomic backup writes (no half-written archives on failure).
+- Rename/zip path hardening against traversal.
+- Plugin approval now enforced on every execution path.
+
+## 1.7.2
+
+- Audible notification sound when an agent run finishes.
+- GitHub silent refresh: device-flow refresh token persisted with expiry.
+- Access token auto-renewed in `validToken` before calls.
+- Stop-button initialization self-reference fix.
+
+## 1.7.1
+
+- Split AlpDroid into a standalone terminal app (ex claude-workspace).
+- `alpctl` bridge, GitHub OAuth device flow, and plugins ported over.
+- Devices view redesign and terminal correctness fixes.
+- Release workflow and Gradle build set up for this repo.
+
+## 1.6.3
+
+- Session persistence and resume across process kills.
+- SSH quick-connect profiles with one-tap reconnect.
+- File browser copy/move/zip/share across Android and rootfs.
+- Theme, font, and shortcut customization refinements.
+- Stability fixes from the 1.6 test cycle.
+
+## 1.3.1
+
+- Custom one-tap command shortcuts (Settings → Custom shortcuts).
+- Home-screen widget for jumping straight into a session.
+- Pinch-to-zoom font sizing with content reflow.
+- Fira Code with ligatures as default font.
+- Bug fixes for keyboard resize and scrollback.
+
+## 1.1.0
+
+- Initial public release: Alpine Linux via proot, no root required.
+- From-scratch VT100/ANSI terminal emulator with multi-tab sessions.
+- Shared storage bind-mounted into the guest (`/sdcard`).
+- Quick installers for Node.js, Python, git/curl, and agent CLIs.
+- Rootfs backup and restore to a single `.tar.gz`.

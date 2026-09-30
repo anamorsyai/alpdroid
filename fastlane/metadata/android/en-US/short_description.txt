@@ -1,0 +1,1 @@
+Multi-tab Alpine terminal with its own emulator, file browser, plugins and agent API. No root, no VM.

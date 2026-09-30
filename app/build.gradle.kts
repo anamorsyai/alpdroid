@@ -45,17 +45,35 @@ android {
 
     signingConfigs {
         getByName("debug") {
-            storeFile = file("debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+            // The old committed debug.keystore is gone (secrets don't live in git); when no
+            // local file exists AGP falls back to its auto-generated debug key — same behavior.
+            val debugKs = file("debug.keystore")
+            if (debugKs.isFile) {
+                storeFile = debugKs
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
         }
-        // Reads from keystore.properties. NOTE: this project deliberately commits keystore.properties and the
-        // .jks (private repo, owner's decision) — if the repo ever becomes public, rotate the key first.
-        // (Originally this file was git-ignored so the secret never entered history.) Without the file,
-        // a release build comes out unsigned.
+        // Release signing, in order of preference:
+        // 1. Environment (CI): ALPDROID_KEYSTORE_FILE/ALPDROID_STORE_PASSWORD/ALPDROID_KEY_ALIAS/ALPDROID_KEY_PASSWORD.
+        //    The keystore itself never lives in git — see .github/workflows/alpdroid-release.yml,
+        //    which restores it from the KEYSTORE_BASE64 secret. This is what makes the repo
+        //    safe to publish: history still contains the old committed key (rotate it!), but no
+        //    new secret ever enters the tree.
+        // 2. Local keystore.properties (git-ignored): same keys as the ALPDROID_* names, for
+        //    developers signing release builds on their own machine.
+        // Without either, a release build comes out unsigned (installs nothing, CI-checks fine).
+        val envStore = System.getenv("ALPDROID_KEYSTORE_FILE")?.let(::file)?.takeIf { it.isFile }
         val keystorePropsFile = rootProject.file("keystore.properties")
-        if (keystorePropsFile.exists()) {
+        if (envStore != null) {
+            create("release") {
+                storeFile = envStore
+                storePassword = System.getenv("ALPDROID_STORE_PASSWORD")
+                keyAlias = System.getenv("ALPDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ALPDROID_KEY_PASSWORD")
+            }
+        } else if (keystorePropsFile.exists()) {
             val keystoreProps = Properties().apply { load(keystorePropsFile.inputStream()) }
             create("release") {
                 storeFile = file(keystoreProps.getProperty("storeFile"))

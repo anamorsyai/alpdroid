@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect x="8" y="8" width="496" height="496" rx="112" fill="#0D1117" stroke="#3ED0B8" stroke-width="12"/>
+  <text x="64" y="320" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="140" font-weight="bold" fill="#3ED0B8">~ $</text>
+  <rect x="330" y="222" width="72" height="120" rx="8" fill="#3ED0B8"/>
+  <text x="64" y="420" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="36" fill="#8B949E">alpine:~#</text>
+</svg>

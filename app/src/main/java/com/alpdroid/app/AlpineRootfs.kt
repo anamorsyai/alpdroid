@@ -115,8 +115,10 @@ object AlpineRootfs {
      *  way an already-set-up installation picks up a change to which Alpine release/apk-tools
      *  version [BASE_URL] points at, short of a full app uninstall/reinstall. */
     fun wipeForReinstall(context: Context) {
-        markerFile(context).delete()
-        rootDir(context).deleteRecursivelyNoFollow()
+        synchronized(setupLock) {
+            markerFile(context).delete()
+            rootDir(context).deleteRecursivelyNoFollow()
+        }
     }
 
     private fun shExists(root: File): Boolean {
@@ -129,8 +131,24 @@ object AlpineRootfs {
     /**
      * Blocking — call from a background thread. Returns true once a usable Alpine tree exists
      * on disk (either already there, or freshly downloaded and verified in this call).
+     *
+     * Serialized: two tabs opening at once (or tab + search + plugin job) used to all see
+     * !isReady and concurrently delete/re-extract the same rootDir — interleaved deletes and
+     * writes producing a half-built tree. Double-checked inside the lock.
      */
     fun ensureReady(context: Context): Boolean {
+        if (isReady(context)) return true
+        synchronized(setupLock) {
+            if (isReady(context)) return true
+            return ensureReadyLocked(context)
+        }
+    }
+
+    /** Guards ensureReady() against itself (concurrent first-install) and against
+     *  wipeForReinstall() running while a setup is in flight. */
+    private val setupLock = Any()
+
+    private fun ensureReadyLocked(context: Context): Boolean {
         if (isReady(context)) return true
 
         // A previous run's numbers (a completed 100% from an earlier tab, or a failed attempt's
@@ -148,27 +166,34 @@ object AlpineRootfs {
         }
 
         val root = rootDir(context)
-        root.deleteRecursivelyNoFollow()
-        root.mkdirs()
+        // Extract into a staging sibling, verify, then swap: the checksum used to be checked
+        // AFTER extracting straight into the live rootDir (and skipped entirely when the index
+        // had no sha256) — a malicious mirror's tarball was already on disk, runnable via
+        // proot, before the mismatch was ever noticed. Nothing ever proots into staging.
+        val staging = File(context.filesDir, "$DIR_NAME.downloading")
+        staging.deleteRecursivelyNoFollow()
+        staging.mkdirs()
 
         return try {
             lastStatus = "Looking up current Alpine release…"
             val release = fetchMinirootfsRelease(alpineArch)
             lastStatus = "Downloading ${release.file}…"
-            downloadAndExtract(release, alpineArch, root)
-            if (!shExists(root)) {
+            downloadAndExtract(release, alpineArch, staging)
+            if (!shExists(staging)) {
                 throw IllegalStateException("extraction finished but bin/sh is missing")
             }
             // Best-effort — expanding the mirror list is a helpful extra, not something that
             // should throw away an otherwise-successful extraction if it somehow fails.
-            runCatching { addFallbackMirrors(context) }
+            runCatching { addFallbackMirrorsTo(staging) }
+            root.deleteRecursivelyNoFollow()
+            if (!staging.renameTo(root)) throw IllegalStateException("could not swap in downloaded system")
             markerFile(context).writeText(release.file)
             lastStatus = "Ready"
             true
         } catch (e: Exception) {
             Log.e(TAG, "Rootfs setup failed", e)
             lastFailure = "${e.javaClass.simpleName}: ${e.message}"
-            root.deleteRecursivelyNoFollow()
+            staging.deleteRecursivelyNoFollow()
             false
         }
     }
@@ -183,8 +208,10 @@ object AlpineRootfs {
      * fresh extraction and the on-demand "Add fallback mirrors" Settings button (for an
      * installation that predates this feature) can't ever duplicate lines.
      */
-    fun addFallbackMirrors(context: Context): Boolean {
-        val repoFile = File(rootDir(context), "etc/apk/repositories")
+    fun addFallbackMirrors(context: Context): Boolean = addFallbackMirrorsTo(rootDir(context))
+
+    private fun addFallbackMirrorsTo(root: File): Boolean {
+        val repoFile = File(root, "etc/apk/repositories")
         if (!repoFile.isFile) return false
         val existingLines = repoFile.readLines()
         val suffixes = existingLines.mapNotNull { line ->
@@ -232,8 +259,12 @@ object AlpineRootfs {
     }
 
     private fun downloadAndExtract(release: Release, alpineArch: String, root: File) {
+        // Required, not optional: without a pinned 64-hex sha256 the download would be trusted
+        // blindly — and extraction now happens before any check could run, so this is the gate.
+        val expected = release.sha256?.takeIf { it.matches(Regex("[0-9a-fA-F]{64}")) }
+            ?: throw IllegalStateException("release index has no valid sha256 for ${release.file}")
         val url = "$BASE_URL/$alpineArch/${release.file}"
-        val digest = release.sha256?.let { MessageDigest.getInstance("SHA-256") }
+        val digest = MessageDigest.getInstance("SHA-256")
         downloadedBytes = 0
         totalBytes = 0
         val connection = openHttpConnection(url)
@@ -244,17 +275,15 @@ object AlpineRootfs {
                 // minirootfs into hundreds of thousands of tiny reads on first-time setup.
                 val buffered = java.io.BufferedInputStream(raw, 64 * 1024)
                 val counted = ProgressInputStream(buffered) { n -> downloadedBytes += n }
-                val hashed: InputStream = if (digest != null) java.security.DigestInputStream(counted, digest) else counted
+                val hashed: InputStream = java.security.DigestInputStream(counted, digest)
                 GZIPInputStream(hashed, 64 * 1024).use { gz -> extractUstar(gz, root) }
             }
         } finally {
             connection.disconnect()
         }
-        if (digest != null) {
-            val actual = digest.digest().joinToString("") { "%02x".format(it) }
-            if (!actual.equals(release.sha256, ignoreCase = true)) {
-                throw IllegalStateException("checksum mismatch for ${release.file}")
-            }
+        val actual = digest.digest().joinToString("") { "%02x".format(it) }
+        if (!actual.equals(expected, ignoreCase = true)) {
+            throw IllegalStateException("checksum mismatch for ${release.file}")
         }
     }
 
@@ -302,16 +331,32 @@ object AlpineRootfs {
     private const val MAX_TEXT_BYTES = 4 * 1024 * 1024
 
     private fun openHttpConnection(url: String): HttpURLConnection {
-        val connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 20_000
-        connection.readTimeout = 60_000
-        connection.instanceFollowRedirects = true
-        connection.setRequestProperty("User-Agent", "AlpDroid/1.0")
-        val code = connection.responseCode
-        if (code != HttpURLConnection.HTTP_OK) {
-            throw IllegalStateException("HTTP $code fetching $url")
+        // Manual redirect handling: instanceFollowRedirects would follow a compromised mirror
+        // to any scheme/host (http://attacker). Only same-scheme https hops, max 5.
+        var current = url
+        repeat(6) {
+            val connection = URL(current).openConnection() as HttpURLConnection
+            connection.connectTimeout = 20_000
+            connection.readTimeout = 60_000
+            connection.instanceFollowRedirects = false
+            connection.setRequestProperty("User-Agent", "AlpDroid/1.0")
+            val code = connection.responseCode
+            if (code in 300..399) {
+                val loc = connection.getHeaderField("Location")
+                connection.disconnect()
+                val next = runCatching { URL(URL(current), loc ?: "").toString() }.getOrNull()
+                    ?: throw IllegalStateException("bad redirect from $current")
+                if (!next.startsWith("https://")) throw IllegalStateException("refusing non-https redirect: $next")
+                current = next
+                return@repeat
+            }
+            if (code != HttpURLConnection.HTTP_OK) {
+                connection.disconnect()
+                throw IllegalStateException("HTTP $code fetching $current")
+            }
+            return connection
         }
-        return connection
+        throw IllegalStateException("too many redirects fetching $url")
     }
 
     // --- Minimal ustar extractor: directories, regular files, symlinks. Anything else in the
@@ -339,6 +384,8 @@ object AlpineRootfs {
             if (totalBytes > MAX_TAR_BYTES) throw IllegalStateException("archive extracts more than ${MAX_TAR_BYTES / (1024 * 1024)} MB")
 
             if (name.isEmpty() || name == ".") {
+                // Skip data bytes too: padding-only skip mis-frames every later entry.
+                skipSized(input, size, copyBuf)
                 skipPadding(input, size)
                 continue
             }
@@ -347,19 +394,35 @@ object AlpineRootfs {
             if (!dest.canonicalPath.startsWith("$rootPath/")) {
                 throw SecurityException("tar entry escapes rootfs: $name")
             }
+            // Symlink-planted parents from earlier entries in this same archive: canonicalPath
+            // above resolves through them and can still pass while writing onto the host.
+            if (hasSymlinkParent(dest, root)) {
+                throw SecurityException("tar entry runs through a symlink: $name")
+            }
             when (type) {
                 '5' -> {
+                    if (java.nio.file.Files.isSymbolicLink(dest.toPath())) throw SecurityException("tar entry is a directory over a symlink: $name")
                     dest.mkdirs()
-                    chmod(dest, mode.takeIf { it != 0 } ?: 0b111101101) // 755
+                    if (java.nio.file.Files.isSymbolicLink(dest.toPath())) throw SecurityException("tar entry is a directory over a symlink: $name")
+                    chmodNoFollow(dest, mode.takeIf { it != 0 } ?: 0b111101101) // 755
                 }
                 '0', '\u0000' -> {
                     dest.parentFile?.mkdirs()
                     dest.outputStream().use { out -> copySized(input, out, size, copyBuf) }
                     skipPadding(input, size)
-                    chmod(dest, mode.takeIf { it != 0 } ?: 0b110100100) // 644
+                    chmodNoFollow(dest, mode.takeIf { it != 0 } ?: 0b110100100) // 644
                 }
                 '2' -> {
                     dest.parentFile?.mkdirs()
+                    // A symlink whose target escapes the rootfs would resolve onto the host
+                    // once proot runs (absolute targets are rebased under root, so only
+                    // relative escapes and absolute-outside-root matter — checked lexically).
+                    val resolvedTarget = if (linkName.startsWith("/")) File(root, linkName.removePrefix("/")) else File(dest.parentFile, linkName)
+                    val resolvedNormalized = resolvedTarget.toPath().normalize()
+                    val rootNormalized = root.toPath().normalize()
+                    if (resolvedNormalized != rootNormalized && !resolvedNormalized.startsWith(rootNormalized)) {
+                        throw SecurityException("tar symlink target escapes rootfs: $name -> $linkName")
+                    }
                     dest.delete()
                     Os.symlink(linkName, dest.absolutePath)
                 }
@@ -370,6 +433,34 @@ object AlpineRootfs {
 
     private fun chmod(file: File, mode: Int) {
         runCatching { Os.chmod(file.absolutePath, mode and 0b1111111111) }
+    }
+
+    /** chmod that never follows symlinks (Os.chmod does) — a planted link would otherwise
+     *  chmod its host target. */
+    private fun chmodNoFollow(file: File, mode: Int) {
+        if (java.nio.file.Files.isSymbolicLink(file.toPath())) return
+        chmod(file, mode)
+    }
+
+    /** True when any component of dest's parent chain below root is a symlink (NOFOLLOW).
+     *  Staging is freshly created and single-threaded here, so a direct walk is sound. */
+    private fun hasSymlinkParent(dest: File, root: File): Boolean {
+        val rootPath = root.absolutePath
+        var p = dest.parentFile
+        while (p != null && p != root && p.absolutePath.startsWith(rootPath)) {
+            if (java.nio.file.Files.isSymbolicLink(p.toPath())) return true
+            p = p.parentFile
+        }
+        return false
+    }
+
+    private fun skipSized(input: InputStream, size: Long, buf: ByteArray) {
+        var remaining = size
+        while (remaining > 0) {
+            val n = input.read(buf, 0, minOf(buf.size.toLong(), remaining).toInt())
+            if (n == -1) throw java.io.EOFException("truncated tar entry")
+            remaining -= n
+        }
     }
 
     /** Tar-bomb caps for [extractUstar] — a minirootfs is ~50MB; 2GB/500k is headroom. */

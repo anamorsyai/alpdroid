@@ -16,7 +16,9 @@ import java.util.concurrent.TimeUnit
 class PluginJobs(private val app: AlpineTermApp) {
     data class Job(val plugin: Plugins.Plugin, val id: String, val label: String, val script: String, val everyMinutes: Int?)
 
-    private val pool = Executors.newCachedThreadPool { r -> Thread(r, "plugin-job").apply { isDaemon = true } }
+    // Fixed pool, not cached: tick()/launch() submit per job, and a crafted plugin.json with
+    // hundreds of schedules would otherwise spawn unbounded threads (each holding a PtySession).
+    private val pool = Executors.newFixedThreadPool(4) { r -> Thread(r, "plugin-job").apply { isDaemon = true } }
     private val scheduler = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "plugin-scheduler").apply { isDaemon = true } }
     private val running = ConcurrentHashMap<String, PtySession>()
     private val watchdogs = ConcurrentHashMap<String, Thread>()

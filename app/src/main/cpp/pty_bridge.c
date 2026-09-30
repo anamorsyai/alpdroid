@@ -93,14 +93,37 @@ static void set_winsize(int master, int rows, int cols) {
 static volatile sig_atomic_t child_exited = 0;
 static int self_pipe_write_fd = -1;
 
-static void sigchld_handler(int sig) {
-    (void) sig;
-    child_exited = 1;
+// P0: tab close used to orphan the whole guest. Kotlin's destroy() only kills this relay
+// process itself; the guest (proot + shell + daemons) is our *child's* subtree and got
+// reparented to init, still running. The child calls setsid() below, so its pgid == its pid:
+// SIGTERM here SIGKILLs the entire guest process group, then wakes poll() so the SIGCHLD
+// path reaps the child and this process exits promptly. destroyForcibly() on the Kotlin
+// side is the final fallback if even this wedges.
+static volatile sig_atomic_t term_requested = 0;
+static pid_t g_child = -1;
+
+static void wake_self_pipe(void) {
     if (self_pipe_write_fd >= 0) {
         char b = 0;
         ssize_t ignored = write(self_pipe_write_fd, &b, 1);
         (void) ignored; // best-effort wakeup; WNOHANG below still catches it on the next poll either way
     }
+}
+
+static void sigchld_handler(int sig) {
+    (void) sig;
+    child_exited = 1;
+    wake_self_pipe();
+}
+
+static void sigterm_handler(int sig) {
+    (void) sig;
+    term_requested = 1;
+    if (g_child > 0) {
+        kill(-g_child, SIGKILL);
+        kill(g_child, SIGKILL);
+    }
+    wake_self_pipe();
 }
 
 /** Returns 1 and fills *out_status if this function itself reaped `child` (the SIGCHLD path,
@@ -144,15 +167,25 @@ static int relay_loop(int master, int control_fd, pid_t child, int self_pipe_rea
             break;
         }
 
+        // SIGTERM (tab closed): guest group already SIGKILLed by the handler — stop relaying
+        // and let the caller reap the child. Checked first so a flood of pty output can't
+        // starve shutdown.
+        if (term_requested) break;
+
         if (fds[master_idx].revents & (POLLIN | POLLHUP | POLLERR)) {
             ssize_t r = read(master, buf, sizeof(buf));
             if (r <= 0) break; // master closed: every process holding the pty is gone
             ssize_t off = 0;
+            int stdout_broken = 0;
             while (off < r) {
                 ssize_t w = write(STDOUT_FILENO, buf + off, (size_t) (r - off));
-                if (w <= 0) { if (errno == EINTR) continue; break; }
+                // EPIPE (Kotlin closed our stdout: tab gone) used to break only this inner
+                // loop — poll() then re-read the master and re-EPIPE'd in a 100% CPU spin
+                // until externally killed. Treat it as session-over, not retryable.
+                if (w <= 0) { if (errno == EINTR) continue; if (errno == EPIPE) stdout_broken = 1; break; }
                 off += w;
             }
+            if (stdout_broken) break;
         }
 
         if (fds[sigchld_idx].revents & POLLIN) {
@@ -164,9 +197,15 @@ static int relay_loop(int master, int control_fd, pid_t child, int self_pipe_rea
             pid_t reaped = waitpid(child, &status, WNOHANG);
             if (reaped == child) {
                 // Drain whatever the shell already wrote before exiting — a final prompt redraw,
-                // an error message — with one last non-blocking pass, so it isn't lost just
+                // an error message — with one last bounded pass, so it isn't lost just
                 // because this loop is about to end on our own initiative rather than master's EOF.
+                // Bounded (200ms idle): a detached daemon holding the slave open with nothing to
+                // say used to wedge this blocking read() forever, pinning the relay process.
                 for (;;) {
+                    struct pollfd pfd;
+                    pfd.fd = master;
+                    pfd.events = POLLIN;
+                    if (poll(&pfd, 1, 200) <= 0) break;
                     ssize_t r = read(master, buf, sizeof(buf));
                     if (r <= 0) break;
                     ssize_t off = 0;
@@ -287,6 +326,13 @@ int main(int argc, char **argv) {
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_NOCLDSTOP; // only "child exited", not every stop/continue of a job in it
     sigaction(SIGCHLD, &sa, NULL);
+    // Tab-close path: SIGKILLs the whole guest process group (see handler above).
+    struct sigaction sa_term;
+    memset(&sa_term, 0, sizeof(sa_term));
+    sa_term.sa_handler = sigterm_handler;
+    sigemptyset(&sa_term.sa_mask);
+    sa_term.sa_flags = 0;
+    sigaction(SIGTERM, &sa_term, NULL);
 
     pid_t child = fork();
     if (child < 0) {
@@ -335,6 +381,7 @@ int main(int argc, char **argv) {
     // *this* process to itself (sigchld_handler writes, relay_loop's poll() reads), so there is
     // no "other side" of it to hand off and no unused end in the parent to close.
     signal(SIGPIPE, SIG_IGN);
+    g_child = child; // visible to sigterm_handler: pgid == pid (child did setsid())
     int status = 0;
     int reaped_in_loop = relay_loop(master, control_fd, child, self_pipe[0], &status);
     if (!reaped_in_loop) {
@@ -342,10 +389,24 @@ int main(int argc, char **argv) {
         // happens immediately in the overwhelmingly common case of a program that doesn't spawn
         // anything holding the pty open past its own exit) — child is still ours to reap here,
         // exactly as before this file tracked SIGCHLD at all.
-        waitpid(child, &status, 0);
+        // If we got here via SIGTERM, the guest group is already SIGKILLed: reap without
+        // hanging — a daemon that setsid(2)'d out of the group could otherwise wedge this
+        // blocking waitpid() forever.
+        if (term_requested) {
+            int waited = 0;
+            while (waitpid(child, &status, WNOHANG) != child && waited < 50) {
+                usleep(20000);
+                waited++;
+            }
+            if (waited >= 50) waitpid(child, &status, WNOHANG);
+        } else {
+            waitpid(child, &status, 0);
+        }
     }
     close(master);
     if (control_fd >= 0) close(control_fd);
+    close(self_pipe[0]);
+    close(self_pipe[1]);
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     return 1;
 }

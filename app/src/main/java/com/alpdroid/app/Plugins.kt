@@ -32,32 +32,34 @@ object Plugins {
 
     private fun parse(dir: File): Plugin {
         val j = JSONObject(File(dir, "plugin.json").readText())
+        // Caps: an unbounded manifest (100k fields/buttons/schedules from an agent-dropped
+        // plugin) would exhaust the scheduler loop and job pool on every tick.
         val fields = (j.optJSONArray("fields") ?: JSONArray()).let { a ->
-            (0 until a.length()).mapNotNull { i ->
+            (0 until minOf(a.length(), 30)).mapNotNull { i ->
                 val f = a.optJSONObject(i) ?: return@mapNotNull null
                 val id = f.optString("id")
                 val type = f.optString("type", "text")
                 if (!ID_RE.matches(id) || type !in setOf("text", "number", "toggle", "select")) return@mapNotNull null
-                Field(id, type, f.optString("label", id), f.opt("default")?.toString() ?: "", (f.optJSONArray("options") ?: JSONArray()).let { o -> (0 until o.length()).map { o.optString(it) } })
+                Field(id, type, f.optString("label", id).take(80), f.opt("default")?.toString()?.take(500) ?: "", (f.optJSONArray("options") ?: JSONArray()).let { o -> (0 until minOf(o.length(), 30)).map { o.optString(it).take(200) } })
             }
         }
         val buttons = (j.optJSONArray("buttons") ?: JSONArray()).let { a ->
-            (0 until a.length()).mapNotNull { i ->
+            (0 until minOf(a.length(), 30)).mapNotNull { i ->
                 val b = a.optJSONObject(i) ?: return@mapNotNull null
                 val script = b.optString("script")
                 if (!ID_RE.matches(b.optString("id")) || !SAFE_SCRIPT.matches(script) || script.contains("..") || script.startsWith("/") || script.startsWith("logs/")) return@mapNotNull null
-                Button(b.optString("id"), b.optString("label", b.optString("id")), script, b.optBoolean("background", false))
+                Button(b.optString("id"), b.optString("label", b.optString("id")).take(80), script, b.optBoolean("background", false))
             }
         }
         val schedules = (j.optJSONArray("schedules") ?: JSONArray()).let { a ->
-            (0 until a.length()).mapNotNull { i ->
+            (0 until minOf(a.length(), 20)).mapNotNull { i ->
                 val sc = a.optJSONObject(i) ?: return@mapNotNull null
                 val script = sc.optString("script")
                 if (!ID_RE.matches(sc.optString("id")) || !SAFE_SCRIPT.matches(script) || script.contains("..") || script.startsWith("/") || script.startsWith("logs/")) return@mapNotNull null
-                Schedule(sc.optString("id"), sc.optString("label", sc.optString("id")), script, sc.optInt("everyMinutes", 60).coerceIn(1, 10080))
+                Schedule(sc.optString("id"), sc.optString("label", sc.optString("id")).take(80), script, sc.optInt("everyMinutes", 60).coerceIn(1, 10080))
             }
         }
-        return Plugin(dir.name, j.optString("title", dir.name), j.optString("description", ""), fields, buttons, schedules, dir)
+        return Plugin(dir.name, j.optString("title", dir.name).take(120), j.optString("description", "").take(1000), fields, buttons, schedules, dir)
     }
 
     // --- saved field values -------------------------------------------------------------------
@@ -95,6 +97,21 @@ object Plugins {
     // re-hash. state.json/logs are excluded from both the hash and the mtime check.
     private val fpCache = mutableMapOf<String, Pair<Long, String>>()
 
+    /** Streams a file into the digest in 32KB chunks — never holds the whole file in memory,
+     *  so a huge file dropped into a plugin dir can't OOM the approval hash walk. */
+    private fun hashFile(md: MessageDigest, f: File) {
+        runCatching {
+            f.inputStream().buffered().use { input ->
+                val buf = ByteArray(32 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n == -1) break
+                    md.update(buf, 0, n)
+                }
+            }
+        }
+    }
+
     @Synchronized
     private fun fingerprintCached(p: Plugin): String {
         var mtime = 0L
@@ -106,7 +123,7 @@ object Plugins {
         }
         val md = MessageDigest.getInstance("SHA-256")
         p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }.filter { it.isFile && it.name != "state.json" }.sortedBy { it.path }.forEach {
-            md.update(it.relativeTo(p.dir).path.toByteArray()); md.update(runCatching { it.readBytes() }.getOrDefault(ByteArray(0)))
+            md.update(it.relativeTo(p.dir).path.toByteArray()); hashFile(md, it)
         }
         val hash = md.digest().joinToString("") { "%02x".format(it) }
         if (fpCache.size > 64) fpCache.clear()
@@ -129,7 +146,7 @@ object Plugins {
         var mtime = 0L
         p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }.filter { it.isFile && it.name != "state.json" }.sortedBy { it.path }.forEach {
             mtime = maxOf(mtime, it.lastModified())
-            md.update(it.relativeTo(p.dir).path.toByteArray()); md.update(runCatching { it.readBytes() }.getOrDefault(ByteArray(0)))
+            md.update(it.relativeTo(p.dir).path.toByteArray()); hashFile(md, it)
         }
         val hash = md.digest().joinToString("") { "%02x".format(it) }
         if (fpCache.size > 64) fpCache.clear()
@@ -148,6 +165,12 @@ object Plugins {
         val sb = StringBuilder()
         var shown = 0
         for (f in files) {
+            // Length check before reading: a huge file must not be pulled into memory just to
+            // display a capped preview of it.
+            if (f.length() > 1_000_000) {
+                sb.append("── ${f.relativeTo(p.dir).path} ──\n(over 1MB — inspect the folder before allowing)\n\n")
+                continue
+            }
             val text = runCatching { f.readText() }.getOrDefault("(unreadable)")
             sb.append("── ${f.relativeTo(p.dir).path} ──\n")
             val room = cap - shown

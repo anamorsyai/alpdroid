@@ -1,0 +1,1 @@
+Security & stability pass: staged rootfs install, guest cleanup on tab close, bridge hardening, choosable backup location, and a full round of audit fixes.

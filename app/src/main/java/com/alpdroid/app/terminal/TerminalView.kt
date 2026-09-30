@@ -179,6 +179,10 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
     private var searchMatches: List<Int> = emptyList()
     private var searchMatchIndex = -1
     @Volatile private var searchTicket = 0
+    // Serialized: one keystroke per search thread used to pile N concurrent 2000-row scans;
+    // the ticket already discarded stale results, but the threads still burned CPU. Queued
+    // scans still check the ticket first and bail immediately when superseded.
+    private val searchExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "term-search").apply { isDaemon = true } }
 
     // Blinking block cursor: a plain Handler toggle rather than a ValueAnimator — this only
     // needs to flip a boolean and repaint twice a second, an Animator's overhead buys nothing.
@@ -193,8 +197,11 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             // view not shown) — nothing on screen changes on those ticks.
             val em = emulator
             if (em != null && em.cursorVisible && scrollOffset == 0 && isShown) {
-                val x = em.cursorCol * cellWidth
-                val y = (em.cursorRow * cellHeight).roundToInt().toFloat()
+                // Includes the centering offset and keyboard shift: without them the dirty rect
+                // missed the real cursor position (artifacts / missed repaint on narrow screens).
+                val shift = renderShiftPx(em)
+                val x = gridOffsetX + em.cursorCol * cellWidth
+                val y = (em.cursorRow * cellHeight).roundToInt().toFloat() - shift
                 invalidate(x.toInt(), y.toInt(), (x + cellWidth).toInt() + 1, (y + cellHeight).toInt() + 1)
             }
             blinkHandler.postDelayed(this, 530)
@@ -579,6 +586,9 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
     private fun touchToScreenCell(x: Float, y: Float): Pair<Int, Int> {
         val em = emulator ?: return 0 to 0
         if (em.rows < 1 || em.cols < 1) return 0 to 0
+        // Zero-guard: pre-layout or degenerate font metrics would otherwise divide by zero
+        // (Infinity silently coerced into a wrong-but-plausible cell).
+        if (cellWidth <= 0f || cellHeight <= 0f) return 0 to 0
         val screenRow = ((y + renderShiftPx(em)) / cellHeight).toInt().coerceIn(0, em.rows - 1)
         val col = ((x - gridOffsetX) / cellWidth).toInt().coerceIn(0, em.cols - 1)
         return screenRow to col
@@ -894,7 +904,8 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         val em = emulator ?: run { onDone(false, 0, 0); return }
         if (query.isEmpty()) { onDone(false, 0, 0); return }
         val ticket = ++searchTicket
-        Thread({
+        searchExecutor.execute {
+            if (ticket != searchTicket) return@execute // superseded while queued
             val gen = em.generation
             var matches = em.findRows(query)
             // Output kept streaming during the scan: rescan once (bounded) so the matches
@@ -920,7 +931,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
                 invalidate()
                 onDone(true, searchMatchIndex + 1, searchMatches.size)
             }
-        }, "term-search").apply { isDaemon = true; start() }
+        }
     }
 
     /** Jumps the view to the next (or previous) match for [query] in scrollback+screen. Returns
@@ -977,7 +988,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             Toast.makeText(context, "Pasted text truncated", Toast.LENGTH_SHORT).show()
         }
         if (emulator?.bracketedPasteEnabled == true) {
-            paste = paste.replace("\u001B[201~", "")
+            paste = paste.replace("\u001B[201~", "").replace("\u001B[200~", "")
             send(("\u001B[200~" + paste + "\u001B[201~").toByteArray(Charsets.UTF_8))
         } else {
             sendText(paste)

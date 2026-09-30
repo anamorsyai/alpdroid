@@ -68,20 +68,23 @@ class TerminalEmulator(
      *  a config change) and a *different* instance is the one actually on screen. Re-set by
      *  rebindTabOutputs() alongside TerminalTab.onOutput, the same pattern that field already uses. */
     var onBell: () -> Unit = onBell
-    var rows: Int = max(1, rows)
+    // Volatile: mutated under @Synchronized on the PTY reader thread, read directly on the UI
+    // thread (blink runnable, cursor draw, touch handling) — without visibility guarantees the
+    // UI can spin on stale geometry after a resize.
+    @Volatile var rows: Int = max(1, rows)
         private set
-    var cols: Int = max(1, cols)
+    @Volatile var cols: Int = max(1, cols)
         private set
 
-    var cursorRow = 0
+    @Volatile var cursorRow = 0
         private set
-    var cursorCol = 0
+    @Volatile var cursorCol = 0
         private set
-    var cursorVisible = true
+    @Volatile var cursorVisible = true
         private set
 
     /** Bumped on every mutation; [com.alpdroid.app.terminal.TerminalView] compares this to know when to redraw. */
-    var generation = 0L
+    @Volatile var generation = 0L
         private set
 
     private var screen: MutableList<Array<Cell>> = MutableList(rows) { blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG) }
@@ -183,10 +186,31 @@ class TerminalEmulator(
     private val csiBuf = StringBuilder()
     private val utf8Pending = ArrayList<Int>(4)
 
-    @Synchronized
+    // Deferred callbacks: feed() runs under the emulator lock on the PTY reader thread, but
+    // onBell/onAltScreenChanged touch Activity UI (binder IPC, view ops) and respond() writes
+    // the pty pipe (blocks when full) — invoking any of them with the lock held stalls every
+    // other emulator reader and risks lock-order inversion. Sites below only record; feed()
+    // invokes after unlocking. Single-reader-thread design (one PtySession stdout pump per
+    // session), so no extra synchronization on these three.
+    private var pendingBells = 0
+    private var pendingAlt: Boolean? = null
+    private var pendingResponses: MutableList<String>? = null
+    // OSC has no buffer (only its terminator is watched) — without a length cap a binary dump
+    // containing ESC ] with no BEL/ESC\ would wedge the parser in OSC state indefinitely.
+    private var oscLen = 0
+
     fun feed(buf: ByteArray, len: Int) {
-        for (i in 0 until len) processByte(buf[i].toInt() and 0xFF)
-        generation++
+        // Clamp: a caller passing len > buf.size would otherwise throw inside the reader thread.
+        val n = len.coerceIn(0, buf.size)
+        synchronized(this) {
+            for (i in 0 until n) processByte(buf[i].toInt() and 0xFF)
+            generation++
+        }
+        // Outside the lock (see fields above). Bells coalesce: one notification per chunk, not
+        // per BEL byte — `yes $'\a'` must not notification-spam.
+        if (pendingBells > 0) { pendingBells = 0; onBell() }
+        pendingAlt?.let { pendingAlt = null; onAltScreenChanged?.invoke(it) }
+        pendingResponses?.let { pendingResponses = null; it.forEach { respond(it) } }
     }
 
     /** Client-side only — clears the view without touching the shell process (the "Clear" context-menu action). */
@@ -603,6 +627,11 @@ class TerminalEmulator(
         val cursorVisible: Boolean,
     )
 
+    // NOTE: intentionally shallow — the row lists are copied but Cells are shared with the
+    // live grid. A deep copy per frame (200k+ cells of scrollback at 60fps) is prohibitive;
+    // torn glyph/style reads from the PTY thread are cosmetic-only (array bounds come from the
+    // same snapshot, so no crash), and geometry fields are @Volatile. Callers needing a stable
+    // text scan (search, selection) copy row text under the emulator lock instead.
     @Synchronized
     fun renderSnapshot(): RenderSnapshot = RenderSnapshot(
         rows = rows,
@@ -640,7 +669,7 @@ class TerminalEmulator(
         }
         when {
             b == 0x1B -> { state = State.ESCAPE; csiBuf.clear() }
-            b == 0x07 -> onBell()
+            b == 0x07 -> pendingBells++
             b == 0x08 -> cursorCol = max(0, cursorCol - 1)
             b == 0x09 -> { cursorCol = min(cols - 1, ((cursorCol / 8) + 1) * 8) }
             b == 0x0A -> lineFeed()
@@ -691,7 +720,7 @@ class TerminalEmulator(
         val c = b.toChar()
         when (c) {
             '[' -> { state = State.CSI; csiBuf.clear() }
-            ']' -> { state = State.OSC; csiBuf.clear() }
+            ']' -> { state = State.OSC; csiBuf.clear(); oscLen = 0 }
             '7' -> { savedRow = cursorRow; savedCol = cursorCol; state = State.NORMAL }
             '8' -> { cursorRow = min(savedRow, rows - 1); cursorCol = min(savedCol, cols - 1); state = State.NORMAL }
             'c' -> { resetHard(); state = State.NORMAL }
@@ -713,6 +742,9 @@ class TerminalEmulator(
         // in front of the next line of real output.
         if (b == 0x07) state = State.NORMAL
         else if (b == 0x1B) state = State.ESCAPE
+        // Length cap: an unterminated OSC (binary dump through the terminal) must not wedge the
+        // parser in this state indefinitely, swallowing all later output until some far-off BEL.
+        else if (++oscLen > 1024) { state = State.NORMAL; oscLen = 0 }
     }
 
     private fun processCsi(b: Int) {
@@ -747,7 +779,9 @@ class TerminalEmulator(
         val private = prefixChar == '?'
         val body = if (private) raw.substring(1) else raw
         val params = body.split(";").map { it.toIntOrNull() ?: 0 }
-        fun p(i: Int, default: Int = 0) = params.getOrNull(i)?.takeIf { it != 0 } ?: default
+        // Clamp: an unbounded count (e.g. 2147483647) would overflow cursor arithmetic to a
+        // negative row/col and crash on the next screen[] access.
+        fun p(i: Int, default: Int = 0) = params.getOrNull(i)?.takeIf { it != 0 }?.coerceIn(0, 9999) ?: default
 
         when (final) {
             'A' -> cursorRow = max(topMargin, cursorRow - max(1, p(0, 1)))
@@ -779,7 +813,7 @@ class TerminalEmulator(
             'l' -> setMode(private, params, false)
             's' -> { savedRow = cursorRow; savedCol = cursorCol }
             'u' -> { cursorRow = min(savedRow, rows - 1); cursorCol = min(savedCol, cols - 1) }
-            'n' -> if (p(0, 0) == 6) respond("\u001B[${cursorRow + 1};${cursorCol + 1}R")
+            'n' -> if (p(0, 0) == 6) pendingResponses?.add("\u001B[${cursorRow + 1};${cursorCol + 1}R") ?: run { pendingResponses = mutableListOf("\u001B[${cursorRow + 1};${cursorCol + 1}R") }
             else -> {} // unhandled final byte: ignore rather than crash
         }
     }
@@ -798,7 +832,8 @@ class TerminalEmulator(
                 // ignored and every such program always got hard-wrapped regardless of what it
                 // asked for.
                 7 -> autoWrapEnabled = enable
-                1049, 1047, 47 -> switchAltScreen(enable)
+                1049 -> switchAltScreen(enable, clear = true)
+                1047, 47 -> switchAltScreen(enable, clear = false)
                 // Mouse click reporting (1000: press/release, 1002: +drag, 1003: +plain motion) —
                 // a full-screen TUI (opencode, htop, a mouse-aware vim/less) that turns this on
                 // wants taps translated into click escape sequences sent to it, not swallowed by
@@ -834,13 +869,15 @@ class TerminalEmulator(
      *  barrier between "the main thread wired this callback" and "the reader thread checks it". */
     @Volatile var onAltScreenChanged: ((Boolean) -> Unit)? = null
 
-    private fun switchAltScreen(enable: Boolean) {
+    private fun switchAltScreen(enable: Boolean, clear: Boolean) {
         if (enable) {
             if (primaryScreen != null) return // already showing the alt screen; ignore a nested/duplicate enable
             primaryScreen = screen
             primaryCursorRow = cursorRow
             primaryCursorCol = cursorCol
-            if (altScreen == null) altScreen = MutableList(rows) { blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG) }
+            // 1049 always starts blank; 1047/47 preserve. Reusing a stale buffer showed the
+            // previous fullscreen app's content on the next enter.
+            if (clear || altScreen == null) altScreen = MutableList(rows) { blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG) }
             screen = altScreen!!
             cursorRow = 0
             cursorCol = 0
@@ -852,7 +889,8 @@ class TerminalEmulator(
             cursorRow = primaryCursorRow.coerceIn(0, rows - 1)
             cursorCol = primaryCursorCol.coerceIn(0, cols - 1)
         }
-        onAltScreenChanged?.invoke(enable)
+        // Deferred: invoked by feed() after unlocking (see pendingAlt).
+        pendingAlt = enable
     }
 
     private fun applySgr(paramsIn: List<Int>) {
@@ -898,6 +936,11 @@ class TerminalEmulator(
     // --- Screen mutation -----------------------------------------------------------------
 
     private fun putChar(c: Char) {
+        // Guard: transient out-of-range cursor (resize race, hostile CSI) must clamp, not crash.
+        // cursorCol == cols is the legitimate wrap-pending state (set by cursorCol++ below), so
+        // the upper bound stays cols, not cols - 1 — the wrap branch right below handles it.
+        cursorRow = cursorRow.coerceIn(0, rows - 1)
+        cursorCol = cursorCol.coerceIn(0, cols)
         if (cursorCol >= cols) {
             if (!autoWrapEnabled) {
                 // Overwrite the last column in place instead of wrapping — standard terminal
@@ -947,6 +990,7 @@ class TerminalEmulator(
                             it.wrapped = false
                             it.fg = TerminalColors.DEFAULT_FG; it.bg = TerminalColors.DEFAULT_BG
                             it.fgKind = Cell.KIND_DEFAULT; it.bgKind = Cell.KIND_DEFAULT
+                            it.bold = false; it.underline = false; it.reverse = false
                         }
                     },
                 )
@@ -980,14 +1024,16 @@ class TerminalEmulator(
     private fun insertChars(n: Int) {
         val row = screen[cursorRow]
         val count = min(n, cols - cursorCol)
-        for (i in cols - 1 downTo cursorCol + count) row[i] = row[i - count]
+        // Copy: Cells are mutable and putChar edits in place — sharing one instance across
+        // two columns would make a later write to one visibly rewrite the other.
+        for (i in cols - 1 downTo cursorCol + count) row[i] = row[i - count].copy()
         for (i in cursorCol until cursorCol + count) row[i] = Cell(fg = curFg, bg = curBg, fgKind = curFgKind, bgKind = curBgKind)
     }
 
     private fun deleteChars(n: Int) {
         val row = screen[cursorRow]
         val count = min(n, cols - cursorCol)
-        for (i in cursorCol until cols - count) row[i] = row[i + count]
+        for (i in cursorCol until cols - count) row[i] = row[i + count].copy()
         for (i in cols - count until cols) row[i] = Cell(fg = curFg, bg = curBg, fgKind = curFgKind, bgKind = curBgKind)
     }
 
@@ -1010,6 +1056,9 @@ class TerminalEmulator(
         when (mode) {
             0 -> { eraseInLine(0); for (r in cursorRow + 1 until rows) screen[r] = blankRow(cols, curFg, curBg, curFgKind, curBgKind) }
             1 -> { eraseInLine(1); for (r in 0 until cursorRow) screen[r] = blankRow(cols, curFg, curBg, curFgKind, curBgKind) }
+            // ESC[3J clears the scrollback buffer (xterm); previously fell into the full-clear
+            // branch, so scrollback survived printf '\e[3J'.
+            3 -> { scrollback.clear(); pendingRestoreCount = 0 }
             else -> for (r in 0 until rows) screen[r] = blankRow(cols, curFg, curBg, curFgKind, curBgKind)
         }
         // The `clear` utility commonly sends cursor-home followed by a *bare* ESC[J (mode 0, erase
@@ -1026,6 +1075,15 @@ class TerminalEmulator(
     private fun resetHard() {
         for (r in 0 until rows) screen[r] = blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG)
         pendingRestoreCount = 0
+        scrollback.clear()
+        // ESC c is a full reset: leave the alt screen too, or a fullscreen app's grid (and its
+        // stale size expectations) survives a reset that was supposed to clear everything.
+        if (primaryScreen != null) {
+            screen = primaryScreen!!
+            primaryScreen = null
+            pendingAlt = false
+        }
+        altScreen = null
         cursorRow = 0; cursorCol = 0
         curFg = TerminalColors.DEFAULT_FG; curBg = TerminalColors.DEFAULT_BG
         curFgKind = Cell.KIND_DEFAULT; curBgKind = Cell.KIND_DEFAULT

@@ -1,6 +1,6 @@
 # AlpDroid
 
-![version](https://img.shields.io/static/v1?label=version&message=1.7.14&color=blue)
+![version](https://img.shields.io/static/v1?label=version&message=1.7.18&color=blue)
 ![license](https://img.shields.io/static/v1?label=license&message=MIT&color=green)
 ![platform](https://img.shields.io/static/v1?label=platform&message=Android&color=brightgreen)
 ![minSdk](https://img.shields.io/static/v1?label=minSdk&message=24&color=orange)

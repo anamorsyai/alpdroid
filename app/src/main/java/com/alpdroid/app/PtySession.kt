@@ -35,9 +35,11 @@ class PtySession private constructor(
     private val writeExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "pty-write").apply { isDaemon = true } }
 
     fun writeAsync(bytes: ByteArray) {
-        writeExecutor.execute {
+        // Guard: execute() after destroy()'s shutdownNow() throws RejectedExecutionException
+        // synchronously — a late IME keystroke racing tab close must be dropped, not crash.
+        runCatching { if (!writeExecutor.isShutdown) writeExecutor.execute {
             runCatching { stdin.write(bytes); stdin.flush() }
-        }
+        } }
     }
 
     @Volatile
@@ -172,6 +174,14 @@ class PtySession private constructor(
     fun destroy() {
         destroyed = true
         runCatching { process.destroy() }
+        // The guest tree (proot + shell + daemons) is the bridge's child subtree: destroy()
+        // SIGTERMs the bridge, whose handler SIGKILLs that whole process group — but a wedged
+        // bridge must never pin a leaked guest. Re-check after a grace period and force.
+        // Daemon thread: destroy() is called from UI and reader threads alike, never blocks.
+        Thread({
+            runCatching { process.waitFor(2000, java.util.concurrent.TimeUnit.MILLISECONDS) }
+            if (runCatching { process.exitValue() }.isFailure) runCatching { process.destroyForcibly() }
+        }, "pty-destroy").apply { isDaemon = true; start() }
         // shutdownNow() (not shutdown()) — a write that's currently blocked (the exact scenario
         // this executor exists to isolate from other tabs) should be interrupted right away along
         // with the rest of the session tearing down, not left to drain on its own.
@@ -199,7 +209,10 @@ class PtySession private constructor(
             workingDirectory: File,
             env: Map<String, String>,
         ): PtySession {
-            val fifo = File(controlFifoDir, "pty-ctl-${System.nanoTime()}.fifo")
+            // UUID, not nanoTime (which restarts on reboot and can theoretically collide for
+            // two rapid tabs) — plus an existence check so a squatted path fails loudly.
+            val fifo = File(controlFifoDir, "pty-ctl-${java.util.UUID.randomUUID()}.fifo")
+            if (fifo.exists()) throw IllegalStateException("control fifo already exists")
             fifo.delete()
             Os.mkfifo(fifo.absolutePath, OsConstants.S_IRUSR or OsConstants.S_IWUSR)
 

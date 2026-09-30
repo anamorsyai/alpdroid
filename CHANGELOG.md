@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.7.19 — Security & stability pass
+
+- Full audit fixes: terminal cell-aliasing, CSI overflow guards, feed bounds checks.
+- Rootfs install now serialized, staged + checksum-gated before swap; HTTPS-only redirects.
+- Tab close kills the whole guest tree (bridge SIGTERM handler + forced reaper).
+- Agent bridge: ephemeral-port fallback against loopback squatting, request caps.
+- Backup/restore to a user-chosen file (survives uninstall); extractor hardened.
+- Restore no longer discards a good install marker on failure; own backup thread.
+- Package search injection fix; plugin manifest/hash caps; DNS TTL + fallback fix.
+
 ## 1.7.7
 
 - Async terminal search with match counter.

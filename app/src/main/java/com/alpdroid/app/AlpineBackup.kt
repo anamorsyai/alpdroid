@@ -36,12 +36,22 @@ object AlpineBackup {
         // Write to a temp sibling and rename into place: an aborted run (killed app, full
         // disk) used to leave a truncated file at the real path that looked restorable.
         val tmp = File(destTarGz.parentFile, "${destTarGz.name}.part")
-        GZIPOutputStream(tmp.outputStream().buffered()).use { gz ->
+        tmp.outputStream().buffered().use { fileOut ->
+            backupToStream(root, fileOut, onEntry, isCancelled)
+        }
+        if (!tmp.renameTo(destTarGz)) throw IllegalStateException("could not finalize backup")
+    }
+
+    /** Stream variant for user-chosen locations (SAF `ACTION_CREATE_DOCUMENT`): the caller
+     *  owns the stream (a `ContentResolver` URI, not a `File`), so no temp-file + rename —
+     *  a killed process can still leave a partial file behind, same trade-off as any SAF
+     *  write. Internal backups via [backup] above keep the atomic rename. */
+    fun backupToStream(root: File, out: OutputStream, onEntry: (count: Int) -> Unit = {}, isCancelled: () -> Boolean = { false }) {
+        GZIPOutputStream(out.buffered()).use { gz ->
             val writer = UstarWriter(gz)
             addTree(writer, root, root, intArrayOf(0), onEntry, isCancelled)
             writer.finish()
         }
-        if (!tmp.renameTo(destTarGz)) throw IllegalStateException("could not finalize backup")
     }
 
     /** Live secrets that are regenerated at every session start — never copied into a backup that sits
@@ -91,6 +101,14 @@ object AlpineBackup {
      *  a partial restore never touches the live tree (a failed validation previously left
      *  nothing usable behind, since the wipe came first). */
     fun restore(srcTarGz: File, destRoot: File, onEntry: (count: Int) -> Unit = {}, isCancelled: () -> Boolean = { false }) {
+        srcTarGz.inputStream().buffered().use { fileIn ->
+            restoreFromStream(fileIn, destRoot, onEntry, isCancelled)
+        }
+    }
+
+    /** Stream variant for user-chosen files (SAF `ACTION_OPEN_DOCUMENT`): reads any
+     *  `.tar.gz` the user picks, same validation and tar-bomb caps as [restore]. */
+    fun restoreFromStream(src: java.io.InputStream, destRoot: File, onEntry: (count: Int) -> Unit = {}, isCancelled: () -> Boolean = { false }) {
         // Extract into a sidecar, swap only on success: a crafted archive that throws on
         // entry N used to leave the live rootfs already wiped with nothing usable behind.
         val staging = File(destRoot.parentFile, destRoot.name + ".restoring")
@@ -109,7 +127,7 @@ object AlpineBackup {
         // declared name never depends on what's already been written.
         val rootNormalized = root.toPath().normalize()
         val verifiedDirs = mutableSetOf<String>()
-        GZIPInputStream(srcTarGz.inputStream().buffered()).use { input ->
+        GZIPInputStream(src.buffered()).use { input ->
             val header = ByteArray(512)
             while (true) {
                 readFully(input, header)
@@ -120,7 +138,7 @@ object AlpineBackup {
                 val linkName = header.readString(157, 100).trimEnd('\u0000')
                 val size = header.readString(124, 12).trimEnd('\u0000', ' ').toLongOrNull(8) ?: 0L
 
-                if (name.isEmpty()) { skipPadding(input, size); continue }
+                if (name.isEmpty()) { skipSized(input, size); skipPadding(input, size); continue }
                 // Tar-bomb guard (same threat class as FileOps' zip caps): this reads any
                 // user-picked .tar.gz, and the size field is attacker-controlled.
                 if (++count > MAX_RESTORE_ENTRIES) throw IllegalStateException("archive has more than $MAX_RESTORE_ENTRIES entries")
@@ -135,20 +153,32 @@ object AlpineBackup {
                 // Symlink-planted parents: entry 1 `m -> /sdcard` (absolute targets are
                 // rebased inside, so allowed) followed by file `m/pwn` (lexically inside)
                 // would otherwise write through `m` onto the host filesystem, since the
-                // lexical check never looks at intermediate components.
-                if ((type == '5' || type == '0' || type == '\u0000') && hasSymlinkParent(destNormalized, rootNormalized, verifiedDirs)) {
+                // lexical check never looks at intermediate components. Symlink entries
+                // themselves are included: `m/pwn -> ...` after `m -> /sdcard` would
+                // otherwise create the link on the host filesystem.
+                if ((type == '5' || type == '0' || type == '\u0000' || type == '2') && hasSymlinkParent(destNormalized, rootNormalized, verifiedDirs)) {
                     throw SecurityException("backup entry runs through a symlink: $name")
                 }
 
                 when (type) {
                     // 0xFFF (not 0b1111111111/0o1777) so setuid/setgid survive a restore too, not
                     // just the sticky bit and permission bits — matching addTree()'s own mask above.
-                    '5' -> { dest.mkdirs(); verifiedDirs.add(destNormalized.toString()); runCatching { Os.chmod(dest.absolutePath, mode and 0xFFF) } }
+                    '5' -> {
+                        // mkdirs() follows a pre-existing symlink at dest (planted by an earlier
+                        // entry) — never bless that as a verified clean dir, and never chmod
+                        // through it (Os.chmod follows links: it would chmod the host target).
+                        if (Files.isSymbolicLink(dest.toPath())) throw SecurityException("backup entry is a directory over a symlink: $name")
+                        dest.mkdirs()
+                        if (Files.isSymbolicLink(dest.toPath())) throw SecurityException("backup entry is a directory over a symlink: $name")
+                        verifiedDirs.add(destNormalized.toString())
+                        runCatching { Os.chmod(dest.absolutePath, mode and 0xFFF) }
+                    }
                     '0', '\u0000' -> {
                         dest.parentFile?.mkdirs()
                         dest.outputStream().use { out -> copySized(input, out, size) }
                         skipPadding(input, size)
-                        runCatching { Os.chmod(dest.absolutePath, mode and 0xFFF) }
+                        // Nofollow: dest could have become a symlink between mkdirs and write.
+                        if (!Files.isSymbolicLink(dest.toPath())) runCatching { Os.chmod(dest.absolutePath, mode and 0xFFF) }
                     }
                     '2' -> {
                         // The entry's own path was already checked above, but that says nothing
@@ -240,6 +270,18 @@ object AlpineBackup {
             val n = input.read(buf, 0, minOf(buf.size.toLong(), remaining).toInt())
             if (n == -1) throw java.io.EOFException("truncated backup entry")
             out.write(buf, 0, n)
+            remaining -= n
+        }
+    }
+
+    /** Discards `size` data bytes (for entries with no usable name — skipPadding alone only
+     *  skips the alignment bytes, which mis-framed every later entry). */
+    private fun skipSized(input: java.io.InputStream, size: Long) {
+        val buf = ByteArray(32 * 1024)
+        var remaining = size
+        while (remaining > 0) {
+            val n = input.read(buf, 0, minOf(buf.size.toLong(), remaining).toInt())
+            if (n == -1) throw java.io.EOFException("truncated backup entry")
             remaining -= n
         }
     }

@@ -37,6 +37,10 @@ class AlpineTermApp : Application() {
      *  idle leftovers must never keep the process itself alive behind a gone UI. */
     val backgroundExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "alpdroid-bg").apply { isDaemon = true } }
 
+    /** Backup/restore have their own thread: a 5-minute rootfs backup on the single
+     *  backgroundExecutor used to wedge "+" (new tab) with no feedback until it finished. */
+    val backupRestoreExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "alpdroid-backup").apply { isDaemon = true } }
+
     /** Package search (AlpineSession.searchPackages) runs its own `apk update` over the network
      *  with a watchdog timeout, but even a bounded hang here must never share a thread with
      *  addTab/startSessionNow/backup/restore on [backgroundExecutor] — a wedged or slow search

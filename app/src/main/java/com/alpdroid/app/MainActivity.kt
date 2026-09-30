@@ -279,7 +279,11 @@ class MainActivity : Activity() {
         extraKeysScroll.visibility = if (settingsStore.showExtraKeys) View.VISIBLE else View.GONE
         terminalView.requestFocus()
         terminalView.resumeBlink()
-        (getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)?.showSoftInput(terminalView, 0)
+        // Keyboard only when explicitly asked (fresh widget session): popping it on every resume
+        // (back from installer, browser, Settings) used to cover the screen uninvited.
+        if (intent.action == AlpineWidgetProvider.ACTION_NEW_SESSION) {
+            (getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)?.showSoftInput(terminalView, 0)
+        }
     }
 
     override fun onPause() {
@@ -761,7 +765,7 @@ class MainActivity : Activity() {
                 val names = runCatching { AlpineSession.searchPackages(this@MainActivity, query) }.getOrDefault(emptyList())
                 val parsed = names.mapNotNull { line ->
                     PKG_VERSION_RE.find(line)?.groupValues?.get(1) ?: line.takeIf { it.isNotBlank() }
-                }.distinct()
+                }.distinct().filter { it.matches(PKG_NAME_RE) }
                 mainHandler.post {
                     searchStatus.text = if (parsed.isEmpty()) "No matches (or Alpine isn't set up yet)" else "${parsed.size} result(s)"
                     parsed.forEach { name ->
@@ -816,7 +820,9 @@ class MainActivity : Activity() {
                                 )
                                 setOnClickListener {
                                     drawerLayout.closeDrawer(GravityCompat.END)
-                                    runShortcutCommand("apk add --no-cache $name\n")
+                                    // Quoted: $name comes from the live network package index —
+                                    // validated by PKG_NAME_RE above, quoted here as defense in depth.
+                                    runShortcutCommand("apk add --no-cache '" + name.replace("'", "'\\''") + "'\n")
                                 }
                             },
                         )
@@ -978,9 +984,23 @@ class MainActivity : Activity() {
         panel.addView(sectionLabel("Backup"))
         panel.addView(guideLink("Backup & restore"))
         panel.addView(
+            TextView(this).apply {
+                text = "App-folder backups are deleted if the app is uninstalled — use \"chosen file\" to keep one in Downloads, on an SD card, or in the cloud."
+                setTextColor(0xFF8B93A1.toInt())
+                textSize = 12f
+                setPadding(0, 0, 0, dp(6))
+            },
+        )
+        panel.addView(
             pillButton().apply {
-                text = "Backup Alpine to shared storage"
+                text = "Backup Alpine (app folder)"
                 setOnClickListener { backupAlpine() }
+            },
+        )
+        panel.addView(
+            pillButton().apply {
+                text = "Backup Alpine to chosen file…"
+                setOnClickListener { backupAlpineToChosenFile() }
             },
         )
         backupCancelBtn = pillButton().apply {
@@ -1001,6 +1021,12 @@ class MainActivity : Activity() {
             pillButton().apply {
                 text = "Restore Alpine from backup"
                 setOnClickListener { restoreAlpinePicker() }
+            },
+        )
+        panel.addView(
+            pillButton().apply {
+                text = "Restore Alpine from chosen file…"
+                setOnClickListener { restoreAlpineFromChosenFile() }
             },
         )
         restoreCancelBtn = pillButton().apply {
@@ -1333,6 +1359,9 @@ class MainActivity : Activity() {
     private var pluginWatchdog: Thread? = null
     private val ansiRe = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]|\u001B\\][^\u0007]*\u0007")
     private val PKG_VERSION_RE = Regex("^(.*)-[^-]+-r[0-9]+$")
+    /** apk package names: lowercase alnum plus . + _ - (validated because search results come
+     *  from the live network index and are typed into a live shell — never trust them raw). */
+    private val PKG_NAME_RE = Regex("^[A-Za-z0-9][A-Za-z0-9.+_\\-]*$")
 
     /** Stops a foreground one-shot run including its watchdog — destroying the session alone
      *  left the 120s watchdog thread sleeping to the end, one zombie per Stop tap. */
@@ -1748,7 +1777,15 @@ class MainActivity : Activity() {
                 // GitHub account is signed in there. Approving in the browser is all that's left.
                 val url = Uri.parse(code.verificationUri).buildUpon().appendQueryParameter("user_code", code.userCode).build()
                 fun openBrowser() {
-                    (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("code", code.userCode))
+                    // Marked sensitive like the agent token below: a one-time auth code on the
+                    // clipboard is readable by any app (API 33+ hides it from history).
+                    val clip = android.content.ClipData.newPlainText("code", code.userCode)
+                    if (android.os.Build.VERSION.SDK_INT >= 33) {
+                        clip.description.extras = android.os.PersistableBundle().apply {
+                            putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true)
+                        }
+                    }
+                    (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(clip)
                     runCatching { startActivity(Intent(Intent.ACTION_VIEW, url).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
                 }
                 val dialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
@@ -2450,13 +2487,17 @@ class MainActivity : Activity() {
      *  pty-reader thread (via TerminalEmulator.feed), so this hops to the UI thread itself. */
     private fun onTerminalBell(tabId: Int) {
         mainHandler.post {
-            val vibrator = getSystemService(android.os.Vibrator::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator?.vibrate(android.os.VibrationEffect.createOneShot(80, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
-            } else {
-                @Suppress("DEPRECATION") vibrator?.vibrate(80)
+            // Vibrate follows the sound switch: silent-mode users who never opted in must not
+            // get buzzed by every background BEL.
+            if (settingsStore.bellSoundEnabled) {
+                val vibrator = getSystemService(android.os.Vibrator::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vibrator?.vibrate(android.os.VibrationEffect.createOneShot(80, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    @Suppress("DEPRECATION") vibrator?.vibrate(80)
+                }
+                playBellSound()
             }
-            if (settingsStore.bellSoundEnabled) playBellSound()
             val index = tabs.indexOfFirst { it.id == tabId }
             if (index >= 0 && index != activeTabIndex) {
                 android.widget.Toast.makeText(this, "Session ${index + 1} wants attention", android.widget.Toast.LENGTH_SHORT).show()
@@ -3137,18 +3178,21 @@ class MainActivity : Activity() {
                     background = android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), null, null)
                     layoutParams = LinearLayout.LayoutParams(dp(36), dp(36))
                     setPadding(dp(8), dp(8), dp(8), dp(8))
-                    setOnClickListener { showSessionRowMenu(index, this) }
+                    setOnClickListener { showSessionRowMenu(tab.id, this) }
                 },
             )
             fbSessionsList.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(2) })
         }
     }
 
-    private fun showSessionRowMenu(index: Int, anchor: View) {
+    private fun showSessionRowMenu(tabId: Int, anchor: View) {
         android.widget.PopupMenu(this, anchor).apply {
             menu.add(0, 1, 0, "Rename")
             menu.add(0, 2, 1, "Close")
             setOnMenuItemClickListener { item ->
+                // Resolve at click time: the row was built earlier, indices may have shifted.
+                val index = tabs.indexOfFirst { it.id == tabId }
+                if (index < 0) return@setOnMenuItemClickListener true
                 when (item.itemId) {
                     1 -> showRenameTabDialog(index)
                     2 -> closeTab(index)
@@ -3161,6 +3205,10 @@ class MainActivity : Activity() {
 
     private fun buildTabButton(index: Int, tab: TerminalTab): View {
         val active = index == activeTabIndex
+        // Resolve by stable id at gesture time: a background tab exit re-indexes `tabs`, so a
+        // pill built earlier would otherwise close/switch/rename the wrong session.
+        val tabId = tab.id
+        fun liveIndex(): Int? = tabs.indexOfFirst { it.id == tabId }.takeIf { it >= 0 }
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -3198,7 +3246,7 @@ class MainActivity : Activity() {
             private val longPressRunnable = Runnable {
                 longPressFired = true
                 container.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-                showTabMenu(index, container)
+                liveIndex()?.let { showTabMenu(it, container) }
             }
 
             override fun onTouch(v: View, event: MotionEvent): Boolean {
@@ -3219,8 +3267,8 @@ class MainActivity : Activity() {
                             val dx = event.rawX - downX
                             val dy = event.rawY - downY
                             when {
-                                dy < -dp(40) && kotlin.math.abs(dy) > kotlin.math.abs(dx) * 1.5f -> closeTab(index)
-                                kotlin.math.abs(dx) < dp(16) && kotlin.math.abs(dy) < dp(16) -> switchToTab(index)
+                                dy < -dp(40) && kotlin.math.abs(dy) > kotlin.math.abs(dx) * 1.5f -> liveIndex()?.let { closeTab(it) }
+                                kotlin.math.abs(dx) < dp(16) && kotlin.math.abs(dy) < dp(16) -> liveIndex()?.let { switchToTab(it) }
                             }
                         }
                     }
@@ -3255,6 +3303,7 @@ class MainActivity : Activity() {
 
     private fun showTabMenu(index: Int, anchor: View) {
         val tab = tabs.getOrNull(index)
+        val tabId = tab?.id
         android.widget.PopupMenu(this, anchor).apply {
             menu.add(0, 1, 0, "New session")
             menu.add(0, 3, 1, "Rename")
@@ -3266,12 +3315,14 @@ class MainActivity : Activity() {
             menu.add(0, 5, 3, "Save output to file")
             menu.add(0, 2, 4, "Close")
             setOnMenuItemClickListener { item ->
+                // Resolve by id at click time: a background exit while the menu is open shifts indices.
+                val liveTab = tabId?.let { id -> tabs.getOrNull(tabs.indexOfFirst { it.id == id }) }
                 when (item.itemId) {
                     1 -> addTab()
-                    2 -> closeTab(index)
-                    5 -> tab?.let { saveTabOutput(it) }
-                    3 -> showRenameTabDialog(index)
-                    4 -> tab?.lastSshCommand?.let { runShortcutCommand(tab.session, it) }
+                    2 -> liveTab?.let { tabs.indexOfFirst { t -> t.id == it.id }.takeIf { i -> i >= 0 }?.let { closeTab(it) } }
+                    5 -> liveTab?.let { saveTabOutput(it) }
+                    3 -> liveTab?.let { tabs.indexOfFirst { t -> t.id == it.id }.takeIf { i -> i >= 0 }?.let { showRenameTabDialog(it) } }
+                    4 -> liveTab?.lastSshCommand?.let { runShortcutCommand(liveTab.session, it) }
                 }
                 true
             }
@@ -3503,6 +3554,52 @@ class MainActivity : Activity() {
         if (requestCode == LOCATION_PERMISSION_REQUEST_CODE) devicesPanel?.let { fillDevices(it) }
     }
 
+    @Deprecated("SAF file pickers still use startActivityForResult (Activity, not ComponentActivity)")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        when (requestCode) {
+            BACKUP_CREATE_REQUEST_CODE -> doBackupToUri(uri)
+            RESTORE_OPEN_REQUEST_CODE -> confirmRestoreUri(uri)
+        }
+    }
+
+    /** User-chosen backup destination (Downloads, SD card, cloud provider): survives uninstall,
+     *  unlike the app-folder backups which Android deletes with the app. */
+    private fun backupAlpineToChosenFile() {
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/gzip"
+            putExtra(Intent.EXTRA_TITLE, "alpineterm-backup-$stamp.tar.gz")
+        }
+        runCatching { startActivityForResult(intent, BACKUP_CREATE_REQUEST_CODE) }
+            .onFailure { android.widget.Toast.makeText(this, "No file picker found", android.widget.Toast.LENGTH_LONG).show() }
+    }
+
+    private fun restoreAlpineFromChosenFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/gzip", "application/x-gzip", "application/x-tar"))
+        }
+        runCatching { startActivityForResult(intent, RESTORE_OPEN_REQUEST_CODE) }
+            .onFailure { android.widget.Toast.makeText(this, "No file picker found", android.widget.Toast.LENGTH_LONG).show() }
+    }
+
+    private fun uriDisplayName(uri: Uri, fallback: String): String {
+        runCatching {
+            contentResolver.query(uri, null, null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (i >= 0) c.getString(i)?.takeIf { it.isNotBlank() }?.let { return it }
+                }
+            }
+        }
+        return fallback
+    }
+
     // --- Backup / restore & settings export/import ------------------------------------------
 
     private fun backupAlpine() {
@@ -3587,7 +3684,7 @@ class MainActivity : Activity() {
         val notifId = OperationNotifications.newId()
         backupCancelled.set(false)
         runOnUiThread { backupCancelBtn?.visibility = View.VISIBLE }
-        app.backgroundExecutor.execute {
+        app.backupRestoreExecutor.execute {
             // Sweep up any .part left behind by a previous backup that got killed outright rather
             // than throwing — restoreAlpinePicker() already ignores these (it only lists
             // ".tar.gz"), but they'd otherwise sit in the backups folder forever.
@@ -3698,18 +3795,17 @@ class MainActivity : Activity() {
                 restoreCancelled.set(false)
                 runOnUiThread { restoreCancelBtn?.visibility = View.VISIBLE }
                 OperationNotifications.progress(this, notifId, "Restoring ${backupFile.name}", "Starting…")
-                app.backgroundExecutor.execute {
+                app.backupRestoreExecutor.execute {
                     // destroy() only requests the process die — starting to overwrite the whole
                     // rootfs right away risks racing a process that's still exiting and still
                     // touching files underneath it. Bounded (2s/session) so one stuck process
                     // can't hang a restore forever.
                     closingSessions.forEach { it.session.awaitExit(2000) }
-                    // Cleared before extraction starts (not after wipeForReinstall — that also
-                    // wipes rootDir's contents, which restore() already does itself) and only
-                    // written again on success: without this, a restore that throws partway
-                    // through left the ready marker from BEFORE this attempt untouched, so
-                    // isReady() could still report the half-extracted, broken tree as ready.
-                    AlpineRootfs.clearReadyMarker(this)
+                    // No upfront clearReadyMarker(): restore() extracts into a staging sibling
+                    // and only swaps it over the live tree on full success — a failed restore
+                    // leaves the current install (and its marker) untouched, so clearing first
+                    // would only discard a good marker for an install that is still fine.
+                    // markReady() below refreshes the label on success.
                     var lastUpdateMs = 0L
                     var cancelled = false
                     val ok = runCatching {
@@ -3742,6 +3838,101 @@ class MainActivity : Activity() {
                         addTab()
                     }
                 }
+    }
+
+    private fun doBackupToUri(uri: Uri) {
+        val name = uriDisplayName(uri, "chosen backup")
+        val root = AlpineRootfs.rootDir(this)
+        android.widget.Toast.makeText(this, "Backing up Alpine to $name…", android.widget.Toast.LENGTH_SHORT).show()
+        val app = application as AlpineTermApp
+        val notifId = OperationNotifications.newId()
+        backupCancelled.set(false)
+        runOnUiThread { backupCancelBtn?.visibility = View.VISIBLE }
+        app.backupRestoreExecutor.execute {
+            var lastUpdateMs = 0L
+            OperationNotifications.progress(this, notifId, "Backing up Alpine", "Starting…")
+            var cancelled = false
+            val ok = runCatching {
+                contentResolver.openOutputStream(uri, "w")?.use { out ->
+                    AlpineBackup.backupToStream(root, out, { count ->
+                        val now = System.currentTimeMillis()
+                        if (now - lastUpdateMs >= 300) {
+                            lastUpdateMs = now
+                            OperationNotifications.progress(this, notifId, "Backing up Alpine", "$count files backed up…")
+                        }
+                    }, { backupCancelled.get() })
+                } ?: throw IllegalStateException("could not open $name for writing")
+            }.onFailure { if (it is java.util.concurrent.CancellationException) cancelled = true }.isSuccess
+            OperationNotifications.finish(
+                this,
+                notifId,
+                "Backing up Alpine",
+                if (ok) "Backup saved: $name" else if (cancelled) "Backup cancelled" else "Backup failed",
+                ok,
+            )
+            mainHandler.post {
+                backupCancelBtn?.visibility = View.GONE
+                android.widget.Toast.makeText(
+                    this,
+                    if (ok) "Backup saved: $name" else if (cancelled) "Backup cancelled" else "Backup failed",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
+    }
+
+    private fun confirmRestoreUri(uri: Uri) {
+        val name = uriDisplayName(uri, "chosen file")
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("Restore $name?")
+            .setMessage("This replaces the entire current Alpine installation. All open sessions will be closed. This can't be undone.")
+            .setPositiveButton("Restore") { _, _ -> doRestoreFromUri(uri, name) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun doRestoreFromUri(uri: Uri, displayName: String) {
+        pendingSessionStarts++
+        val closingSessions = tabs.toList().onEach { it.session.destroy() }
+        android.widget.Toast.makeText(this, "Restoring…", android.widget.Toast.LENGTH_SHORT).show()
+        val app = application as AlpineTermApp
+        val notifId = OperationNotifications.newId()
+        restoreCancelled.set(false)
+        runOnUiThread { restoreCancelBtn?.visibility = View.VISIBLE }
+        OperationNotifications.progress(this, notifId, "Restoring $displayName", "Starting…")
+        app.backupRestoreExecutor.execute {
+            closingSessions.forEach { it.session.awaitExit(2000) }
+            // Same as doRestore(): no upfront clear — a failed stream restore leaves the live
+            // tree and its marker intact.
+            var lastUpdateMs = 0L
+            var cancelled = false
+            val ok = runCatching {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    AlpineBackup.restoreFromStream(input, AlpineRootfs.rootDir(this), { count ->
+                        val now = System.currentTimeMillis()
+                        if (now - lastUpdateMs >= 300) {
+                            lastUpdateMs = now
+                            OperationNotifications.progress(this, notifId, "Restoring $displayName", "$count entries restored…")
+                        }
+                    }, { restoreCancelled.get() })
+                } ?: throw IllegalStateException("could not open $displayName")
+            }.onFailure { if (it is java.util.concurrent.CancellationException) cancelled = true }.isSuccess
+            if (ok) AlpineRootfs.markReady(this, displayName)
+            OperationNotifications.finish(
+                this,
+                notifId,
+                "Restoring $displayName",
+                if (ok) "Restore complete" else if (cancelled) "Restore cancelled" else "Restore failed",
+                ok,
+            )
+            mainHandler.post {
+                restoreCancelBtn?.visibility = View.GONE
+                android.widget.Toast.makeText(this, if (ok) "Restore complete" else if (cancelled) "Restore cancelled — starting a fresh Alpine setup instead" else "Restore failed — starting a fresh Alpine setup instead", android.widget.Toast.LENGTH_LONG).show()
+                drawerLayout.closeDrawer(GravityCompat.END)
+                pendingSessionStarts--
+                addTab()
+            }
+        }
     }
 
     private fun exportSettings() {
@@ -3815,6 +4006,8 @@ class MainActivity : Activity() {
     companion object {
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
         private const val LOCATION_PERMISSION_REQUEST_CODE = 1002
+        private const val BACKUP_CREATE_REQUEST_CODE = 2001
+        private const val RESTORE_OPEN_REQUEST_CODE = 2002
         private const val BELL_CHANNEL_ID = "alpineterm_bell"
         private const val BELL_NOTIFICATION_BASE_ID = 2000
     }

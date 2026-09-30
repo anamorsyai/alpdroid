@@ -68,7 +68,7 @@ If your phone still stops the app, look for battery or "background activity" set
             "Backup & restore",
             "Keeping your setup safe",
             """Settings → Backup & Storage:
-• Backup saves your whole Alpine setup into one file in the AlpDroidBackups folder on your phone. Copy that file somewhere safe (a computer or cloud) for real protection.
+• Backup saves your whole Alpine setup into one file. "App folder" is quick but is deleted if the app is uninstalled — "chosen file" lets you save into Downloads, an SD card, or the cloud so it survives.
 • If storage is nearly full you'll get a warning first.
 • Automatic weekly backup can do it for you. It keeps the three newest automatic backups and never touches the ones you made yourself.
 • Restore brings back a chosen backup. It replaces everything currently in Alpine and closes your tabs, so use it deliberately.
@@ -88,9 +88,9 @@ Your plugins and their saved values are included in every backup.""",
 OPENCODE IN YOUR BROWSER
 "Start opencode web server" runs opencode's web version so you can use it from a browser on another device on the same Wi-Fi.
 • You choose opencode or opencode2 and the server opens in a new tab.
-• It asks for the username `opencode` and a password made for you. The password is copied when you start.
+• It runs with NO password — anyone on that network gets full access. Only use this on a network you trust.
 • Then open http://<phone address>:4096 on your other device.
-• Only use this on a network you trust — anyone on that network can reach the login page. Stop it any time with Ctrl+C in that tab.""",
+• Stop it any time with Ctrl+C in that tab.""",
         ),
         Section(
             "Devices",

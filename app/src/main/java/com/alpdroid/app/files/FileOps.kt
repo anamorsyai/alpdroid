@@ -189,7 +189,14 @@ object FileOps {
                 if (!outFile.canonicalPath.startsWith("$canonicalTarget${File.separator}") && outFile.canonicalPath != canonicalTarget) {
                     throw SecurityException("zip entry escapes destination: ${entry.name}")
                 }
+                // canonicalPath resolves symlinks planted by earlier entries (or a racing guest
+                // in the live rootfs) and can still pass while writing onto the host — walk the
+                // parent chain NOFOLLOW for every entry, not just once up front.
+                if (hasSymlinkParent(outFile, targetDir)) {
+                    throw SecurityException("zip entry runs through a symlink: ${entry.name}")
+                }
                 if (entry.isDirectory) {
+                    if (Files.isSymbolicLink(outFile.toPath())) throw SecurityException("zip entry is a directory over a symlink: ${entry.name}")
                     outFile.mkdirs()
                 } else {
                     outFile.parentFile?.mkdirs()
@@ -224,6 +231,18 @@ object FileOps {
             n++
         }
         return candidate
+    }
+
+    /** True when any component of outFile's parent chain below target is a symlink (NOFOLLOW).
+     *  Complements the canonicalPath containment check above, which resolves links. */
+    private fun hasSymlinkParent(outFile: File, target: File): Boolean {
+        val targetPath = target.absolutePath
+        var p = outFile.parentFile
+        while (p != null && p != target && p.absolutePath.startsWith(targetPath)) {
+            if (Files.isSymbolicLink(p.toPath())) return true
+            p = p.parentFile
+        }
+        return false
     }
 
     fun humanSize(bytes: Long): String {

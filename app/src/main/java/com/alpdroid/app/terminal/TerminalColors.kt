@@ -7,22 +7,26 @@ package com.alpdroid.app.terminal
  * a theme change takes effect immediately for anything drawn or reset after the switch.
  */
 object TerminalColors {
-    var DEFAULT_FG = Themes.ALPINE.fg
+    // Volatile: written on the UI thread (applyTheme), read on PTY reader threads (applySgr,
+    // scrollUp) and the UI thread — without visibility the guest can keep stale colors.
+    @Volatile var DEFAULT_FG = Themes.ALPINE.fg
         private set
-    var DEFAULT_BG = Themes.ALPINE.bg
+    @Volatile var DEFAULT_BG = Themes.ALPINE.bg
         private set
-    var CURSOR = Themes.ALPINE.cursor
+    @Volatile var CURSOR = Themes.ALPINE.cursor
         private set
 
     /** Standard 16-color ANSI palette (0-7 normal, 8-15 bright) for the current theme. */
-    var ANSI16 = Themes.ALPINE.ansi16
+    @Volatile var ANSI16 = Themes.ALPINE.ansi16
         private set
 
     fun applyTheme(theme: TerminalTheme) {
         DEFAULT_FG = theme.fg
         DEFAULT_BG = theme.bg
         CURSOR = theme.cursor
-        ANSI16 = theme.ansi16
+        // Copy: the array must not be shared with the Themes singleton, or a reader mutating
+        // through this reference would corrupt every future applyTheme of the same theme.
+        ANSI16 = theme.ansi16.copyOf()
     }
 
     fun rgb(r: Int, g: Int, b: Int): Int =

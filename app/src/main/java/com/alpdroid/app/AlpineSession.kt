@@ -199,9 +199,13 @@ object AlpineSession {
             "PROOT_TMP_DIR" to prootScratch.absolutePath,
             "PROOT_NO_SECCOMP" to "1",
             "SSL_CERT_FILE" to "/etc/ssl/cert.pem",
-        ) + extraEnv
+        ) + extraEnv.filterKeys { it !in PROTECTED_ENV }
         return PtySession.start(bridge, context.cacheDir, 24, 200, argv, context.filesDir, env)
     }
+
+    /** Env vars a plugin/shortcut caller must never override: pointing these at attacker
+     *  files would hijack proot's own loader/libraries. */
+    private val PROTECTED_ENV = setOf("LD_LIBRARY_PATH", "PROOT_LOADER", "PROOT_TMP_DIR", "PROOT_NO_SECCOMP", "SSL_CERT_FILE")
 
     /**
      * Runs `apk search` inside a fresh, one-off, non-interactive proot invocation — separate from
@@ -308,7 +312,22 @@ object AlpineSession {
         writeApkHostsIPv4Only(root)
     }
 
-    private val dnsCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val dnsCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
+    private const val DNS_TTL_MS = 10 * 60 * 1000L
+
+    private fun cachedIpv4(host: String): String {
+        val now = System.currentTimeMillis()
+        dnsCache[host]?.let { (ip, at) ->
+            if (now - at < DNS_TTL_MS && ip.isNotEmpty()) return ip
+        }
+        // Cached per process (was permanent — CDN rotations and captive-portal DNS stayed pinned
+        // for the whole process lifetime): 10-minute TTL, cleared by refreshNetwork() below.
+        val ipv4 = runCatching { java.net.InetAddress.getAllByName(host) }.getOrNull()
+            ?.firstOrNull { it is java.net.Inet4Address }
+            ?.hostAddress ?: ""
+        dnsCache[host] = ipv4 to now
+        return ipv4
+    }
 
     /**
      * Refreshed every session start: the guest has no netd of its own to resolve DNS with.
@@ -331,7 +350,9 @@ object AlpineSession {
 
     private fun writeResolvConf(context: Context, root: File) = synchronized(networkConfigLock) {
         runCatching {
-            val servers = (NetworkInfo.dnsServers(context) + listOf("1.1.1.1", "8.8.8.8")).distinct()
+            // Host first (max 2) so a public fallback always survives the take(3): with 3+ flaky
+            // carrier servers the fallbacks used to be dropped entirely, leaving musl no fallback.
+            val servers = (NetworkInfo.dnsServers(context).take(2) + listOf("1.1.1.1", "8.8.8.8")).distinct()
             writeIfDifferent(File(root, "etc/resolv.conf"), servers.take(3).joinToString("\n") { "nameserver $it" } + "\n")
         }.onFailure { Log.w(TAG, "could not write guest resolv.conf", it) }
     }
@@ -380,13 +401,9 @@ object AlpineSession {
                 else -> existingLines.takeWhile { it != oldSingleMarker } to emptyList()
             }
             val entries = hosts.mapNotNull { host ->
-                // Cached per process: DNS latency used to sit on every tab-open path.
+                // Cached per process (10-min TTL): DNS latency used to sit on every tab-open path.
                 // Cleared by refreshNetwork() (network change) below.
-                val ipv4 = dnsCache.getOrPut(host) {
-                    runCatching { java.net.InetAddress.getAllByName(host) }.getOrNull()
-                        ?.firstOrNull { it is java.net.Inet4Address }
-                        ?.hostAddress ?: ""
-                }
+                val ipv4 = cachedIpv4(host)
                 if (ipv4.isNotEmpty()) "$ipv4 $host" else null
             }
             if (entries.isEmpty()) return
@@ -411,12 +428,17 @@ object AlpineSession {
             val conf = File(dir, "bridge")
             val settings = SettingsStore(context)
             AgentContext.sync(root, AgentContext.appVersion(context), settings.agentAccessEnabled, settings.agentContextFiles)
-            if (settings.agentAccessEnabled) {
-                conf.writeText("URL=http://127.0.0.1:$BRIDGE_PORT\nTOKEN=${settings.agentToken}\n")
+            // The live port, not the preferred constant: with an ephemeral fallback the guest
+            // must learn the actual port, and when the bridge isn't running at all (bind failed)
+            // no file may exist — otherwise alpctl would POST the real token to a squatter.
+            val livePort = runCatching { (context.applicationContext as AlpineTermApp).agentBridge.actualPort }.getOrDefault(0)
+            if (settings.agentAccessEnabled && livePort != 0) {
+                conf.writeText("URL=http://127.0.0.1:$livePort\nTOKEN=${settings.agentToken}\n")
                 // Owner-only on disk. Note this is traceability, not isolation: every guest
                 // process shares one uid under proot, so anything in the guest can read it —
                 // enabling agent access trusts the whole guest, documented in the Guide.
-                conf.setReadable(true, false); conf.setWritable(true, false); conf.setExecutable(false, false)
+                // (ownerOnly=true: the second arg false would make it world-readable.)
+                conf.setReadable(true, true); conf.setWritable(true, true); conf.setExecutable(false, false)
             } else {
                 conf.delete()
             }
@@ -519,9 +541,14 @@ echo "password=${"$"}T"
 
     /** SD cards / USB drives mounted right now, bound at /mnt/<label> — a drive plugged in after a
      *  session started needs a new tab to appear (proot binds are fixed at launch). The guest
-     *  mountpoint is created up front: proot won't invent it. */
+     *  mountpoint is created up front: proot won't invent it. Guest paths are validated: `..`
+     *  would escape the rootfs and `:` would corrupt proot's -b parsing. */
     private fun removableDriveBinds(context: Context, root: File): List<String> =
         DeviceInfo.guestBinds(context).flatMap { (host, guest) ->
+            if (!guest.startsWith("/mnt/") || ".." in guest || ":" in guest || guest.length > 128) {
+                Log.w(TAG, "refusing suspicious drive bind: $guest")
+                return@flatMap emptyList<String>()
+            }
             File(root, guest.removePrefix("/")).mkdirs()
             listOf("-b", "${host.absolutePath}:$guest")
         }

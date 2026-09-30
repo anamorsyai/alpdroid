@@ -41,6 +41,10 @@ class AgentBridge(private val app: AlpineTermApp) {
 
     @Volatile var host: Host? = null
     @Volatile private var token: String = ""
+    /** The port actually bound (preferred or ephemeral fallback) — 0 when not running.
+     *  The guest reads it fresh from /etc/alpdroid/bridge on every alpctl call. */
+    @Volatile var actualPort: Int = 0
+        private set
     private var server: ServerSocket? = null
     // Fixed small pool, not cached: request handlers block up to 10s in onMain(), so a
     // connection flood against the unbounded pool used to spawn threads without limit.
@@ -53,7 +57,17 @@ class AgentBridge(private val app: AlpineTermApp) {
         this.token = token
         if (isRunning) return true
         return runCatching {
-            val ss = ServerSocket(port, 16, InetAddress.getByName("127.0.0.1"))
+            val loopback = InetAddress.getByName("127.0.0.1")
+            val ss = try {
+                ServerSocket(port, 16, loopback)
+            } catch (e: java.net.BindException) {
+                // Fixed-port squat: any app with INTERNET can bind 127.0.0.1:port first and
+                // then receive our real token via the guest's alpctl calls. Never serve the
+                // token to a port we don't hold — take an ephemeral one instead; the guest
+                // reads the actual port fresh from /etc/alpdroid/bridge on every call.
+                ServerSocket(0, 16, loopback)
+            }
+            actualPort = ss.localPort
             server = ss
             Thread({
                 while (!ss.isClosed) {
@@ -69,6 +83,7 @@ class AgentBridge(private val app: AlpineTermApp) {
     fun stop() {
         runCatching { server?.close() }
         server = null
+        actualPort = 0
     }
 
     fun updateToken(token: String) { this.token = token }
@@ -127,8 +142,11 @@ class AgentBridge(private val app: AlpineTermApp) {
 
         val target = parts[1]
         val path = target.substringBefore('?')
-        val query = target.substringAfter('?', "").split('&').filter { it.contains('=') }
-            .associate { it.substringBefore('=') to java.net.URLDecoder.decode(it.substringAfter('='), "UTF-8") }
+        // Malformed % escapes throw outside the route try/catch — fail the request, not the thread.
+        val query = runCatching {
+            target.substringAfter('?', "").split('&').filter { it.contains('=') }
+                .associate { it.substringBefore('=') to java.net.URLDecoder.decode(it.substringAfter('='), "UTF-8") }
+        }.getOrElse { return respond(sock, 400, error("bad query string")) }
         val json = runCatching { if (body.isBlank()) JSONObject() else JSONObject(body) }.getOrElse { return respond(sock, 400, error("body must be JSON")) }
 
         val (code, out) = try {
@@ -177,17 +195,21 @@ class AgentBridge(private val app: AlpineTermApp) {
         val ok = JSONObject().put("ok", true)
         fun str(k: String) = body.optString(k, "").ifEmpty { q[k] ?: "" }
         TAB_ROUTE.matchEntire(path)?.let { m ->
-            val id = m.groupValues[1].toInt()
+            // toIntOrNull: \d+ can exceed Int range (e.g. 9999999999999) — toInt() would throw
+            // a NumberFormatException, surfacing as a 500 with leaked exception text.
+            val id = m.groupValues[1].toIntOrNull() ?: return 404 to error("no such tab")
             val tab = onMain { app.tabs.firstOrNull { it.id == id } } ?: return 404 to error("no such tab")
             return when (m.groupValues[2]) {
                 "send" -> {
-                    val text = body.optString("text", "")
+                    // Cap: a 1MB single shot would freeze the UI feeding the pty/emulator at once.
+                    val text = body.optString("text", "").take(100_000)
                     val bytes = (text + if (body.optBoolean("enter", true)) "\r" else "").toByteArray(Charsets.UTF_8)
                     tab.session.writeAsync(bytes)
                     200 to ok
                 }
                 "screen" -> {
-                    val lines = (q["lines"] ?: body.optString("lines")).toIntOrNull() ?: 200
+                    // Clamp: unbounded lines= would force tailText() into a giant String → OOM.
+                    val lines = ((q["lines"] ?: body.optString("lines")).toIntOrNull() ?: 200).coerceIn(1, 2000)
                     val text = tab.emulator.tailText(lines)
                     200 to JSONObject().put("text", text).put("cwd", JSONObject.NULL)
                 }
@@ -202,7 +224,7 @@ class AgentBridge(private val app: AlpineTermApp) {
             path == "/v1/clipboard" && method == "GET" -> 200 to JSONObject().put("text", onMain {
                 (app.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).primaryClip?.getItemAt(0)?.coerceToText(app)?.toString() ?: ""
             })
-            path == "/v1/clipboard" -> { onMain { (app.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("AlpineTerm", body.optString("text", ""))) }; 200 to ok }
+            path == "/v1/clipboard" -> { onMain { (app.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("AlpineTerm", body.optString("text", "").take(256_000))) }; 200 to ok }
             path == "/v1/notify" -> { OperationNotifications.alert(app, OperationNotifications.newId(), str("title").ifEmpty { "AlpineTerm" }.take(80), str("text").take(300)); 200 to ok }
             path == "/v1/toast" -> { mainHandler.post { android.widget.Toast.makeText(app, str("text").take(300), android.widget.Toast.LENGTH_LONG).show() }; 200 to ok }
             h == null -> noUi
@@ -214,7 +236,7 @@ class AgentBridge(private val app: AlpineTermApp) {
                 else h.setSetting(key, value).let { r -> if (r == "ok") 200 to ok else 400 to error(r) }
             }
             path == "/v1/shortcuts" -> h.addShortcut(str("label"), str("cmd")).let { r -> if (r == "ok") 200 to ok else 400 to error(r) }
-            path == "/v1/tabs" -> 200 to JSONObject().put("ok", true).put("status", h.newTab(str("label").ifEmpty { null }))
+            path == "/v1/tabs" -> 200 to JSONObject().put("ok", true).put("status", h.newTab(str("label").ifEmpty { null }?.take(100)))
             path == "/v1/open" -> if (h.openUrl(str("url"))) 200 to ok else 400 to error("only http(s) URLs")
             path == "/v1/devices" -> 200 to h.devicesJson()
             path == "/v1/github" -> 200 to h.githubStatus()

@@ -2173,7 +2173,7 @@ class MainActivity : Activity() {
      * an update pops whenever it appears, no restart needed. Throttled to one check per
      * 6h; only dialogs when something newer actually exists.
      */
-    private val updateCheckIntervalMs = 2L * 60 * 60 * 1000
+    private val updateCheckIntervalMs = 15L * 60 * 1000
     // Short on purpose: one tiny API call, and it makes updates pop within minutes —
     // a daily throttle is what silently swallowed the very first auto-check in testing.
     private val updateCheckThrottleMs = 15L * 60 * 1000

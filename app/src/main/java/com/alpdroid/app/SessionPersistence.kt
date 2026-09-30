@@ -15,7 +15,8 @@ object SessionPersistence {
     fun save(context: Context, labels: List<String?>) {
         val array = JSONArray()
         labels.forEach { array.put(it) }
-        prefs(context).edit().putString(KEY_LABELS, array.toString()).apply()
+        // commit(): tiny payload, and apply() risks losing it on background-then-kill.
+        prefs(context).edit().putString(KEY_LABELS, array.toString()).commit()
     }
 
     fun load(context: Context): List<String?> {

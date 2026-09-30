@@ -100,22 +100,31 @@ object GitHubAuth {
         return if (refreshNow(context)) token(context) else null
     }
 
-    /** One silent renewal via the device-flow refresh token. Blocking. */
-    fun refreshNow(context: Context): Boolean = runCatching {
-        val prefs = prefs(context)
-        val refreshToken = decrypt(prefs.getString("refresh_token", null))?.takeIf { it.isNotBlank() } ?: return false
-        val clientId = prefs.getString("client_id", null)?.takeIf { it.isNotBlank() } ?: return false
-        val r = post(
-            "https://github.com/login/oauth/access_token",
-            mapOf("client_id" to clientId, "grant_type" to "refresh_token", "refresh_token" to refreshToken),
-        )
-        val fresh = r.optString("access_token").takeIf { it.isNotBlank() } ?: return false
-        // GitHub rotates the refresh token on use: persist the replacement when one comes
-        // back, otherwise keep the current one for the next renewal.
-        val rotated = r.optString("refresh_token").takeIf { it.isNotBlank() }
-        saveToken(context, fresh, login(context), rotated, r.optInt("expires_in", 0), clientId)
-        true
-    }.getOrDefault(false)
+    /** One silent renewal via the device-flow refresh token. Blocking. Singleflight: two
+     *  threads racing here used to POST the same rotating refresh token twice — the loser got
+     *  rejected and returned null even though a fresh token had just been saved. */
+    fun refreshNow(context: Context): Boolean = synchronized(GitHubAuth::class.java) {
+        runCatching {
+            val prefs = prefs(context)
+            // Re-read inside the lock: the winner may have already renewed while we queued.
+            token(context)?.let { current ->
+                val expiresAt = prefs.getLong("expires_at", 0L)
+                if (expiresAt == 0L || System.currentTimeMillis() < expiresAt - 60_000L) return true
+            }
+            val refreshToken = decrypt(prefs.getString("refresh_token", null))?.takeIf { it.isNotBlank() } ?: return false
+            val clientId = prefs.getString("client_id", null)?.takeIf { it.isNotBlank() } ?: return false
+            val r = post(
+                "https://github.com/login/oauth/access_token",
+                mapOf("client_id" to clientId, "grant_type" to "refresh_token", "refresh_token" to refreshToken),
+            )
+            val fresh = r.optString("access_token").takeIf { it.isNotBlank() } ?: return false
+            // GitHub rotates the refresh token on use: persist the replacement when one comes
+            // back, otherwise keep the current one for the next renewal.
+            val rotated = r.optString("refresh_token").takeIf { it.isNotBlank() }
+            saveToken(context, fresh, login(context), rotated, r.optInt("expires_in", 0), clientId)
+            true
+        }.getOrDefault(false)
+    }
 
     fun login(context: Context): String? = prefs(context).getString("login", null)
 
@@ -130,15 +139,31 @@ object GitHubAuth {
 
     private fun post(url: String, form: Map<String, String>): JSONObject {
         val conn = URL(url).openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.connectTimeout = 10_000
-        conn.readTimeout = 15_000
-        conn.doOutput = true
-        conn.setRequestProperty("Accept", "application/json")
-        conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-        conn.outputStream.use { it.write(form.entries.joinToString("&") { (k, v) -> "$k=${URLEncoder.encode(v, "UTF-8")}" }.toByteArray()) }
-        val text = (if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() } ?: "{}"
-        return JSONObject(text)
+        try {
+            conn.requestMethod = "POST"
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 15_000
+            conn.doOutput = true
+            conn.setRequestProperty("Accept", "application/json")
+            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            conn.outputStream.use { it.write(form.entries.joinToString("&") { (k, v) -> "$k=${URLEncoder.encode(v, "UTF-8")}" }.toByteArray()) }
+            // Capped: a captive portal / proxy can answer with a giant body — never read it whole.
+            val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
+            val text = stream?.bufferedReader()?.use { reader ->
+                val sb = StringBuilder()
+                val buf = CharArray(8192)
+                while (sb.length < 256 * 1024) {
+                    val n = reader.read(buf, 0, minOf(buf.size, 256 * 1024 - sb.length))
+                    if (n == -1) break
+                    sb.append(buf, 0, n)
+                }
+                sb.toString()
+            } ?: "{}"
+            return JSONObject(text)
+        } finally {
+            // The poll loop hits this ~180x per sign-in; leaked sockets pile up fast.
+            conn.disconnect()
+        }
     }
 
     /** Blocking — call off the main thread. */
@@ -157,7 +182,14 @@ object GitHubAuth {
         val deadline = System.currentTimeMillis() + code.expiresIn.coerceAtMost(900) * 1000L
         while (System.currentTimeMillis() < deadline && !cancelled()) {
             try {
-                Thread.sleep(wait * 1000L)
+                // Sliced: a single 30s sleep (after slow_downs) used to ignore cancellation
+                // for its whole length. 1s slices keep cancel prompt.
+                var left = wait * 1000L
+                while (left > 0 && !cancelled()) {
+                    Thread.sleep(minOf(1000L, left))
+                    left -= 1000L
+                }
+                if (cancelled()) return Poll.Failed("Cancelled.")
             } catch (_: InterruptedException) {
                 // A stop/cancel that interrupts the sleeper used to escape as an exception
                 // instead of the normal Cancelled result the UI expects.
@@ -188,11 +220,15 @@ object GitHubAuth {
     /** GitHub login name for a token, or null if it doesn't work. Blocking. */
     fun fetchLogin(token: String): String? = runCatching {
         val conn = URL("https://api.github.com/user").openConnection() as HttpURLConnection
-        conn.connectTimeout = 10_000
-        conn.readTimeout = 15_000
-        conn.setRequestProperty("Authorization", "Bearer $token")
-        conn.setRequestProperty("Accept", "application/vnd.github+json")
-        if (conn.responseCode != 200) return null
-        JSONObject(conn.inputStream.bufferedReader().use { it.readText() }).optString("login").takeIf { it.isNotBlank() }
+        try {
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 15_000
+            conn.setRequestProperty("Authorization", "Bearer $token")
+            conn.setRequestProperty("Accept", "application/vnd.github+json")
+            if (conn.responseCode != 200) return null
+            JSONObject(conn.inputStream.bufferedReader().use { it.readText() }).optString("login").takeIf { it.isNotBlank() }
+        } finally {
+            conn.disconnect()
+        }
     }.getOrNull()
 }

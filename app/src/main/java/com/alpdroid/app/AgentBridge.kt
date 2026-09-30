@@ -124,6 +124,9 @@ class AgentBridge(private val app: AlpineTermApp) {
             val i = line.indexOf(':')
             if (i > 0) headers[line.substring(0, i).trim().lowercase()] = line.substring(i + 1).trim()
         }
+        // Chunked bodies are never read (only content-length is): a chunked request would be
+        // silently treated as an empty-JSON one and acted on. Reject instead of misreading.
+        if (headers.containsKey("transfer-encoding")) return respond(sock, 400, error("chunked bodies not supported"))
         val supplied = (headers["authorization"]?.removePrefix("Bearer ") ?: headers["x-alp-token"] ?: "").trim()
         // Authenticated before a single body byte is read: previously any loopback client
         // (any app on the phone, no token) could force up to 1MB of allocation + thread time.

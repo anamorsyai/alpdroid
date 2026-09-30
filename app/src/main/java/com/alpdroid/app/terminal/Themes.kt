@@ -2,8 +2,28 @@ package com.alpdroid.app.terminal
 
 /** A full terminal palette: background, default text color, the 16 ANSI colors (0-7 normal,
  *  8-15 bright), and the block-cursor color — each theme's own accent rather than a flat gray,
- *  so the cursor reads as a deliberate design choice instead of a leftover default. */
-data class TerminalTheme(val id: String, val label: String, val bg: Int, val fg: Int, val cursor: Int, val ansi16: IntArray)
+ *  so the cursor reads as a deliberate design choice instead of a leftover default.
+ *
+ *  IntArray breaks data-class equality (reference compare) — content-based here since theme
+ *  switching and tests compare instances. */
+data class TerminalTheme(val id: String, val label: String, val bg: Int, val fg: Int, val cursor: Int, val ansi16: IntArray) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is TerminalTheme) return false
+        return id == other.id && label == other.label && bg == other.bg && fg == other.fg &&
+            cursor == other.cursor && ansi16.contentEquals(other.ansi16)
+    }
+
+    override fun hashCode(): Int {
+        var result = id.hashCode()
+        result = 31 * result + label.hashCode()
+        result = 31 * result + bg
+        result = 31 * result + fg
+        result = 31 * result + cursor
+        result = 31 * result + ansi16.contentHashCode()
+        return result
+    }
+}
 
 private fun c(hex: Long) = (0xFF000000 or hex).toInt()
 

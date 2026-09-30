@@ -31,7 +31,12 @@ object Plugins {
             ?.mapNotNull { runCatching { parse(it) }.getOrNull() } ?: emptyList()
 
     private fun parse(dir: File): Plugin {
-        val j = JSONObject(File(dir, "plugin.json").readText())
+        // Length gate: an agent/guest-dropped multi-MB plugin.json would otherwise OOM the
+        // scheduler tick (every 30s) and every panel build on JSONObject parsing. Throwing
+        // keeps the "broken manifest is skipped" contract (caller runCatchings this).
+        val manifest = File(dir, "plugin.json").takeIf { it.isFile && it.length() <= 256 * 1024 }?.readText()
+            ?: throw IllegalStateException("missing or oversized plugin.json")
+        val j = JSONObject(manifest)
         // Caps: an unbounded manifest (100k fields/buttons/schedules from an agent-dropped
         // plugin) would exhaust the scheduler loop and job pool on every tick.
         val fields = (j.optJSONArray("fields") ?: JSONArray()).let { a ->
@@ -66,13 +71,20 @@ object Plugins {
 
     private fun stateFile(p: Plugin) = File(p.dir, "state.json")
 
+    // Length gate (guest-writable file): a huge state.json must not OOM the scheduler tick.
+    private fun readStateJson(p: Plugin): JSONObject {
+        val f = stateFile(p)
+        if (!f.isFile || f.length() > 256 * 1024) return JSONObject()
+        return runCatching { JSONObject(f.readText()) }.getOrNull() ?: JSONObject()
+    }
+
     fun loadState(p: Plugin): Map<String, String> {
-        val j = runCatching { JSONObject(stateFile(p).readText()) }.getOrNull() ?: JSONObject()
+        val j = readStateJson(p)
         return p.fields.associate { it.id to (if (j.has(it.id)) j.optString(it.id) else it.default) }
     }
 
     fun saveValue(p: Plugin, fieldId: String, value: String) {
-        val j = runCatching { JSONObject(stateFile(p).readText()) }.getOrNull() ?: JSONObject()
+        val j = readStateJson(p)
         j.put(fieldId, value)
         runCatching { stateFile(p).writeText(j.toString()) }
     }
@@ -80,7 +92,7 @@ object Plugins {
     // --- job switches (scheduled scripts / keep-running scripts), stored beside the field values ---
 
     fun isEnabled(p: Plugin, jobId: String): Boolean =
-        runCatching { JSONObject(stateFile(p).readText()).optString("__on_$jobId") == "1" }.getOrDefault(false)
+        runCatching { readStateJson(p).optString("__on_$jobId") == "1" }.getOrDefault(false)
 
     fun setEnabled(p: Plugin, jobId: String, on: Boolean) = saveValue(p, "__on_$jobId", if (on) "1" else "0")
 
@@ -153,7 +165,9 @@ object Plugins {
         fpCache[p.id] = mtime to hash
         return hash
     }
-    fun approve(c: Context, p: Plugin) = prefs(c).edit().putString("approved_${p.id}", fingerprint(p)).apply()
+    // Uncached: approval must bind exactly what was reviewed — the mtime cache could
+    // otherwise approve content changed after the review text was built.
+    fun approve(c: Context, p: Plugin) = prefs(c).edit().putString("approved_${p.id}", fingerprintUncached(p)).apply()
 
     /** Everything the user is being asked to allow: the manifest, every script a button OR a schedule
      *  runs, and any other file in the plugin (a script can source or call them). Capped only at a size

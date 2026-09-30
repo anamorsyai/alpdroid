@@ -76,7 +76,9 @@ class SettingsStore(context: Context) {
     fun regenerateAgentToken(): String {
         val bytes = ByteArray(24).also { java.security.SecureRandom().nextBytes(it) }
         val token = android.util.Base64.encodeToString(bytes, android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP)
-        prefs.edit().putString(KEY_AGENT_TOKEN, token).apply()
+        // commit(), not apply(): a process kill before the async flush would lose the minted
+        // token and the next launch would mint a different one.
+        prefs.edit().putString(KEY_AGENT_TOKEN, token).commit()
         return token
     }
 
@@ -90,7 +92,8 @@ class SettingsStore(context: Context) {
             val chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
             val r = java.security.SecureRandom()
             val pw = (1..20).map { chars[r.nextInt(chars.length)] }.joinToString("")
-            prefs.edit().putString(KEY_OC_PASS, pw).apply()
+            // commit(): the shown password must match what's on disk even if killed here.
+            prefs.edit().putString(KEY_OC_PASS, pw).commit()
             pw
         }
 

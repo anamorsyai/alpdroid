@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.22 — Hardening round 3 + filling-logo update screen
+
+- Update download now shows the filling Alpine logo with live progress.
+- Symlink-safe scratch cleanup, kill-safe token/session writes, capped plugin JSON.
+- GitHub socket/refresh/poll fixes, dead-activity callback cleanup, bridge hardening.
+
 ## 1.7.21 — Update-install resume fix
 
 - Granting the install permission in Settings then returning re-offers the waiting

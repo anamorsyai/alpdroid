@@ -28,7 +28,9 @@ class AlpineTermApp : Application() {
         runCatching {
             (cacheDir.listFiles() ?: emptyArray())
                 .filter { it.isDirectory && it.name.startsWith("proot-scratch-") }
-                .forEach { runCatching { it.deleteRecursively() } }
+                // NoFollow: a symlink planted in a dead scratch dir (same-uid guest code ran
+                // here) must never resolve outward — deleteRecursively() would follow it.
+                .forEach { runCatching { it.deleteRecursivelyNoFollow() } }
         }
     }
 

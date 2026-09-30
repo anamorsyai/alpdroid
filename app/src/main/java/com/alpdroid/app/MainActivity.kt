@@ -2307,9 +2307,28 @@ class MainActivity : Activity() {
 
     private fun downloadAndInstallUpdate(update: AppUpdater.Update) {
         updateDownloadCancelled = false
+        // Same filling-logo treatment as the Alpine setup screen: a LiquidFillView fed by
+        // real bytes, indeterminate until the total is known.
+        val density = resources.displayMetrics.density
+        val fill = LiquidFillView(this).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams((120 * density).toInt(), (120 * density).toInt()).apply { gravity = android.view.Gravity.CENTER_HORIZONTAL }
+            isIndeterminate = true
+        }
+        val label = android.widget.TextView(this).apply {
+            text = "Starting…"
+            setTextColor(0xFFD4D4D4.toInt())
+            gravity = android.view.Gravity.CENTER
+            setPadding(0, (16 * density).toInt(), 0, 0)
+        }
+        val body = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding((24 * density).toInt(), (8 * density).toInt(), (24 * density).toInt(), 0)
+            addView(fill)
+            addView(label)
+        }
         val dialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setTitle("Downloading ${update.name}")
-            .setMessage("Starting…")
+            .setView(body)
             .setNegativeButton("Cancel") { _, _ -> updateDownloadCancelled = true }
             .setCancelable(false)
             .show()
@@ -2320,8 +2339,13 @@ class MainActivity : Activity() {
                     val now = System.currentTimeMillis()
                     if (now - lastMs >= 300) {
                         lastMs = now
-                        val label = if (total > 0) "${FileOps.humanSize(done)} of ${FileOps.humanSize(total)}" else FileOps.humanSize(done)
-                        mainHandler.post { if (dialog.isShowing) dialog.setMessage(label) }
+                        val text = if (total > 0) "${FileOps.humanSize(done)} of ${FileOps.humanSize(total)}" else FileOps.humanSize(done)
+                        val percent = if (total > 0) ((done * 100 / total).toInt().coerceIn(0, 100)) else -1
+                        mainHandler.post {
+                            if (!dialog.isShowing) return@post
+                            label.text = text
+                            if (percent >= 0) { fill.isIndeterminate = false; fill.progress = percent }
+                        }
                     }
                 }, { updateDownloadCancelled })
             }.getOrNull()
@@ -3563,6 +3587,10 @@ class MainActivity : Activity() {
         // One-shot plugin runs are owned by this Activity's panel: recreation must not
         // orphan their session + watchdog (the output view is gone either way).
         stopPluginRun()
+        // Drop tab callbacks closing over this instance: the reader threads outlive it and
+        // the tabs list (app-scoped) would otherwise pin the dead Activity until rebind.
+        // Harmless across rotation — onCreate rebinds via rebindTabOutputs().
+        (application as AlpineTermApp).tabs.forEach { it.onOutput = null; it.onExit = null }
         // Stop the GitHub device-flow poll promptly instead of delivering its result +
         // dialog.dismiss() to a destroyed instance (window leak on rotation).
         githubCancelled = true

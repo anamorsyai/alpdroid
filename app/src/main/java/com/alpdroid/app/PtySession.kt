@@ -202,7 +202,8 @@ class PtySession private constructor(
         synchronized(resizeLock) { resizeLock.notifyAll() }
         // Owned scratch dir (set by AlpineSession): the guest is SIGTERMed above, so its
         // tmp use is over; never let cache accumulate dead proot dirs across tabs/jobs.
-        runCatching { cleanupDir?.deleteRecursively() }
+        // NoFollow: guest-planted symlinks inside must not resolve outward on delete.
+        runCatching { cleanupDir?.deleteRecursivelyNoFollow() }
     }
 
     companion object {

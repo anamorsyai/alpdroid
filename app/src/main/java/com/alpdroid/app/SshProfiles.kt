@@ -19,7 +19,10 @@ data class SshProfile(val name: String, val host: String, val port: String, val 
 
 object SshProfiles {
     @Volatile private var cache: List<SshProfile>? = null
-    fun list(context: Context): List<SshProfile> = cache ?: run {
+    // Synchronized: add/remove are read-modify-write (list + save); two threads
+    // interlacing them would silently drop a profile. All current callers are UI,
+    // so this is free insurance, not a hot path.
+    @Synchronized fun list(context: Context): List<SshProfile> = cache ?: run {
         val raw = prefs(context).getString(KEY_PROFILES, null) ?: return emptyList()
         val array = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
         (0 until array.length()).mapNotNull { i ->
@@ -28,9 +31,9 @@ object SshProfiles {
         }.also { cache = it }
     }
 
-    fun add(context: Context, profile: SshProfile) = save(context, list(context) + profile)
+    @Synchronized fun add(context: Context, profile: SshProfile) = save(context, list(context) + profile)
 
-    fun remove(context: Context, profile: SshProfile) = save(context, list(context) - profile)
+    @Synchronized fun remove(context: Context, profile: SshProfile) = save(context, list(context) - profile)
 
     private fun save(context: Context, profiles: List<SshProfile>) {
         val array = JSONArray()

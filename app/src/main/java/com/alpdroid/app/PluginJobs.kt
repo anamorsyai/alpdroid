@@ -49,6 +49,10 @@ class PluginJobs(private val app: AlpineTermApp) {
 
     private fun tick() {
         if (paused || !AlpineRootfs.isReady(app)) return
+        // Idle fast path: no enabled jobs and nothing running means the loop below is pure
+        // I/O (plugin list + hash/mtime walks + state reads) every 30s for nothing. Running
+        // jobs still need the loop (revocation kills), so only skip when both are empty.
+        if (enabledCount == 0 && running.isEmpty()) return
         val now = System.currentTimeMillis()
         var count = 0
         // Approval + switch states read once per plugin: the old loop re-hashed the plugin

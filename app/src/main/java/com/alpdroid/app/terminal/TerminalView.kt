@@ -182,7 +182,8 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
     // Serialized: one keystroke per search thread used to pile N concurrent 2000-row scans;
     // the ticket already discarded stale results, but the threads still burned CPU. Queued
     // scans still check the ticket first and bail immediately when superseded.
-    private val searchExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "term-search").apply { isDaemon = true } }
+    private fun newSearchExecutor() = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "term-search").apply { isDaemon = true } }
+    private var searchExecutor = newSearchExecutor()
 
     // Blinking block cursor: a plain Handler toggle rather than a ValueAnimator — this only
     // needs to flip a boolean and repaint twice a second, an Animator's overhead buys nothing.
@@ -224,6 +225,10 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         blinkHandler.removeCallbacks(blinkRunnable)
         autoScrollHandler.removeCallbacks(autoScrollRunnable)
         pendingResize?.let { resizeHandler.removeCallbacks(it) }
+        // Per-view thread otherwise accumulates across config changes/tabs (daemon, so it
+        // would die with the process — still a leak while the app lives). Recreated lazily
+        // in searchAsync() if the view reattaches.
+        searchExecutor.shutdownNow()
     }
 
     /** Backgrounding the app (Home button, switching apps) doesn't detach this view from its
@@ -539,7 +544,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             paint.alpha = 255
         }
 
-        if (hasSelection) drawSelectionOverlay(canvas, em)
+        if (hasSelection) drawSelectionOverlay(canvas, snap)
         canvas.restore()
     }
 
@@ -547,20 +552,22 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
      *  translucent overlay on top of the already-rendered rows rather than folded into
      *  [drawRow]'s own per-cell logic — selection is comparatively rare, so keeping the hot
      *  per-frame render path free of an extra check per cell is worth the second pass. */
-    private fun drawSelectionOverlay(canvas: Canvas, em: TerminalEmulator) {
+    private fun drawSelectionOverlay(canvas: Canvas, snap: TerminalEmulator.RenderSnapshot) {
         var r1 = selAnchorRow; var c1 = selAnchorCol
         var r2 = selEndRow; var c2 = selEndCol
         if (r1 > r2 || (r1 == r2 && c1 > c2)) {
             val tr = r1; val tc = c1; r1 = r2; c1 = c2; r2 = tr; c2 = tc
         }
-        val scrollbackSize = em.scrollbackSize()
+        // Frame-atomic geometry: reading live rows/cols/scrollbackSize here tore the overlay
+        // against rows drawn from the snapshot when feed() mutated the grid mid-frame.
+        val scrollbackSize = snap.scrollbackSize
         paint.color = TerminalColors.DEFAULT_FG
         paint.alpha = 80
-        for (screenRow in 0 until em.rows) {
+        for (screenRow in 0 until snap.rows) {
             val logicalRow = scrollbackSize + screenRow - scrollOffset
             if (logicalRow < r1 || logicalRow > r2) continue
             val fromCol = if (logicalRow == r1) c1 else 0
-            val toCol = if (logicalRow == r2) c2 else em.cols - 1
+            val toCol = if (logicalRow == r2) c2 else snap.cols - 1
             val y = (screenRow * cellHeight).roundToInt().toFloat()
             val yBottom = ((screenRow + 1) * cellHeight).roundToInt().toFloat()
             canvas.drawRect(fromCol * cellWidth, y, (toCol + 1) * cellWidth, yBottom, paint)
@@ -903,6 +910,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
     fun searchAsync(query: String, forward: Boolean, onDone: (Boolean, Int, Int) -> Unit) {
         val em = emulator ?: run { onDone(false, 0, 0); return }
         if (query.isEmpty()) { onDone(false, 0, 0); return }
+        if (searchExecutor.isShutdown) searchExecutor = newSearchExecutor()
         val ticket = ++searchTicket
         searchExecutor.execute {
             if (ticket != searchTicket) return@execute // superseded while queued

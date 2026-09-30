@@ -233,7 +233,9 @@ class TerminalEmulator(
     /**
      * Last [maxLines] lines only, built directly from the tail — the agent screen endpoint
      * polled this via fullText().trimEnd().lines().takeLast().joinToString(), materializing
-     * the whole ~400KB scrollback plus two throwaway copies per request.
+     * the whole ~400KB scrollback plus two throwaway copies per request. Must hold the
+     * monitor: runs on the agent-bridge pool thread while feed() mutates the grid on the
+     * reader thread.
      */
     @Synchronized
     fun tailText(maxLines: Int): String {
@@ -1015,6 +1017,7 @@ class TerminalEmulator(
 
     private fun deleteLines(n: Int) {
         if (cursorRow < topMargin || cursorRow > bottomMargin) return
+        if (screen.getOrNull(cursorRow) == null || screen.getOrNull(bottomMargin) == null) return
         repeat(min(n, bottomMargin - cursorRow + 1).coerceAtLeast(0)) {
             screen.removeAt(cursorRow)
             screen.add(bottomMargin, blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
@@ -1022,7 +1025,9 @@ class TerminalEmulator(
     }
 
     private fun insertChars(n: Int) {
-        val row = screen[cursorRow]
+        // Stale cursorRow (resize racing the reader thread) must not throw here — feed()
+        // runs off-UI and an IndexOutOfBounds would kill the session's reader thread.
+        val row = screen.getOrNull(cursorRow) ?: return
         val count = min(n, cols - cursorCol)
         // Copy: Cells are mutable and putChar edits in place — sharing one instance across
         // two columns would make a later write to one visibly rewrite the other.
@@ -1031,19 +1036,19 @@ class TerminalEmulator(
     }
 
     private fun deleteChars(n: Int) {
-        val row = screen[cursorRow]
+        val row = screen.getOrNull(cursorRow) ?: return
         val count = min(n, cols - cursorCol)
         for (i in cursorCol until cols - count) row[i] = row[i + count].copy()
         for (i in cols - count until cols) row[i] = Cell(fg = curFg, bg = curBg, fgKind = curFgKind, bgKind = curBgKind)
     }
 
     private fun eraseChars(n: Int) {
-        val row = screen[cursorRow]
+        val row = screen.getOrNull(cursorRow) ?: return
         for (i in cursorCol until min(cols, cursorCol + n)) row[i] = Cell(fg = curFg, bg = curBg, fgKind = curFgKind, bgKind = curBgKind)
     }
 
     private fun eraseInLine(mode: Int) {
-        val row = screen[cursorRow]
+        val row = screen.getOrNull(cursorRow) ?: return
         val range = when (mode) {
             0 -> cursorCol until cols
             1 -> 0..cursorCol
@@ -1069,7 +1074,10 @@ class TerminalEmulator(
         // there, any scrollback rows still pending from a keyboard-driven shrink are no longer
         // "current" history — without resetting this, closing the keyboard right after a `clear`
         // pulled that pre-clear content straight back onto the main screen, undoing the clear.
-        if (screen.all { row -> row.all { it.ch == ' ' } }) pendingRestoreCount = 0
+        // Skip the scan entirely when nothing is pending: its only effect is resetting
+        // pendingRestoreCount, so a zero value makes the full-grid walk pure waste (this runs
+        // on every ESC[J, including hostile spam).
+        if (pendingRestoreCount != 0 && screen.all { row -> row.all { it.ch == ' ' } }) pendingRestoreCount = 0
     }
 
     private fun resetHard() {

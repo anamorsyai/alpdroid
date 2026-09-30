@@ -175,6 +175,11 @@ object AlpineBackup {
                     }
                     '0', '\u0000' -> {
                         dest.parentFile?.mkdirs()
+                        // Never write through a symlink planted by an earlier entry: delete
+                        // first (mirrors the '2' branch) so bytes land at dest itself.
+                        // Planted targets are confined in-tree, so this is placement
+                        // integrity, not a host escape — still worth closing.
+                        if (Files.isSymbolicLink(dest.toPath())) dest.delete()
                         dest.outputStream().use { out -> copySized(input, out, size) }
                         skipPadding(input, size)
                         // Nofollow: dest could have become a symlink between mkdirs and write.

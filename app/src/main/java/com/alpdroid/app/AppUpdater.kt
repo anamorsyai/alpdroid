@@ -103,7 +103,9 @@ object AppUpdater {
         var url = update.apiUrl.ifBlank { update.apkUrl }
         var accept = "application/octet-stream"
         var conn: HttpURLConnection? = null
-        repeat(5) {
+        // Bounded manual loop (not repeat{}): a bare `return@repeat` on success would
+        // keep opening connections for the remaining iterations, leaking each one.
+        for (_ in 0 until 5) {
             val c = (URL(url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 15_000
                 readTimeout = 30_000
@@ -121,7 +123,7 @@ object AppUpdater {
                 c.disconnect()
             } else {
                 conn = c
-                return@repeat
+                break
             }
         }
         val connection = conn ?: throw IllegalStateException("too many redirects")
@@ -147,9 +149,13 @@ object AppUpdater {
                 throw IllegalStateException("download size mismatch")
             }
             if (!tmp.renameTo(dest)) throw IllegalStateException("could not finalize download")
+            tmp.delete() // rename succeeded; no-op. Kept explicit so the finally below reads correctly.
             return dest
         } finally {
             connection.disconnect()
+            // Cancel/failure used to abandon the .part forever (never resumed, never swept).
+            // Success path renamed it away, so delete() there is a harmless no-op.
+            if (tmp.exists() && !dest.isFile) runCatching { tmp.delete() }
         }
     }
 

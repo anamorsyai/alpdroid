@@ -1671,7 +1671,8 @@ class MainActivity : Activity() {
         if (root.isDirectory) (application as AlpineTermApp).backgroundExecutor.execute { AlpineSession.writeAgentFiles(this, root) }
     }
 
-    private var githubCancelled = false
+    // Read by the device-flow poll thread, written on UI: volatile so cancel is seen.
+    @Volatile private var githubCancelled = false
 
     /** AlpineTerm's own OAuth App ID (res/values/github.xml); the user-pasted one is only a fallback while that's blank. */
     private fun githubClientId(): String = getString(R.string.github_client_id).trim().ifBlank { settingsStore.githubClientId }
@@ -1801,10 +1802,15 @@ class MainActivity : Activity() {
                     val result = GitHubAuth.pollToken(clientId, code) { githubCancelled }
                     val login = (result as? GitHubAuth.Poll.Granted)?.let { GitHubAuth.fetchLogin(it.token) }
                     runOnUiThread {
-                        dialog.dismiss()
+                        // Rotation may have destroyed this Activity while polling: persist a
+                        // granted token regardless (re-auth must never be lost), but touch no
+                        // dead UI beyond a guarded dismiss.
+                        if (result is GitHubAuth.Poll.Granted) GitHubAuth.saveToken(this, result.token, login, result.refreshToken, result.expiresInSec, clientId)
+                        runCatching { dialog.dismiss() }
+                        if (isFinishing || isDestroyed) return@runOnUiThread
                         when (result) {
                             is GitHubAuth.Poll.Granted -> {
-                                GitHubAuth.saveToken(this, result.token, login, result.refreshToken, result.expiresInSec, clientId)
+                                // Token already persisted above (even across rotation).
                                 android.widget.Toast.makeText(this, "Signed in to GitHub as ${login ?: "?"}", android.widget.Toast.LENGTH_LONG).show()
                                 // Bring the app back after the browser step. Android may refuse a launch from the
                                 // background, so a tap-to-return notification covers that case.
@@ -3521,6 +3527,12 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         super.onDestroy()
         runCatching { unregisterReceiver(deviceEventReceiver) }
+        // One-shot plugin runs are owned by this Activity's panel: recreation must not
+        // orphan their session + watchdog (the output view is gone either way).
+        stopPluginRun()
+        // Stop the GitHub device-flow poll promptly instead of delivering its result +
+        // dialog.dismiss() to a destroyed instance (window leak on rotation).
+        githubCancelled = true
         if (agentBridge.host === agentHost) agentBridge.host = null
         // Without this, a pending statusPoller tick or a delayed finish() from onTabExited could
         // still fire after the activity is gone and touch now-destroyed views.

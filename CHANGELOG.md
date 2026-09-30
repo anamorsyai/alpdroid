@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.20 — Bug-fix & hardening pass
+
+- Updater no longer leaks connections on redirects; partial downloads swept.
+- Terminal: reader-thread crash guards, tear-free selection, search thread cleanup.
+- Sessions: EXIT-trap reaper for script runs, scratch dirs cleaned, stale bridge file fail-closed.
+- Native bridge: fifo/signal/fd fixes, winsize clamps; backup restore + file browser symlink hardening.
+- Scheduler idle skip, GitHub sign-in rotation-safe, SSH profiles synchronized.
+
 ## 1.7.19 — Security & stability pass
 
 - Full audit fixes: terminal cell-aliasing, CSI overflow guards, feed bounds checks.

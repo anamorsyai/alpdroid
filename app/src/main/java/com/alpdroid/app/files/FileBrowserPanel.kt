@@ -302,6 +302,13 @@ class FileBrowserPanel(
             viewFile(file)
             return
         }
+        // Never follow directory symlinks: an Alpine absolute link resolves against the
+        // host "/" (not the guest rebase), escaping the browser root with host parents
+        // reachable via navigateUp afterwards.
+        if (java.nio.file.Files.isSymbolicLink(file.toPath())) {
+            toast("Not entering link (points outside this folder)")
+            return
+        }
         if (root == Root.ALPINE && !sdcardAlias && runCatching { file.canonicalPath == File(alpineRoot(), "sdcard").canonicalPath }.getOrDefault(false)) {
             sdcardAlias = true
             navigateTo(androidRoot())

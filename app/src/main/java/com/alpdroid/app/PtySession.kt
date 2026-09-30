@@ -26,6 +26,11 @@ class PtySession private constructor(
     val stdout: InputStream = process.inputStream
     val stdin: OutputStream = process.outputStream
 
+    /** Scratch dir (proot PROOT_TMP_DIR) owned by this session, deleted on destroy(). Set by
+     *  AlpineSession right after start(); previously these accumulated in cacheDir forever
+     *  (only the package-search path cleaned up after itself). */
+    var cleanupDir: File? = null
+
     /** One executor per session, not one shared across every tab (MainActivity used to route
      *  every tab's writeToSession() through a single app-wide executor) — a write that blocks
      *  (a large paste into a program that isn't reading its stdin fast enough, or one whose pty
@@ -195,6 +200,9 @@ class PtySession private constructor(
         runCatching { controlFifo.delete() }
         resizeThreadRunning = false
         synchronized(resizeLock) { resizeLock.notifyAll() }
+        // Owned scratch dir (set by AlpineSession): the guest is SIGTERMed above, so its
+        // tmp use is over; never let cache accumulate dead proot dirs across tabs/jobs.
+        runCatching { cleanupDir?.deleteRecursively() }
     }
 
     companion object {

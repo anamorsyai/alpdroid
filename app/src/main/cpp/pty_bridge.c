@@ -27,6 +27,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
@@ -46,8 +47,14 @@ static int open_control_fifo(const char *path) {
     // O_NONBLOCK on a FIFO open means it succeeds immediately regardless of whether a writer
     // is attached yet — Kotlin opens its (blocking) write end shortly after this process
     // starts, and that open() call is what actually pairs the two ends up.
-    int fd = open(path, O_RDONLY | O_NONBLOCK);
-    return fd; // -1 on failure is fine; caller just runs without resize support
+    // O_NOFOLLOW: a symlink planted at the UUID path would otherwise redirect the resize
+    // channel; O_CLOEXEC keeps it out of the exec'd guest. S_ISFIFO check rejects a
+    // squatted regular file. -1 on any failure is fine; caller runs without resize support.
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return -1;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISFIFO(st.st_mode)) { close(fd); return -1; }
+    return fd;
 }
 
 static int open_pty_master(void) {
@@ -100,7 +107,9 @@ static int self_pipe_write_fd = -1;
 // path reaps the child and this process exits promptly. destroyForcibly() on the Kotlin
 // side is the final fallback if even this wedges.
 static volatile sig_atomic_t term_requested = 0;
-static pid_t g_child = -1;
+// sig_atomic_t (not pid_t): read by sigterm_handler asynchronously — plain pid_t is
+// racy against the parent's post-fork assignment below.
+static volatile sig_atomic_t g_child = -1;
 
 static void wake_self_pipe(void) {
     if (self_pipe_write_fd >= 0) {
@@ -181,8 +190,10 @@ static int relay_loop(int master, int control_fd, pid_t child, int self_pipe_rea
                 ssize_t w = write(STDOUT_FILENO, buf + off, (size_t) (r - off));
                 // EPIPE (Kotlin closed our stdout: tab gone) used to break only this inner
                 // loop — poll() then re-read the master and re-EPIPE'd in a 100% CPU spin
-                // until externally killed. Treat it as session-over, not retryable.
-                if (w <= 0) { if (errno == EINTR) continue; if (errno == EPIPE) stdout_broken = 1; break; }
+                // until externally killed. Treat it as session-over, not retryable. Same for
+                // any other non-EINTR write error (EIO/EBADF): retrying a permanently dead
+                // stdout is the same spin with a different errno.
+                if (w <= 0) { if (errno == EINTR) continue; stdout_broken = 1; break; }
                 off += w;
             }
             if (stdout_broken) break;
@@ -209,11 +220,15 @@ static int relay_loop(int master, int control_fd, pid_t child, int self_pipe_rea
                     ssize_t r = read(master, buf, sizeof(buf));
                     if (r <= 0) break;
                     ssize_t off = 0;
+                    int out_dead = 0;
                     while (off < r) {
                         ssize_t w = write(STDOUT_FILENO, buf + off, (size_t) (r - off));
-                        if (w <= 0) { if (errno == EINTR) continue; break; }
+                        // A dead stdout here must end the drain, not spin it: breaking only
+                        // the inner loop re-polls a master that keeps delivering.
+                        if (w <= 0) { if (errno == EINTR) continue; out_dead = 1; break; }
                         off += w;
                     }
+                    if (out_dead) break;
                 }
                 *out_status = status;
                 return 1;
@@ -260,6 +275,10 @@ static int relay_loop(int master, int control_fd, pid_t child, int self_pipe_rea
                     *nl = '\0';
                     int rr = 0, cc = 0;
                     if (sscanf(line, "%d %d", &rr, &cc) == 2 && rr > 0 && cc > 0) {
+                        // Same clamp as argv parsing: set_winsize truncates to
+                        // unsigned short, so huge values would wrap.
+                        if (rr > 1000) rr = 1000;
+                        if (cc > 1000) cc = 1000;
                         set_winsize(master, rr, cc);
                     }
                     line = nl + 1;
@@ -300,10 +319,15 @@ int main(int argc, char **argv) {
     char slave_path[64];
     if (pty_slave_path(master, slave_path, sizeof(slave_path)) != 0) {
         fprintf(stderr, "pty_bridge: failed to determine pty slave: %s\n", strerror(errno));
+        close(master);
         return 1;
     }
     if (rows <= 0) rows = 24;
     if (cols <= 0) cols = 80;
+    // Clamp before the unsigned-short truncation in set_winsize: huge values from a
+    // corrupted resize message would otherwise wrap to a nonsense window size.
+    if (rows > 1000) rows = 1000;
+    if (cols > 1000) cols = 1000;
     set_winsize(master, rows, cols);
 
     int control_fd = open_control_fifo(control_path);
@@ -315,10 +339,20 @@ int main(int argc, char **argv) {
     int self_pipe[2];
     if (pipe(self_pipe) != 0) {
         fprintf(stderr, "pty_bridge: pipe() failed: %s\n", strerror(errno));
+        close(master);
+        if (control_fd >= 0) close(control_fd);
         return 1;
     }
-    fcntl(self_pipe[0], F_SETFL, fcntl(self_pipe[0], F_GETFL) | O_NONBLOCK);
-    fcntl(self_pipe[1], F_SETFL, fcntl(self_pipe[1], F_GETFL) | O_NONBLOCK);
+    // Unchecked fcntl used to risk a blocking self-pipe: wake_self_pipe()'s write() runs
+    // inside signal handlers, where blocking = deadlock. Fail loudly instead.
+    if (fcntl(self_pipe[0], F_SETFL, O_NONBLOCK) != 0 || fcntl(self_pipe[1], F_SETFL, O_NONBLOCK) != 0) {
+        fprintf(stderr, "pty_bridge: fcntl O_NONBLOCK failed: %s\n", strerror(errno));
+        close(master);
+        if (control_fd >= 0) close(control_fd);
+        close(self_pipe[0]);
+        close(self_pipe[1]);
+        return 1;
+    }
     self_pipe_write_fd = self_pipe[1];
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -337,6 +371,10 @@ int main(int argc, char **argv) {
     pid_t child = fork();
     if (child < 0) {
         fprintf(stderr, "pty_bridge: fork failed: %s\n", strerror(errno));
+        close(master);
+        if (control_fd >= 0) close(control_fd);
+        close(self_pipe[0]);
+        close(self_pipe[1]);
         return 1;
     }
     if (child == 0) {
@@ -360,10 +398,11 @@ int main(int argc, char **argv) {
         if (slave < 0) {
             _exit(127);
         }
-        ioctl(slave, TIOCSCTTY, 0);
-        dup2(slave, 0);
-        dup2(slave, 1);
-        dup2(slave, 2);
+        // An exec with the wrong controlling terminal or stdio is a silently broken
+        // session (no input, no output, no signals) — fail loudly instead of exec'ing
+        // into it.
+        if (ioctl(slave, TIOCSCTTY, 0) != 0) _exit(127);
+        if (dup2(slave, 0) < 0 || dup2(slave, 1) < 0 || dup2(slave, 2) < 0) _exit(127);
         if (slave > 2) close(slave);
         close(master);
         if (control_fd >= 0) close(control_fd);

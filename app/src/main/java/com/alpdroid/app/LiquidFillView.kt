@@ -115,6 +115,8 @@ class LiquidFillView @JvmOverloads constructor(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        // Recycle the outgoing bitmap: each rotation otherwise leaks native pixel memory.
+        maskBitmap?.recycle()
         maskBitmap = if (w > 0 && h > 0) rasterizeMask(w, h) else null
     }
 

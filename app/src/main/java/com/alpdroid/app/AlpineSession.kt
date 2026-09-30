@@ -155,6 +155,7 @@ object AlpineSession {
             "LINES" to rows.toString(),
         )
         return PtySession.start(bridge, context.cacheDir, rows, cols, argv, context.filesDir, env)
+            .also { it.cleanupDir = prootScratch }
     }
 
     private fun startSystemShell(context: Context, bridge: File, rows: Int, cols: Int): PtySession {
@@ -189,7 +190,9 @@ object AlpineSession {
         )
         if (StorageAccess.isGranted(context) && storageRoot.isDirectory) argv += listOf("-b", "${storageRoot.absolutePath}:/sdcard")
         argv += removableDriveBinds(context, root)
-        argv += listOf("-w", "/root", "/bin/sh", "-c", command)
+        // Same EXIT-trap process-group reaper as interactive sessions: detached daemons
+        // spawned by plugin/shortcut commands must not outlive destroy().
+        argv += listOf("-w", "/root", "/bin/sh", "-c", "trap 'kill -9 -- -\$\$ 2>/dev/null' EXIT; $command")
         val env = mapOf(
             "HOME" to "/root",
             "TERM" to "dumb",
@@ -201,6 +204,7 @@ object AlpineSession {
             "SSL_CERT_FILE" to "/etc/ssl/cert.pem",
         ) + extraEnv.filterKeys { it !in PROTECTED_ENV }
         return PtySession.start(bridge, context.cacheDir, 24, 200, argv, context.filesDir, env)
+            .also { it.cleanupDir = prootScratch }
     }
 
     /** Env vars a plugin/shortcut caller must never override: pointing these at attacker
@@ -416,6 +420,9 @@ object AlpineSession {
      *  has agent access switched on. Cheap; called at every session start and whenever the switch or
      *  token changes. */
     fun writeAgentFiles(context: Context, root: File) {
+        // Fail closed: on any error the bridge file is deleted, never left stale (old
+        // token/port) — a stale file would route alpctl's real token at a squatter.
+        var conf: File? = null
         runCatching {
             val bin = File(root, "usr/local/bin").apply { mkdirs() }
             if (writeIfDifferent(File(bin, "alpctl"), ALPCTL_SCRIPT)) File(bin, "alpctl").setExecutable(true, false)
@@ -425,7 +432,7 @@ object AlpineSession {
                 gitconfig.writeText("# alpdroid\n[credential \"https://github.com\"]\n\thelper = alpdroid\n")
             }
             val dir = File(root, "etc/alpdroid").apply { mkdirs() }
-            val conf = File(dir, "bridge")
+            conf = File(dir, "bridge")
             val settings = SettingsStore(context)
             AgentContext.sync(root, AgentContext.appVersion(context), settings.agentAccessEnabled, settings.agentContextFiles)
             // The live port, not the preferred constant: with an ephemeral fallback the guest
@@ -445,6 +452,7 @@ object AlpineSession {
         }.onFailure {
             // A silent failure here used to leave agent access half-wired (bridge file missing
             // or stale token) with nothing diagnosing why alpctl stopped answering.
+            runCatching { conf?.delete() }
             Log.w(TAG, "could not write agent files", it)
         }
     }
@@ -459,7 +467,7 @@ CONF=/etc/alpdroid/bridge
 [ -r "${"$"}CONF" ] || { echo "alpctl: agent access is off (enable it in AlpineTerm → Settings → Agent access)" >&2; exit 2; }
 . "${"$"}CONF"
 esc() { printf '%s' "${"$"}1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' | awk '{printf "%s%s", (NR>1?"\\n":""), ${"$"}0}'; }
-call() { case "${"$"}1" in *'"error"'*) printf '%s\n' "${"$"}1" >&2; return 1;; esac; printf '%s\n' "${"$"}1"; }
+call() { case "${"$"}1" in *'"error":'*) printf '%s\n' "${"$"}1" >&2; return 1;; esac; printf '%s\n' "${"$"}1"; }
 get()  { R=${"$"}(wget -qO- --header "Authorization: Bearer ${"$"}TOKEN" "${"$"}URL${"$"}1" 2>/dev/null) || { echo "alpctl: no answer — is Agent access on, and is the app still running?" >&2; return 1; }; call "${"$"}R"; }
 post() { R=${"$"}(wget -qO- --header "Authorization: Bearer ${"$"}TOKEN" --header "Content-Type: application/json" --post-data "${"$"}2" "${"$"}URL${"$"}1" 2>/dev/null) || { echo "alpctl: no answer — is Agent access on, and is the app still running?" >&2; return 1; }; call "${"$"}R"; }
 usage() { cat <<'EOF'

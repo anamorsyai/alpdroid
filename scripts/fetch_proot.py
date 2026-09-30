@@ -112,9 +112,20 @@ def parse_packages_index(text: str) -> dict[str, DebRecord]:
             sha256=fields.get("SHA256", ""),
         )
         existing = records.get(name)
-        if existing is None or candidate.version > existing.version:
+        if existing is None or deb_version_key(candidate.version) > deb_version_key(existing.version):
             records[name] = candidate
     return records
+
+
+def deb_version_key(version: str) -> tuple:
+    """Sort key for Debian version strings (epoch:upstream-revision).
+
+    Plain string comparison misorders across digit widths ("9" > "10"), picking a
+    stale package as "newest". Split into numeric runs (compared as ints) and
+    non-numeric runs (compared lexically), which orders real-world versions right.
+    """
+    parts = re.split(r"(\d+)", version)
+    return tuple(int(p) if p.isdigit() else p for p in parts)
 
 
 def extract_ar_member(deb_bytes: bytes, member_prefix: str) -> tuple[str, bytes] | None:
@@ -260,6 +271,13 @@ def main() -> None:
         dest="abis",
         help="Limit to one ABI (repeatable); default is all supported ABIs.",
     )
+    parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="Warn-and-skip an ABI whose fetch fails instead of failing the build. "
+        "Default (no flag) fails loudly: a release APK must never silently ship "
+        "without proot for an ABI.",
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir).expanduser().resolve()
@@ -278,6 +296,8 @@ def main() -> None:
             # TerminalSession falls back to a plain system shell for any ABI proot is missing.
             sys.stderr.write(f"[{android_abi}] WARNING: proot fetch failed, skipping: {exc}\n")
             shutil.rmtree(output_dir / android_abi, ignore_errors=True)
+            if not args.allow_missing:
+                raise SystemExit(f"[{android_abi}] failing build: pass --allow-missing to ship without proot for this ABI")
 
 
 if __name__ == "__main__":

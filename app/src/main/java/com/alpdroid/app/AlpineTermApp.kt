@@ -56,7 +56,7 @@ class AlpineTermApp : Application() {
      *  MainActivity just re-attach to still-live sessions instead of losing them — real
      *  persistence, not just "remembered how many tabs to recreate" (see SessionPersistence,
      *  which is the fallback for when the process itself, not just the Activity, actually died). */
-    val tabs = mutableListOf<TerminalTab>()
+    val tabs = java.util.concurrent.CopyOnWriteArrayList<TerminalTab>()
 
     /** The local control API for programs in the terminal (off unless the user enables it). Owned
      *  here so it survives Activity recreation; MainActivity attaches/detaches its UI host. */

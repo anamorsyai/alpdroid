@@ -133,6 +133,7 @@ class MainActivity : Activity() {
         if (settingsStore.agentAccessEnabled) syncAgentBridge()
         mainHandler.postDelayed({ if (!isFinishing && !isDestroyed) maybeAutoBackup() }, 30_000)
         mainHandler.postDelayed({ if (!isFinishing && !isDestroyed) maybeAutoUpdateCheck() }, 10_000)
+        startPeriodicUpdateChecks()
         TerminalColors.applyTheme(Themes.byId(settingsStore.themeId))
 
         setContentView(R.layout.activity_main)
@@ -270,6 +271,9 @@ class MainActivity : Activity() {
         super.onResume()
         updateStorageBanner()
         refreshStorageRow()
+        // Returning from the installer / browser / Settings is exactly when an update may
+        // have appeared — re-check here (throttled) so no restart is ever needed to see it.
+        maybeAutoUpdateCheck()
         terminalView.setTextSizePx(spToPx(settingsStore.fontSizeSp))
         extraKeysScroll.visibility = if (settingsStore.showExtraKeys) View.VISIBLE else View.GONE
         terminalView.requestFocus()
@@ -2114,10 +2118,9 @@ class MainActivity : Activity() {
             text = lastUpdateStatus()
         }
         panel.addView(updateStatusText)
-        // Opening About re-checks when the daily auto-check hasn't run in over an hour —
-        // opening Settings is exactly when a user wonders about updates, so don't make
-        // them wait for the daily timer or hunt the manual button.
-        if (System.currentTimeMillis() - settingsStore.lastUpdateCheckMs > 60 * 60 * 1000) {
+        // Opening About re-checks when stale — opening Settings is exactly when a
+        // user wonders about updates, so don't make them hunt the manual button.
+        if (System.currentTimeMillis() - settingsStore.lastUpdateCheckMs > updateCheckThrottleMs) {
             checkForAppUpdate(manual = false)
         }
         panel.addView(
@@ -2165,11 +2168,32 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Daily auto-check: fires once per day from onCreate, only dialogs when newer exists. */
+    /**
+     * Periodic auto-check: 10s after start, on every resume, and every 2h while running —
+     * an update pops whenever it appears, no restart needed. Throttled to one check per
+     * 6h; only dialogs when something newer actually exists.
+     */
+    private val updateCheckIntervalMs = 2L * 60 * 60 * 1000
+    // Short on purpose: one tiny API call, and it makes updates pop within minutes —
+    // a daily throttle is what silently swallowed the very first auto-check in testing.
+    private val updateCheckThrottleMs = 15L * 60 * 1000
     private fun maybeAutoUpdateCheck() {
-        val day = 24L * 60 * 60 * 1000
-        if (System.currentTimeMillis() - settingsStore.lastUpdateCheckMs < day) return
+        if (System.currentTimeMillis() - settingsStore.lastUpdateCheckMs < updateCheckThrottleMs) return
         checkForAppUpdate(manual = false)
+    }
+
+    private val periodicUpdateCheck = object : Runnable {
+        override fun run() {
+            if (!isFinishing && !isDestroyed) {
+                maybeAutoUpdateCheck()
+                mainHandler.postDelayed(this, updateCheckIntervalMs)
+            }
+        }
+    }
+
+    private fun startPeriodicUpdateChecks() {
+        mainHandler.removeCallbacks(periodicUpdateCheck)
+        mainHandler.postDelayed(periodicUpdateCheck, updateCheckIntervalMs)
     }
 
     private var updateDownloadCancelled = false

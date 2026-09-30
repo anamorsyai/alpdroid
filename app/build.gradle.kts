@@ -69,6 +69,9 @@ android {
         if (envStore != null) {
             create("release") {
                 storeFile = envStore
+                // PKCS#12 (openssl-generated rotation key, v1.7.19+); AGP does not infer type
+                // from content, so it must be explicit — a .jks-named default would fail here.
+                storeType = "PKCS12"
                 storePassword = System.getenv("ALPDROID_STORE_PASSWORD")
                 keyAlias = System.getenv("ALPDROID_KEY_ALIAS")
                 keyPassword = System.getenv("ALPDROID_KEY_PASSWORD")
@@ -77,6 +80,7 @@ android {
             val keystoreProps = Properties().apply { load(keystorePropsFile.inputStream()) }
             create("release") {
                 storeFile = file(keystoreProps.getProperty("storeFile"))
+                storeType = "PKCS12"
                 storePassword = keystoreProps.getProperty("storePassword")
                 keyAlias = keystoreProps.getProperty("keyAlias")
                 keyPassword = keystoreProps.getProperty("keyPassword")

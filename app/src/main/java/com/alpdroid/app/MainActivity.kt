@@ -1792,31 +1792,19 @@ class MainActivity : Activity() {
         val port = 4096
         val ips = NetworkInfo.localIpv4Addresses()
         val urls = if (ips.isEmpty()) "(no network address found)" else ips.joinToString("\n") { "http://$it:$port" }
-        val password = settingsStore.opencodeWebPassword
         fun start() {
-            val root = AlpineRootfs.rootDir(this)
-            (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("pw", password))
-            (application as AlpineTermApp).backgroundExecutor.execute {
-                val envFile = File(root, "root/.opencode-web.env")
-                runCatching {
-                    envFile.parentFile?.mkdirs()
-                    envFile.writeText("export OPENCODE_SERVER_PASSWORD='$password'\n")
-                    envFile.setReadable(true, false); envFile.setWritable(true, false); envFile.setExecutable(false, false)
-                }
-                mainHandler.post {
-                    android.widget.Toast.makeText(this, "Password copied", android.widget.Toast.LENGTH_SHORT).show()
-                    drawerLayout.closeDrawer(GravityCompat.END)
-                    addTab("opencode serve") {
-                        runShortcutCommand(". /root/.opencode-web.env && { command -v opencode || command -v opencode2; } >/dev/null || { echo 'opencode not installed — Settings > Quick install first'; exit 1; }; ${"$"}(command -v opencode || command -v opencode2) serve --hostname 0.0.0.0 --port $port\n")
-                    }
-                }
+            drawerLayout.closeDrawer(GravityCompat.END)
+            addTab("opencode serve") {
+                // No password by user choice: anyone on this Wi-Fi gets full agent access.
+                // Only start on networks you trust (home, not cafes/airports).
+                runShortcutCommand("{ command -v opencode || command -v opencode2; } >/dev/null || { echo 'opencode not installed — Settings > Quick install first'; exit 1; }; ${"$"}(command -v opencode || command -v opencode2) serve --hostname 0.0.0.0 --port $port\n")
             }
         }
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setTitle("Start opencode server?")
             .setMessage(
-                "Runs `opencode serve --hostname 0.0.0.0 --port $port` in a new tab. 0.0.0.0 means anyone on this network can reach it — protected by a password, but only as strong as that and your network.\n\n" +
-                    "URLs:\n$urls\n\nUsername: opencode\nPassword: $password (copied when you start)\n\n" +
+                "Runs `opencode serve --hostname 0.0.0.0 --port $port` in a new tab, with NO password — anyone on this network gets full access. Only use on networks you trust.\n\n" +
+                    "URLs:\n$urls\n\n" +
                     "Stop with Ctrl+C in that tab.",
             )
             .setPositiveButton("Start server") { _, _ -> start() }

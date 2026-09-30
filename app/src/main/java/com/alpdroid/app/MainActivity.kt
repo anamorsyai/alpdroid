@@ -1782,12 +1782,18 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    /**
+     * One-click opencode server: a single Start button opens a tab running it — no binary
+     * choice, no typed commands. v2 has no `web` subcommand (that was v1); `serve` starts
+     * the API + web server. The binary is auto-detected in the tab (opencode, else
+     * opencode2, else a hint to Quick install). Stop with Ctrl+C in that tab.
+     */
     private fun confirmOpencodeWeb() {
         val port = 4096
         val ips = NetworkInfo.localIpv4Addresses()
         val urls = if (ips.isEmpty()) "(no network address found)" else ips.joinToString("\n") { "http://$it:$port" }
         val password = settingsStore.opencodeWebPassword
-        fun start(binary: String) {
+        fun start() {
             val root = AlpineRootfs.rootDir(this)
             (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("pw", password))
             (application as AlpineTermApp).backgroundExecutor.execute {
@@ -1800,19 +1806,20 @@ class MainActivity : Activity() {
                 mainHandler.post {
                     android.widget.Toast.makeText(this, "Password copied", android.widget.Toast.LENGTH_SHORT).show()
                     drawerLayout.closeDrawer(GravityCompat.END)
-                    addTab("$binary web") { runShortcutCommand(". /root/.opencode-web.env && $binary web --hostname 0.0.0.0 --port $port\n") }
+                    addTab("opencode serve") {
+                        runShortcutCommand(". /root/.opencode-web.env && { command -v opencode || command -v opencode2; } >/dev/null || { echo 'opencode not installed — Settings > Quick install first'; exit 1; }; ${"$"}(command -v opencode || command -v opencode2) serve --hostname 0.0.0.0 --port $port\n")
+                    }
                 }
             }
         }
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
-            .setTitle("Start opencode web server?")
+            .setTitle("Start opencode server?")
             .setMessage(
-                "Runs `opencode web --hostname 0.0.0.0 --port $port` in a new tab. 0.0.0.0 means anyone on this network can reach it — protected by a password, but only as strong as that and your network.\n\n" +
+                "Runs `opencode serve --hostname 0.0.0.0 --port $port` in a new tab. 0.0.0.0 means anyone on this network can reach it — protected by a password, but only as strong as that and your network.\n\n" +
                     "URLs:\n$urls\n\nUsername: opencode\nPassword: $password (copied when you start)\n\n" +
-                    "Stop with Ctrl+C in that tab. Pick which command to run:",
+                    "Stop with Ctrl+C in that tab.",
             )
-            .setPositiveButton("opencode") { _, _ -> start("opencode") }
-            .setNeutralButton("opencode2") { _, _ -> start("opencode2") }
+            .setPositiveButton("Start server") { _, _ -> start() }
             .setNegativeButton("Cancel", null)
             .show()
     }

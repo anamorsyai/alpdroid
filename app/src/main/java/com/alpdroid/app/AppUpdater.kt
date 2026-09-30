@@ -179,7 +179,7 @@ object AppUpdater {
             runCatching {
                 activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }
-            android.widget.Toast.makeText(activity, "Allow installing apps, then tap Update again", android.widget.Toast.LENGTH_LONG).show()
+            android.widget.Toast.makeText(activity, "Allow installing apps, then return here — the install prompt will reappear", android.widget.Toast.LENGTH_LONG).show()
             return false
         }
         val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", apk)

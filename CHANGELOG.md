@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.21 — Update-install resume fix
+
+- Granting the install permission in Settings then returning re-offers the waiting
+  install instead of stranding the user with no way to continue.
+
 ## 1.7.20 — Bug-fix & hardening pass
 
 - Updater no longer leaks connections on redirects; partial downloads swept.

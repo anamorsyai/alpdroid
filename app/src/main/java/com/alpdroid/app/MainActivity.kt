@@ -268,10 +268,39 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Newest downloaded APK newer than the installed app, if any — the resume-install source. */
+    private fun findPendingUpdateApk(): java.io.File? {
+        val dir = getExternalFilesDir(null)?.let { java.io.File(it, "updates") } ?: return null
+        val (_, currentCode) = AppUpdater.currentVersion(this)
+        return dir.listFiles { f -> f.isFile && f.name.startsWith("AlpineTerm-") && f.name.endsWith(".apk") }
+            ?.sortedByDescending { it.lastModified() }
+            ?.firstOrNull { apk -> (runCatching { AppUpdater.apkVersionCode(this, apk) }.getOrNull() ?: 0) > currentCode }
+    }
+
+    private fun showPendingInstallDialog(apk: java.io.File) {
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("Ready to install")
+            .setMessage("The update is downloaded (${apk.name}). Install now? The app will close — tabs and files are untouched.")
+            .setPositiveButton("Install") { _, _ -> AppUpdater.installApk(this, apk) }
+            .setNegativeButton("Later", null)
+            .setCancelable(true)
+            .show()
+    }
+
     override fun onResume() {
         super.onResume()
         updateStorageBanner()
         refreshStorageRow()
+        // Back from the install-permission Settings screen: re-offer the waiting install
+        // instead of stranding the user with no way to continue.
+        if (sentToInstallSettings) {
+            sentToInstallSettings = false
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+                findPendingUpdateApk()?.let { showPendingInstallDialog(it) }
+            } else {
+                android.widget.Toast.makeText(this, "Install permission still off — tap Update to try again", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
         // Returning from the installer / browser / Settings is exactly when an update may
         // have appeared — re-check here (throttled) so no restart is ever needed to see it.
         maybeAutoUpdateCheck()
@@ -2258,6 +2287,9 @@ class MainActivity : Activity() {
     }
 
     private var updateDownloadCancelled = false
+    // Set when installApk() detoured to Settings for the install permission: the downloaded
+    // APK waits on disk, and onResume() below re-offers the install on return.
+    private var sentToInstallSettings = false
 
     private fun showUpdateDialog(update: AppUpdater.Update) {
         val notes = update.notes.take(1500)
@@ -2313,8 +2345,9 @@ class MainActivity : Activity() {
                     return@post
                 }
                 // Returns false only when install permission is missing — the user is already
-                // on their way to Settings then, and taps Update again after allowing.
-                AppUpdater.installApk(this, apk)
+                // on their way to Settings then. Remember it: onResume() re-offers the install
+                // when they return (the old flow stranded them with no way back).
+                if (!AppUpdater.installApk(this, apk)) sentToInstallSettings = true
             }
         }
     }

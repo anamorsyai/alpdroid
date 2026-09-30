@@ -3450,24 +3450,21 @@ class MainActivity : Activity() {
                 )
             }
         }
-        onBackPressedDispatcher.addCallback(
-            this,
-            object : androidx.activity.OnBackPressedCallback(true) {
-                override fun handleOnBackPressed() {
-                    when {
-                        drawerLayout.isDrawerOpen(GravityCompat.END) -> drawerLayout.closeDrawer(GravityCompat.END)
-                        // Inside a subdirectory: back navigates up a level first, same as tapping the file
-                        // browser's own Up button — only closes the drawer once already at a root.
-                        drawerLayout.isDrawerOpen(GravityCompat.START) ->
-                            if (!fileBrowserPanel.onBackPressed()) drawerLayout.closeDrawer(GravityCompat.START)
-                        else -> {
-                            isEnabled = false
-                            onBackPressedDispatcher.onBackPressed()
-                        }
-                    }
-                }
-            },
-        )
+        // Back behavior lives in the onBackPressed() override below (this Activity
+        // deliberately avoids AppCompat, which owns OnBackPressedDispatcher) — kept next to
+        // the gesture setup since they solve the same swipe-vs-exit problem together.
+    }
+
+    @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
+    override fun onBackPressed() {
+        when {
+            drawerLayout.isDrawerOpen(GravityCompat.END) -> drawerLayout.closeDrawer(GravityCompat.END)
+            // Inside a subdirectory: back navigates up a level first, same as tapping the file
+            // browser's own Up button — only closes the drawer once already at a root.
+            drawerLayout.isDrawerOpen(GravityCompat.START) ->
+                if (!fileBrowserPanel.onBackPressed()) drawerLayout.closeDrawer(GravityCompat.START)
+            else -> super.onBackPressed()
+        }
     }
 
     override fun onDestroy() {

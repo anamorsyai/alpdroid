@@ -39,8 +39,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:theme="@style/Theme.AlpDroid"
-        android:requestLegacyExternalStorage="true"
-        android:enableOnBackInvokedCallback="true">
+        android:requestLegacyExternalStorage="true">
         <!-- API 29 specifically opts into scoped storage even with WRITE_EXTERNAL_STORAGE
              granted, unless this flag turns it back off — without it, /sdcard could bind-mount
              into the guest but not actually be fully readable/writable there on that one API

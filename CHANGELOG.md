@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.26 — One-tap server really one tap
+
+- The opencode Start button spawns a tab already running the server (argv from boot)
+  instead of typing into a half-started shell.
+
 ## 1.7.25 — Battery button actually opens settings
 
 - The exemption prompt silently died without its manifest permission; added it, and

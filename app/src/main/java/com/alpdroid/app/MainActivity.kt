@@ -1900,10 +1900,11 @@ class MainActivity : Activity() {
     }
 
     /**
-     * One-click opencode server: a single Start button opens a tab running it — no binary
-     * choice, no typed commands. v2 has no `web` subcommand (that was v1); `serve` starts
-     * the API + web server. The binary is auto-detected in the tab (opencode, else
-     * opencode2, else a hint to Quick install). Stop with Ctrl+C in that tab.
+     * One-click opencode server: a single Start button opens a tab whose session directly
+     * execs the server command — nothing is typed, so no proot-startup race. v2 has no `web`
+     * subcommand (that was v1); `serve` starts the API + web server. The binary is resolved
+     * in-guest (opencode, else opencode2, else a hint to Quick install). Stop with Ctrl+C
+     * in that tab.
      */
     private fun confirmOpencodeWeb() {
         val port = 4096
@@ -1911,11 +1912,14 @@ class MainActivity : Activity() {
         val urls = if (ips.isEmpty()) "(no network address found)" else ips.joinToString("\n") { "http://$it:$port" }
         fun start() {
             drawerLayout.closeDrawer(GravityCompat.END)
-            // OnReady, not straight away: typing into a just-spawned tab loses the bytes
-            // (proot still starting, no pty slave yet) and the tab sits empty.
-            addTab("opencode serve") {
-                runShortcutCommandOnReady("{ command -v opencode || command -v opencode2; } >/dev/null || { echo 'opencode not installed — Settings > Quick install first'; exit 1; }; ${"$"}(command -v opencode || command -v opencode2) serve --hostname 0.0.0.0 --port $port\n")
-            }
+            // Direct-exec session: the server command is argv from spawn, nothing is typed —
+            // typing into a just-spawned tab lost bytes while proot was still starting.
+            addTab(
+                "opencode serve",
+                directCommand = "BIN=\$(command -v opencode || command -v opencode2); " +
+                    "if [ -z \"\$BIN\" ]; then echo 'opencode not installed — Settings > Quick install first'; exit 1; fi; " +
+                    "\"\$BIN\" serve --hostname 0.0.0.0 --port $port",
+            )
         }
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setTitle("Start opencode server?")
@@ -2869,7 +2873,7 @@ class MainActivity : Activity() {
      * [onFailed] fires (once) whenever this attempt ends without a tab — setup failure or
      * shell-start failure — alongside the usual Retry UI. Lets chained callers (session
      * resume) keep going instead of stalling silently on one bad tab. */
-    private fun addTab(initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null) {
+    private fun addTab(initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null, directCommand: String? = null) {
         // Balanced by exactly one decrement wherever this particular attempt's flow actually
         // ends: startSessionNow()'s completion (success or failure) below, or showSetupFailure()
         // if ensureReady() itself fails first. Covers every path that can ever call addTab() — a
@@ -2931,8 +2935,8 @@ class MainActivity : Activity() {
                     // making the user explicitly retry is what guarantees a session only ever
                     // starts once Alpine is actually installed and verified.
                     !rootfsReady -> showSetupFailure(initialLabel, onStarted, onFailed)
-                    !wasReadyBefore && !StorageAccess.isGranted(this) -> showReadyGate(id, initialLabel, onStarted, onFailed)
-                    else -> startSessionNow(id, initialLabel, onStarted, onFailed)
+                    !wasReadyBefore && !StorageAccess.isGranted(this) -> showReadyGate(id, initialLabel, onStarted, onFailed, directCommand)
+                    else -> startSessionNow(id, initialLabel, onStarted, onFailed, directCommand)
                 }
             }
         }
@@ -2962,22 +2966,22 @@ class MainActivity : Activity() {
         onFailed?.invoke()
     }
 
-    private fun showReadyGate(id: Int, initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null) {
+    private fun showReadyGate(id: Int, initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null, directCommand: String? = null) {
         setupStatus.text = "Alpine is ready. Grant shared storage now so it's available in the shell (or skip — you can grant it later from Settings)."
         grantStorageButton.visibility = View.VISIBLE
         startTerminalButton.visibility = View.VISIBLE
         startTerminalButton.setOnClickListener {
             startTerminalButton.visibility = View.GONE
             grantStorageButton.visibility = View.GONE
-            startSessionNow(id, initialLabel, onStarted, onFailed)
+            startSessionNow(id, initialLabel, onStarted, onFailed, directCommand)
         }
     }
 
-    private fun startSessionNow(id: Int, initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null) {
+    private fun startSessionNow(id: Int, initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null, directCommand: String? = null) {
         setupStatus.text = "Starting shell…"
         val app = application as AlpineTermApp
         app.backgroundExecutor.execute {
-            val result = runCatching { AlpineSession.start(this, lastRows, lastCols, id) }
+            val result = runCatching { AlpineSession.start(this, lastRows, lastCols, id, directCommand) }
             mainHandler.post {
                 // Decremented here (success or failure) rather than at the top of addTab() —
                 // addTab() can run synchronously right after the old tab's destroy() call, well
@@ -3014,7 +3018,7 @@ class MainActivity : Activity() {
                     setupStatus.text = "Failed to start a shell: ${e.message}"
                     setupProgress.visibility = View.GONE
                     retryButton.visibility = View.VISIBLE
-                    retryButton.setOnClickListener { addTab(initialLabel, onStarted, onFailed) }
+                    retryButton.setOnClickListener { addTab(initialLabel, onStarted, onFailed, directCommand) }
                     onFailed?.invoke()
                 }
             }

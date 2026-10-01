@@ -38,7 +38,7 @@ object AlpineSession {
      * hard-to-reproduce corruption. The guest's actual `/tmp` is a separate, shared bind mount
      * (see [startAlpine]) so tabs still see one common `/tmp` the way real Alpine sessions do.
      */
-    fun start(context: Context, rows: Int, cols: Int, sessionId: Int): StartResult {
+    fun start(context: Context, rows: Int, cols: Int, sessionId: Int, directCommand: String? = null): StartResult {
         val nativeLibDir = File(context.applicationInfo.nativeLibraryDir)
         val bridge = File(nativeLibDir, "libpty_bridge.so")
         if (!bridge.isFile) {
@@ -50,7 +50,7 @@ object AlpineSession {
 
         return if (alpineReady) {
             try {
-                StartResult(startAlpine(context, bridge, proot, nativeLibDir, rows, cols, sessionId), "Alpine Linux (proot)")
+                StartResult(startAlpine(context, bridge, proot, nativeLibDir, rows, cols, sessionId, directCommand), "Alpine Linux (proot)")
             } catch (e: Exception) {
                 Log.w(TAG, "Alpine start failed, falling back to system shell", e)
                 StartResult(startSystemShell(context, bridge, rows, cols), "system shell (Alpine failed: ${e.message})")
@@ -61,7 +61,7 @@ object AlpineSession {
         }
     }
 
-    private fun startAlpine(context: Context, bridge: File, proot: File, nativeLibDir: File, rows: Int, cols: Int, sessionId: Int): PtySession {
+    private fun startAlpine(context: Context, bridge: File, proot: File, nativeLibDir: File, rows: Int, cols: Int, sessionId: Int, directCommand: String? = null): PtySession {
         val root = AlpineRootfs.rootDir(context)
         writeResolvConf(context, root)
         writeApkHostsIPv4Only(root)
@@ -109,7 +109,15 @@ object AlpineSession {
         // leftover daemon (it shares this process group by default unless it explicitly detached)
         // along with proot itself. Job control stays at its normal default (plain "-i"): Ctrl+Z
         // needs it to suspend a foreground command that's misbehaving.
-        argv += listOf("-w", "/root", "/bin/sh", "-c", "trap 'kill -9 -- -\$\$ 2>/dev/null' EXIT; /bin/sh -i")
+        // directCommand runs INSTEAD of the interactive shell (one-tap server tabs): same
+        // wrapper + EXIT-trap reaper, but the given guest shell code instead of `/bin/sh -i`.
+        // Never execs, so the trap still runs afterward (see above). No typing race — the
+        // command is argv from the start, nothing is pasted into a half-started shell.
+        argv += if (directCommand != null) {
+            listOf("-w", "/root", "/bin/sh", "-c", "trap 'kill -9 -- -\$\$ 2>/dev/null' EXIT; $directCommand")
+        } else {
+            listOf("-w", "/root", "/bin/sh", "-c", "trap 'kill -9 -- -\$\$ 2>/dev/null' EXIT; /bin/sh -i")
+        }
 
         val env = mapOf(
             "HOME" to "/root",

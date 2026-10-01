@@ -48,6 +48,12 @@ class SettingsStore(context: Context) {
         get() = prefs.getLong(KEY_LAST_UPDATE_CHECK, 0L)
         set(value) = prefs.edit().putLong(KEY_LAST_UPDATE_CHECK, value).apply()
 
+    /** Last moment the app was provably alive (onPause + periodic refresh). 0 = clean start
+     *  or deliberate exit. A stale value on launch means the system killed the process. */
+    var lastAliveMs: Long
+        get() = prefs.getLong(KEY_LAST_ALIVE, 0L)
+        set(value) = prefs.edit().putLong(KEY_LAST_ALIVE, value).commit()
+
     /** Off by default: lets programs inside the terminal call this app's local control API
      *  (see AgentBridge) — the user-approved "agent access" feature. */
     var agentAccessEnabled: Boolean
@@ -150,6 +156,7 @@ class SettingsStore(context: Context) {
         private const val KEY_AUTO_BACKUP = "auto_backup_enabled"
         private const val KEY_LAST_AUTO_BACKUP = "last_auto_backup_ms"
         private const val KEY_LAST_UPDATE_CHECK = "last_update_check_ms"
+        private const val KEY_LAST_ALIVE = "last_alive_ms"
         private const val KEY_LIGATURES = "ligatures_enabled"
         private const val KEY_BELL_SOUND = "bell_sound_enabled"
         private const val KEY_SNIPPETS = "custom_snippets"

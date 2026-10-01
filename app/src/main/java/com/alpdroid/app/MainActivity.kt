@@ -131,6 +131,15 @@ class MainActivity : Activity() {
         }
         agentBridge.host = agentHost
         if (settingsStore.agentAccessEnabled) syncAgentBridge()
+        // System-kill detector: a stale heartbeat means the OS killed the process (battery
+        // saver / memory pressure), not an app crash — there is no crash dialog for those,
+        // so without this the user can never tell the two apart. Rotation recreates within
+        // seconds (onPause stamps fresh), so only a gap counts. Deliberate exits zero it.
+        val lastAlive = settingsStore.lastAliveMs
+        settingsStore.lastAliveMs = System.currentTimeMillis()
+        if (lastAlive != 0L && System.currentTimeMillis() - lastAlive > 90_000L) {
+            mainHandler.post { showSystemKillNotice() }
+        }
         mainHandler.postDelayed({ if (!isFinishing && !isDestroyed) maybeAutoBackup() }, 30_000)
         mainHandler.postDelayed({ if (!isFinishing && !isDestroyed) maybeAutoUpdateCheck() }, 10_000)
         startPeriodicUpdateChecks()
@@ -315,8 +324,33 @@ class MainActivity : Activity() {
         }
     }
 
+    /** The previous process died to a system kill (not a crash, not an exit): explain and
+     *  point at the battery exemption, which is the actual fix. Sessions can't survive it —
+     *  proot and every shell were children of the dead process. */
+    private fun showSystemKillNotice() {
+        if (isFinishing || isDestroyed) return
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("Stopped by the system")
+            .setMessage(
+                "Android closed the app to save battery/memory, killing the terminal sessions with it. " +
+                    "This isn't a crash — nothing in the app did it. To stop it happening:\n\n" +
+                    "• Tap Battery settings below and allow Unrestricted / Ignore optimizations\n" +
+                    "• Lock AlpDroid in the Recents screen so swipes don't clear it\n" +
+                    "• Keep the keep-alive notification on",
+            )
+            .setPositiveButton("Battery settings") { _, _ ->
+                runCatching {
+                    startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, android.net.Uri.parse("package:$packageName")))
+                }
+            }
+            .setNegativeButton("Dismiss", null)
+            .show()
+    }
+
     override fun onPause() {
         super.onPause()
+        // Heartbeat for the system-kill detector (commit: must hit disk before any kill).
+        settingsStore.lastAliveMs = System.currentTimeMillis()
         // The view stays attached to its window the whole time the app just sits backgrounded
         // (Home button, switching apps) — only actually finishing the Activity detaches it — so
         // without this, the cursor-blink Handler would keep firing every 530ms indefinitely with
@@ -2275,6 +2309,9 @@ class MainActivity : Activity() {
     private val periodicUpdateCheck = object : Runnable {
         override fun run() {
             if (!isFinishing && !isDestroyed) {
+                // Heartbeat for the system-kill detector (covers foreground kills; onPause
+                // only stamps when leaving).
+                settingsStore.lastAliveMs = System.currentTimeMillis()
                 maybeAutoUpdateCheck()
                 mainHandler.postDelayed(this, updateCheckIntervalMs)
             }
@@ -3601,6 +3638,8 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // A deliberate exit isn't a kill: zero the heartbeat so the next launch stays quiet.
+        if (deliberateExit) settingsStore.lastAliveMs = 0L
         runCatching { unregisterReceiver(deviceEventReceiver) }
         // One-shot plugin runs are owned by this Activity's panel: recreation must not
         // orphan their session + watchdog (the output view is gone either way).

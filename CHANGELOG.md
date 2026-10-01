@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.24 — System-kill notice
+
+- Restarting into a stale heartbeat now plainly says the system stopped the app
+  (not a crash), with a shortcut to the battery exemption that prevents it.
+
 ## 1.7.23 — One-click commands actually land
 
 - New tabs type their auto-command on first shell output instead of into the void

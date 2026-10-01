@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.25 — Battery button actually opens settings
+
+- The exemption prompt silently died without its manifest permission; added it, and
+  both entries now share one helper with a fallback + toast.
+
 ## 1.7.24 — System-kill notice
 
 - Restarting into a stale heartbeat now plainly says the system stopped the app

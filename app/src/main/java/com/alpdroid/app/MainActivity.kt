@@ -324,6 +324,27 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Opens the system's battery-exemption prompt, falling back to the battery settings
+     *  list when the direct prompt can't open (missing permission on older builds, OEM
+     *  quirks) — never silently nothing. Returns true if exemption already held. */
+    private fun openBatteryExemption(): Boolean {
+        val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
+        if (pm.isIgnoringBatteryOptimizations(packageName)) {
+            android.widget.Toast.makeText(this, "Already ignoring battery optimizations", android.widget.Toast.LENGTH_SHORT).show()
+            return true
+        }
+        val direct = Intent(
+            android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            android.net.Uri.parse("package:$packageName"),
+        )
+        val opened = runCatching { startActivity(direct); true }.getOrDefault(false)
+        if (!opened) {
+            runCatching { startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+            android.widget.Toast.makeText(this, "Find AlpDroid in the list and set it to Unrestricted", android.widget.Toast.LENGTH_LONG).show()
+        }
+        return false
+    }
+
     /** The previous process died to a system kill (not a crash, not an exit): explain and
      *  point at the battery exemption, which is the actual fix. Sessions can't survive it —
      *  proot and every shell were children of the dead process. */
@@ -338,11 +359,7 @@ class MainActivity : Activity() {
                     "• Lock AlpDroid in the Recents screen so swipes don't clear it\n" +
                     "• Keep the keep-alive notification on",
             )
-            .setPositiveButton("Battery settings") { _, _ ->
-                runCatching {
-                    startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, android.net.Uri.parse("package:$packageName")))
-                }
-            }
+            .setPositiveButton("Battery settings") { _, _ -> openBatteryExemption() }
             .setNegativeButton("Dismiss", null)
             .show()
     }
@@ -737,14 +754,7 @@ class MainActivity : Activity() {
         panel.addView(
             pillButton().apply {
                 text = "Ignore battery optimizations"
-                setOnClickListener {
-                    val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
-                    if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-                        startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
-                    } else {
-                        android.widget.Toast.makeText(this@MainActivity, "Already ignoring battery optimizations", android.widget.Toast.LENGTH_SHORT).show()
-                    }
-                }
+                setOnClickListener { openBatteryExemption() }
             },
         )
 

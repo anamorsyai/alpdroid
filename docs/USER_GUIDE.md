@@ -66,7 +66,7 @@ Swipe in from the left edge. Switch between phone storage and Alpine files.
 
 Settings → Backup & Storage.
 
-- **Backup**: whole Alpine setup → one `.tar.gz`. "App folder" is fast but dies with uninstall; "chosen file" (Downloads, SD, cloud) survives it.
+- **Backup**: whole Alpine setup → one backup file. "App folder" is fast but dies with uninstall; "chosen file" (Downloads, SD, cloud) survives it.
 - Low-storage warning before starting; optional weekly auto-backup (keeps 3 newest auto ones, never touches manual ones).
 - **Restore**: replaces everything, closes tabs — deliberate action only.
 - **Reinstall Alpine**: clean slate (erases inside-Alpine data outside `/sdcard`) — back up first.
@@ -92,7 +92,7 @@ Settings → Devices (auto-refresh on plug/unplug, manual Refresh too).
 
 ## 11. GitHub sign-in
 
-Settings → Agent access & GitHub → Sign in with GitHub (device flow, browser authorize, token encrypted in Android Keystore).
+Settings → Agent access & GitHub → Sign in with GitHub (your browser opens a GitHub approval page).
 
 - Turn on "Let agents use my GitHub token": `git` clone/push/pull just works, no passwords.
 - Sign out removes it from the phone; also revoke at github.com/settings/applications.
@@ -125,7 +125,7 @@ Per plugin under Automation: switches, Run now, View log. Jobs run while the kee
 
 Settings → check for updates (auto-check throttled; manual anytime).
 
-- "Update now" downloads with the filling-logo progress screen, validates newer-than-installed, then installs (app closes; tabs/sessions don't survive updates, files do).
+- "Update now" downloads with the filling-logo progress screen, checks it's actually newer, then installs (app closes; tabs/sessions don't survive updates, files do).
 - If Android detours you to allow installs, returning re-offers the waiting install automatically.
 
 ## 16. Sessions & keep-alive
@@ -135,7 +135,7 @@ Android stops background apps. Countermeasures (Settings → Sessions & Backgrou
 - **Keep sessions alive** (default on): foreground notification with session count; tap to return, Exit closes all.
 - **Wake lock**: keeps CPU awake for very long jobs; costs battery, off by default.
 - If the system still kills the app, allow Unrestricted battery use for AlpDroid (in-app button under Settings), lock it in Recents.
-- After a system kill, the app says so plainly on next launch (not a crash) with a battery-settings shortcut. Sessions can't survive a kill — proot and shells die with the process.
+- After a system kill, the app says so plainly on next launch (not a crash) with a battery-settings shortcut. Open sessions can't survive a kill — everything running stops.
 
 ## 17. Home-screen widget
 

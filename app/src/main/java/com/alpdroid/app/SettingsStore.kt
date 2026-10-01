@@ -52,7 +52,9 @@ class SettingsStore(context: Context) {
      *  or deliberate exit. A stale value on launch means the system killed the process. */
     var lastAliveMs: Long
         get() = prefs.getLong(KEY_LAST_ALIVE, 0L)
-        set(value) = prefs.edit().putLong(KEY_LAST_ALIVE, value).commit()
+        set(value) {
+            prefs.edit().putLong(KEY_LAST_ALIVE, value).commit()
+        }
 
     /** Off by default: lets programs inside the terminal call this app's local control API
      *  (see AgentBridge) — the user-approved "agent access" feature. */

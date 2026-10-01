@@ -62,8 +62,6 @@ vars; see `.github/workflows/` for the CI release flow. Debug builds use
 
 ## Architecture
 
-![architecture](assets/architecture.svg)
-
 `TerminalView` (Canvas renderer + `TerminalEmulator` buffer) talks to a native
 `pty_bridge` PTY helper over stdin/stdout, resizes on a separate named-pipe channel.
 Sessions spawn the guest shell under `proot`; storage is bind-mounted, network shared,
@@ -79,12 +77,6 @@ off-by-default or approval-gated. Details: [SECURITY.md](SECURITY.md).
 
 No analytics, no tracking, no ads. Network = downloads you trigger + DNS. Backups stay
 on your storage. Details: [PRIVACY.md](PRIVACY.md).
-
-## Brand
-
-Sources in [`assets/`](assets/) ([usage notes](assets/README.md)): `logo.svg` (icon),
-`banner.svg` (social/README), `architecture.svg` (diagram above), `store-graphic.svg`
-(Play feature graphic).
 
 ## Contributing
 

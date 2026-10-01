@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.23 — One-click commands actually land
+
+- New tabs type their auto-command on first shell output instead of into the void
+  while proot is still starting (opencode Start button, file-browser terminal-here).
+
 ## 1.7.22 — Hardening round 3 + filling-logo update screen
 
 - Update download now shows the filling Alpine logo with live progress.

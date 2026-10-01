@@ -221,7 +221,7 @@ class MainActivity : Activity() {
             onFileRootSelected = { hideSessionsMode() },
             onOpenTerminalHere = { guestPath ->
                 drawerLayout.closeDrawer(GravityCompat.START)
-                addTab(onStarted = { runShortcutCommand("cd '" + guestPath.replace("'", "'\\''") + "'\n") })
+                addTab(onStarted = { runShortcutCommandOnReady("cd '" + guestPath.replace("'", "'\\''") + "'\n") })
             },
         )
         fbSessionsButton.setOnClickListener { showSessionsMode() }
@@ -1867,10 +1867,10 @@ class MainActivity : Activity() {
         val urls = if (ips.isEmpty()) "(no network address found)" else ips.joinToString("\n") { "http://$it:$port" }
         fun start() {
             drawerLayout.closeDrawer(GravityCompat.END)
+            // OnReady, not straight away: typing into a just-spawned tab loses the bytes
+            // (proot still starting, no pty slave yet) and the tab sits empty.
             addTab("opencode serve") {
-                // No password by user choice: anyone on this Wi-Fi gets full agent access.
-                // Only start on networks you trust (home, not cafes/airports).
-                runShortcutCommand("{ command -v opencode || command -v opencode2; } >/dev/null || { echo 'opencode not installed — Settings > Quick install first'; exit 1; }; ${"$"}(command -v opencode || command -v opencode2) serve --hostname 0.0.0.0 --port $port\n")
+                runShortcutCommandOnReady("{ command -v opencode || command -v opencode2; } >/dev/null || { echo 'opencode not installed — Settings > Quick install first'; exit 1; }; ${"$"}(command -v opencode || command -v opencode2) serve --hostname 0.0.0.0 --port $port\n")
             }
         }
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
@@ -3163,6 +3163,24 @@ class MainActivity : Activity() {
         terminalView.ctrlArmed = false
         terminalView.altArmed = false
         writeToSession(session, byteArrayOf(0x05, 0x15) + cmd.toByteArray())
+    }
+
+    /** Types [cmd] the moment the tab's shell first produces output. Writing straight into a
+     *  just-spawned session loses bytes: proot takes seconds to start on a phone and master
+     *  writes with no slave open yet fail instead of queueing — the tab opened with nothing
+     *  typed. First output proves the shell is alive and reading. */
+    private fun runShortcutCommandOnReady(cmd: String) {
+        val tab = tabs.getOrNull(activeTabIndex) ?: return
+        val prev = tab.onOutput
+        var sent = false
+        tab.onOutput = {
+            prev?.invoke()
+            if (!sent) {
+                sent = true
+                tab.onOutput = prev
+                runShortcutCommand(tab.session, cmd)
+            }
+        }
     }
 
     private fun writeToSession(session: PtySession, bytes: ByteArray) {

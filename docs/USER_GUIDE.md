@@ -147,7 +147,7 @@ Add the AlpDroid widget → tap jumps straight into a new session.
 - opencode won't quit: `opencode service stop`, then `exit`.
 - Drive missing: new tab after plugging in; check all-files access; FAT32/exFAT only.
 - Empty Wi-Fi list: location permission + Location on.
-- Slow builds: proot emulation overhead — normal on phones.
+- Slow builds: Linux runs through a compatibility layer, so heavy jobs take longer than on a computer.
 - Still broken: new tab → else backup + Reinstall Alpine.
 
 ## 19. Security notes

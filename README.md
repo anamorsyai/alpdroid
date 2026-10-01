@@ -15,15 +15,6 @@ AlpDroid runs an Alpine Linux userland directly on the device via `proot`, with 
 from-scratch VT100 terminal emulator and PTY bridge, shared storage at `/sdcard`, and the
 device's live network inside the guest.
 
-## Screenshots
-
-> Captured on-device into `assets/screenshots/` (`tabs.png`, `files.png`, `settings.png`).
-> If this section shows placeholders, the release still needs fresh captures.
-
-| Tabs | Files | Settings |
-|------|-------|----------|
-| ![tabs](assets/screenshots/tabs.png) | ![files](assets/screenshots/files.png) | ![settings](assets/screenshots/settings.png) |
-
 ## Features
 
 - **Multi-tab terminal** — independent shells; tabs survive backgrounding via keep-alive service + session persistence.

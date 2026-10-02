@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.29 — Serve auto-opens the browser
+
+- Server ready now opens this phone's browser on 127.0.0.1:4096 with the password
+  already copied — paste to sign in. LAN URLs still shown in the dialog.
+
 ## 1.7.28 — opencode serve that just works
 
 - One-tap server preloads gcompat (fixes the bun FFI crash on musl) and pops a

@@ -1963,10 +1963,15 @@ class MainActivity : Activity() {
         val port = 4096
         val ips = NetworkInfo.localIpv4Addresses()
         val urls = if (ips.isEmpty()) "http://<phone>:$port" else ips.joinToString("\n") { "http://$it:$port" }
+        // Auto-open this phone's browser on the local URL; password is copied so the
+        // login page is one paste away (the page has no URL param to pre-fill).
+        (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+            .setPrimaryClip(android.content.ClipData.newPlainText("opencode password", password))
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("http://127.0.0.1:$port")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setTitle("opencode server running")
-            .setMessage("Open one of these in your other device's browser, then enter the password:\n\n$urls\n\nPassword: $password\n\nStop with Ctrl+C in the \"opencode serve\" tab.")
-            .setPositiveButton("Copy password") { _, _ ->
+            .setMessage("Browser opened on this phone (127.0.0.1:$port) and the password is copied — paste it in. From another device on this Wi-Fi open:\n\n$urls\n\nPassword: $password\n\nStop with Ctrl+C in the \"opencode serve\" tab.")
+            .setPositiveButton("Copy password again") { _, _ ->
                 (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
                     .setPrimaryClip(android.content.ClipData.newPlainText("opencode password", password))
                 android.widget.Toast.makeText(this, "Password copied", android.widget.Toast.LENGTH_SHORT).show()

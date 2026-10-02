@@ -60,7 +60,9 @@ class SettingsStore(context: Context) {
      *  which runs no lifecycle at all. Distinguishes "user closed it" from "system killed it". */
     var destroyWasClean: Boolean
         get() = prefs.getBoolean(KEY_DESTROY_CLEAN, false)
-        set(value) = prefs.edit().putBoolean(KEY_DESTROY_CLEAN, value).commit()
+        set(value) {
+            prefs.edit().putBoolean(KEY_DESTROY_CLEAN, value).commit()
+        }
 
     /** Off by default: lets programs inside the terminal call this app's local control API
      *  (see AgentBridge) — the user-approved "agent access" feature. */

@@ -1012,7 +1012,7 @@ class MainActivity : Activity() {
                 // object file" the first time it's actually launched, long after the installer
                 // itself already reported success.
                 "opencode (v1)" to "apk add --no-cache curl libstdc++ && curl -fsSL https://opencode.ai/install | sh; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
-                "opencode (v2)" to "apk add --no-cache bash curl libstdc++ && curl -fsSL https://opencode.ai/v2/install | bash; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
+                "opencode (v2)" to "apk add --no-cache bash curl libstdc++ gcompat && curl -fsSL https://opencode.ai/v2/install | bash; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
                 "Claude Code CLI" to "apk add --no-cache nodejs npm && npm install -g @anthropic-ai/claude-code\n",
             ),
         )
@@ -1918,9 +1918,15 @@ class MainActivity : Activity() {
             drawerLayout.closeDrawer(GravityCompat.END)
             // Direct-exec session: the server command is argv from spawn, nothing is typed —
             // typing into a just-spawned tab lost bytes while proot was still starting.
+            // LD_PRELOAD gcompat: bun's FFI stub needs a glibc symbol musl lacks (fixes the
+            // "gnu_get_libc_version: symbol not found" dlopen crash on Alpine).
             addTab(
                 "opencode serve",
-                directCommand = "BIN=\$(command -v opencode || command -v opencode2); " +
+                onStarted = {
+                    tabs.getOrNull(activeTabIndex)?.let { catchServePassword(it, 5) }
+                },
+                directCommand = "[ -f /lib/libgcompat.so.0 ] && export LD_PRELOAD=/lib/libgcompat.so.0; " +
+                    "BIN=\$(command -v opencode || command -v opencode2); " +
                     "if [ -z \"\$BIN\" ]; then echo 'opencode not installed — Settings > Quick install first'; exit 1; fi; " +
                     "\"\$BIN\" serve --hostname 0.0.0.0 --port $port",
             )
@@ -1928,7 +1934,7 @@ class MainActivity : Activity() {
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setTitle("Start opencode server?")
             .setMessage(
-                "Runs `opencode serve --hostname 0.0.0.0 --port $port` in a new tab, with NO password — anyone on this network gets full access. Only use on networks you trust.\n\n" +
+                "Runs `opencode serve --hostname 0.0.0.0 --port $port` in a new tab. It prints a generated password — the app catches it and shows it to you for the browser login. Anyone on this network with that password gets full access: only use on networks you trust.\n\n" +
                     "URLs:\n$urls\n\n" +
                     "Stop with Ctrl+C in that tab.",
             )
@@ -1937,6 +1943,37 @@ class MainActivity : Activity() {
             .show()
     }
 
+
+    /** Watches a just-started serve tab for its printed `server password X` line, then
+     *  hands the URL + password to the user (serve always generates one; there is no
+     *  passwordless mode). Retries a few times — bun under proot can take a while. */
+    private fun catchServePassword(tab: TerminalTab, attemptsLeft: Int) {
+        if (attemptsLeft <= 0) return
+        mainHandler.postDelayed({
+            if (isFinishing || isDestroyed) return@postDelayed
+            if (!tabs.contains(tab)) return@postDelayed // tab closed meanwhile
+            val hit = Regex("server password (\\S+)").find(tab.emulator.tailText(60))
+            if (hit != null) showServeReadyDialog(tab, hit.groupValues[1])
+            else catchServePassword(tab, attemptsLeft - 1)
+        }, 8000)
+    }
+
+    private fun showServeReadyDialog(tab: TerminalTab, password: String) {
+        if (isFinishing || isDestroyed || !tabs.contains(tab)) return
+        val port = 4096
+        val ips = NetworkInfo.localIpv4Addresses()
+        val urls = if (ips.isEmpty()) "http://<phone>:$port" else ips.joinToString("\n") { "http://$it:$port" }
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("opencode server running")
+            .setMessage("Open one of these in your other device's browser, then enter the password:\n\n$urls\n\nPassword: $password\n\nStop with Ctrl+C in the \"opencode serve\" tab.")
+            .setPositiveButton("Copy password") { _, _ ->
+                (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                    .setPrimaryClip(android.content.ClipData.newPlainText("opencode password", password))
+                android.widget.Toast.makeText(this, "Password copied", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Done", null)
+            .show()
+    }
 
     // --- Devices: drives, USB, network interfaces, Wi-Fi -------------------------------------
 

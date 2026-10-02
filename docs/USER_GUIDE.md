@@ -78,7 +78,7 @@ Settings → Network & SSH.
 
 - Shows your Wi-Fi address. A server in a tab is reachable on the LAN at `http://<phone-ip>:<port>`.
 - **SSH profiles**: save host/port/user, reconnect in one tap.
-- **opencode web**: "Start opencode web server" opens a tab running `opencode serve` on `0.0.0.0:4096` — the command types and runs itself once the shell is ready. Open `http://<phone-ip>:4096` from another device. No password (anyone on that network gets full access — trusted networks only). Stop with Ctrl+C.
+- **opencode web**: "Start opencode web server" opens a tab running `opencode serve` on `0.0.0.0:4096`. It prints a generated password, which the app catches and shows you with a Copy button — enter it in the browser. Anyone on that network with the password gets full access (trusted networks only). Stop with Ctrl+C.
 - **Refresh network / DNS**: rewrites guest DNS live after Wi-Fi/mobile switches.
 
 ## 10. Devices

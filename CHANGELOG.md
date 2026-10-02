@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.28 — opencode serve that just works
+
+- One-tap server preloads gcompat (fixes the bun FFI crash on musl) and pops a
+  dialog with the generated password + Copy button instead of scrollback hunting.
+
 ## 1.7.27 — Kill notice stops crying wolf
 
 - Swipe-away/Back/rotation run onDestroy, which now marks a clean exit; only a death

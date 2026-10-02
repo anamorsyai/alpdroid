@@ -88,7 +88,7 @@ Your plugins and their saved values are included in every backup.""",
 OPENCODE IN YOUR BROWSER
 "Start opencode web server" runs opencode's web version so you can use it from a browser on another device on the same Wi-Fi.
 • You choose opencode or opencode2 and the server opens in a new tab.
-• It runs with NO password — anyone on that network gets full access. Only use this on a network you trust.
+• It prints a generated password, which the app catches and shows you with a Copy button — enter it in the browser. Anyone on that network with the password gets full access. Only use this on a network you trust.
 • Then open http://<phone address>:4096 on your other device.
 • Stop it any time with Ctrl+C in that tab.""",
         ),

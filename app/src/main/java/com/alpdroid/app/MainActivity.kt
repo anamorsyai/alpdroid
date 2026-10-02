@@ -134,10 +134,14 @@ class MainActivity : Activity() {
         // System-kill detector: a stale heartbeat means the OS killed the process (battery
         // saver / memory pressure), not an app crash — there is no crash dialog for those,
         // so without this the user can never tell the two apart. Rotation recreates within
-        // seconds (onPause stamps fresh), so only a gap counts. Deliberate exits zero it.
+        // seconds (onPause stamps fresh), so only a gap counts. A clean onDestroy (swipe
+        // from Recents, Back, rotation) clears suspicion — only a death with no lifecycle
+        // at all reports. Deliberate exits zero the stamp.
         val lastAlive = settingsStore.lastAliveMs
+        val cleanGone = settingsStore.destroyWasClean
+        settingsStore.destroyWasClean = false
         settingsStore.lastAliveMs = System.currentTimeMillis()
-        if (lastAlive != 0L && System.currentTimeMillis() - lastAlive > 90_000L) {
+        if (lastAlive != 0L && !cleanGone && System.currentTimeMillis() - lastAlive > 90_000L) {
             mainHandler.post { showSystemKillNotice() }
         }
         mainHandler.postDelayed({ if (!isFinishing && !isDestroyed) maybeAutoBackup() }, 30_000)
@@ -3654,6 +3658,9 @@ class MainActivity : Activity() {
         super.onDestroy()
         // A deliberate exit isn't a kill: zero the heartbeat so the next launch stays quiet.
         if (deliberateExit) settingsStore.lastAliveMs = 0L
+        // Any onDestroy at all (swipe-away, Back, rotation) proves no kill happened —
+        // kills run zero lifecycle. Read as "clean gone" on next launch.
+        settingsStore.destroyWasClean = true
         runCatching { unregisterReceiver(deviceEventReceiver) }
         // One-shot plugin runs are owned by this Activity's panel: recreation must not
         // orphan their session + watchdog (the output view is gone either way).

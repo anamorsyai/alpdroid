@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.27 — Kill notice stops crying wolf
+
+- Swipe-away/Back/rotation run onDestroy, which now marks a clean exit; only a death
+  with no lifecycle at all raises the system-kill dialog.
+
 ## 1.7.26 — One-tap server really one tap
 
 - The opencode Start button spawns a tab already running the server (argv from boot)

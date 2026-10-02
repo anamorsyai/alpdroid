@@ -56,6 +56,12 @@ class SettingsStore(context: Context) {
             prefs.edit().putLong(KEY_LAST_ALIVE, value).commit()
         }
 
+    /** True when the last onDestroy ran (swipe-away, rotation, Back) — as opposed to a kill,
+     *  which runs no lifecycle at all. Distinguishes "user closed it" from "system killed it". */
+    var destroyWasClean: Boolean
+        get() = prefs.getBoolean(KEY_DESTROY_CLEAN, false)
+        set(value) = prefs.edit().putBoolean(KEY_DESTROY_CLEAN, value).commit()
+
     /** Off by default: lets programs inside the terminal call this app's local control API
      *  (see AgentBridge) — the user-approved "agent access" feature. */
     var agentAccessEnabled: Boolean
@@ -159,6 +165,7 @@ class SettingsStore(context: Context) {
         private const val KEY_LAST_AUTO_BACKUP = "last_auto_backup_ms"
         private const val KEY_LAST_UPDATE_CHECK = "last_update_check_ms"
         private const val KEY_LAST_ALIVE = "last_alive_ms"
+        private const val KEY_DESTROY_CLEAN = "destroy_was_clean"
         private const val KEY_LIGATURES = "ligatures_enabled"
         private const val KEY_BELL_SOUND = "bell_sound_enabled"
         private const val KEY_SNIPPETS = "custom_snippets"

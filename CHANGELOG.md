@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.30 — alphacode in Quick install
+
+- Settings → Packages → AI coding agents now offers **alphacode (musl)** with ★: one tap installs the free MIT coding agent built from your fork — a fully static musl binary (no libstdc++/gcompat needed), sha256-verified, symlinked onto PATH.
+- Release workflow covers the new build automatically (same signing key).
+
 ## 1.7.29 — Serve auto-opens the browser
 
 - Server ready now opens this phone's browser on 127.0.0.1:4096 with the password

@@ -787,7 +787,7 @@ class MainActivity : Activity() {
         )
         val popularPackages = setOf(
             "Node.js + npm", "Python", "git + curl", "opencode (v1)", "opencode (v2)",
-            "Claude Code CLI", "nano", "vim", "tmux", "nmap",
+            "alphacode (musl)", "Claude Code CLI", "nano", "vim", "tmux", "nmap",
         )
 
         panel.addView(
@@ -1011,6 +1011,12 @@ class MainActivity : Activity() {
                 // fails with "Error relocating ...: undefined symbol" / "cannot open shared
                 // object file" the first time it's actually launched, long after the installer
                 // itself already reported success.
+                // alphacode ships a fully static musl binary built by CI (see its
+                // build-alpine.yml): no libstdc++/gcompat needed at all, and the
+                // installer pipe works with busybox's own wget-less curl — curl is
+                // installed first like the opencode entries above. No PATH export:
+                // the installer symlinks /usr/local/bin/alphacode itself.
+                "alphacode (musl)" to "apk add --no-cache curl && curl -fsSL https://raw.githubusercontent.com/anamorsyai/alphacode/main/scripts/install-musl.sh | sh\n",
                 "opencode (v1)" to "apk add --no-cache curl libstdc++ && curl -fsSL https://opencode.ai/install | sh; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
                 "opencode (v2)" to "apk add --no-cache bash curl libstdc++ gcompat && curl -fsSL https://opencode.ai/v2/install | bash; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
                 "Claude Code CLI" to "apk add --no-cache nodejs npm && npm install -g @anthropic-ai/claude-code\n",
@@ -1018,7 +1024,7 @@ class MainActivity : Activity() {
         )
         panel.addView(
             TextView(this).apply {
-                text = "opencode installs to /root/.opencode/bin (commands `opencode` and `opencode2`), which is added to PATH automatically."
+                text = "opencode installs to /root/.opencode/bin (commands `opencode` and `opencode2`), which is added to PATH automatically. alphacode installs a fully static musl binary to /root/.local/bin with a symlink in /usr/local/bin."
                 setTextColor(0xFF8B93A1.toInt())
                 textSize = 11f
                 setPadding(0, 0, 0, dp(6))

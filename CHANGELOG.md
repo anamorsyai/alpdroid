@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.31 — alphacode installs from the API (no stale raw CDN)
+
+- The alphacode (musl) button now fetches its installer from the GitHub contents API instead of raw.githubusercontent — the raw CDN served stale blobs for up to hours, which broke the button with phantom "bad address 'token'" errors from an old script version.
+
 ## 1.7.30 — alphacode in Quick install
 
 - Settings → Packages → AI coding agents now offers **alphacode (musl)** with ★: one tap installs the free MIT coding agent built from your fork — a fully static musl binary (no libstdc++/gcompat needed), sha256-verified, symlinked onto PATH.

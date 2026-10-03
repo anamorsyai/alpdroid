@@ -1016,7 +1016,10 @@ class MainActivity : Activity() {
                 // installer pipe works with busybox's own wget-less curl — curl is
                 // installed first like the opencode entries above. No PATH export:
                 // the installer symlinks /usr/local/bin/alphacode itself.
-                "alphacode (musl)" to "apk add --no-cache curl && curl -fsSL https://raw.githubusercontent.com/anamorsyai/alphacode/main/scripts/install-musl.sh | sh\n",
+                // The script comes from the GitHub contents API (Accept: raw),
+                // not raw.githubusercontent: the raw CDN serves stale blobs for
+               // up to hours, which broke this button with phantom errors.
+                "alphacode (musl)" to "apk add --no-cache curl && curl -fsSL -H \"Accept: application/vnd.github.raw\" https://api.github.com/repos/anamorsyai/alphacode/contents/scripts/install-musl.sh | sh\n",
                 "opencode (v1)" to "apk add --no-cache curl libstdc++ && curl -fsSL https://opencode.ai/install | sh; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
                 "opencode (v2)" to "apk add --no-cache bash curl libstdc++ gcompat && curl -fsSL https://opencode.ai/v2/install | bash; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
                 "Claude Code CLI" to "apk add --no-cache nodejs npm && npm install -g @anthropic-ai/claude-code\n",

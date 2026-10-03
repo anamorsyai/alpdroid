@@ -1012,14 +1012,14 @@ class MainActivity : Activity() {
                 // object file" the first time it's actually launched, long after the installer
                 // itself already reported success.
                 // alphacode ships a fully static musl binary built by CI (see its
-                // build-alpine.yml): no libstdc++/gcompat needed at all, and the
-                // installer pipe works with busybox's own wget-less curl — curl is
-                // installed first like the opencode entries above. No PATH export:
-                // the installer symlinks /usr/local/bin/alphacode itself.
-                // The script comes from the GitHub contents API (Accept: raw),
+                // build-alpine.yml): no libstdc++/gcompat needed at all.
+                // The installer comes from the GitHub contents API (Accept: raw),
                 // not raw.githubusercontent: the raw CDN serves stale blobs for
-               // up to hours, which broke this button with phantom errors.
-                "alphacode (musl)" to "apk add --no-cache curl && curl -fsSL -H \"Accept: application/vnd.github.raw\" https://api.github.com/repos/anamorsyai/alphacode/contents/scripts/install-musl.sh | sh\n",
+                // up to hours, which broke this button with phantom errors.
+                // busybox wget fetches it — no apk add in the chain: apk index
+                // fetches fail on some networks and the && then skipped the
+                // install entirely (v1.7.31 bug). wget is always present here.
+                "alphacode (musl)" to "wget -qO- --header=\"Accept: application/vnd.github.raw\" https://api.github.com/repos/anamorsyai/alphacode/contents/scripts/install-musl.sh | sh\n",
                 "opencode (v1)" to "apk add --no-cache curl libstdc++ && curl -fsSL https://opencode.ai/install | sh; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
                 "opencode (v2)" to "apk add --no-cache bash curl libstdc++ gcompat && curl -fsSL https://opencode.ai/v2/install | bash; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
                 "Claude Code CLI" to "apk add --no-cache nodejs npm && npm install -g @anthropic-ai/claude-code\n",

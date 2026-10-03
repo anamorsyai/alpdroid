@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.32 — alphacode button installs even when apk index fetches fail
+
+- The alphacode (musl) button no longer chains through `apk add --no-cache curl`: busybox wget fetches the installer directly. On networks where Alpine's index mirrors time out, the old `apk add && curl …` chain skipped the install entirely ("4 errors" then nothing). wget needs no packages, so the button now installs in one tap anywhere.
+- Same signing key; installs over v1.7.31 as a normal update.
+
 ## 1.7.31 — alphacode installs from the API (no stale raw CDN)
 
 - The alphacode (musl) button now fetches its installer from the GitHub contents API instead of raw.githubusercontent — the raw CDN served stale blobs for up to hours, which broke the button with phantom "bad address 'token'" errors from an old script version.

@@ -6,6 +6,9 @@
   generates host keys and a random root password (kept in /etc/alpdroid/ssh_password), starts
   sshd in a new tab and shows/copies the `ssh -p 8022 root@<phone>` command and password.
   Port 8022 because Android apps cannot bind ports below 1024.
+- Quick install (opencode v1/v2, Claude Code CLI) and the SSH setup no longer chain `apk add && …`:
+  apk retries once, then the next step is gated on the tool actually existing (`command -v`),
+  so a mirror error after a successful install no longer skips the rest. Agent notes say the same.
 
 ## 1.7.36 — background reliability + perf/bug fixes
 

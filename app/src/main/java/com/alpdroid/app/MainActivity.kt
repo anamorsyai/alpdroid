@@ -1047,9 +1047,9 @@ class MainActivity : Activity() {
                 // /etc/conf.d/anthropic-shim (kept/asked-for by the installer, never here).
                 "Claude hunting rig" to "apk add --no-cache go >/dev/null 2>&1; wget -qO- --header=\"Accept: application/vnd.github.raw\" https://api.github.com/repos/anamorsyai/rig-portable/contents/scripts/install-rig.sh | sh\n",
                 "alphacode (musl)" to "wget -qO- --header=\"Accept: application/vnd.github.raw\" https://api.github.com/repos/anamorsyai/alphacode/contents/scripts/install-musl.sh | sh\n",
-                "opencode (v1)" to "apk add --no-cache curl libstdc++ && curl -fsSL https://opencode.ai/install | sh; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
-                "opencode (v2)" to "apk add --no-cache bash curl libstdc++ gcompat && curl -fsSL https://opencode.ai/v2/install | bash; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
-                "Claude Code CLI" to "apk add --no-cache nodejs npm && npm install -g @anthropic-ai/claude-code\n",
+                "opencode (v1)" to "${apkAddRetry("curl libstdc++")}; if command -v curl >/dev/null 2>&1; then curl -fsSL https://opencode.ai/install | sh; else echo 'curl missing: apk could not install it — run Update package index and retry'; fi; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
+                "opencode (v2)" to "${apkAddRetry("bash curl libstdc++ gcompat")}; if command -v curl >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then curl -fsSL https://opencode.ai/v2/install | bash; else echo 'bash/curl missing: apk could not install them — run Update package index and retry'; fi; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
+                "Claude Code CLI" to "${apkAddRetry("nodejs npm")}; if command -v npm >/dev/null 2>&1; then npm install -g @anthropic-ai/claude-code; else echo 'npm missing: apk could not install it — run Update package index and retry'; fi\n",
             ),
         )
         panel.addView(
@@ -1262,7 +1262,7 @@ class MainActivity : Activity() {
             pillButton().apply {
                 text = "Copy SSH setup command"
                 setOnClickListener {
-                    val cmd = "apk add openssh && ssh-keygen -A && passwd root && /usr/sbin/sshd -D"
+                    val cmd = "${apkAddRetry("openssh")}; ssh-keygen -A; passwd root; /usr/sbin/sshd -D"
                     val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
                     cm.setPrimaryClip(ClipData.newPlainText("ssh setup", cmd))
                     android.widget.Toast.makeText(this@MainActivity, "Paste it into the terminal to enable SSH", android.widget.Toast.LENGTH_LONG).show()
@@ -1999,6 +1999,12 @@ class MainActivity : Activity() {
      * generated once and kept in /etc/alpdroid/ssh_password (delete that file to rotate it).
      * Stop with Ctrl+C in the tab; the keep-alive service/wake lock keep it reachable meanwhile.
      */
+    /** `apk add` that retries once: package installs often exit non-zero because a mirror hiccuped
+     *  even though the packages landed (or a second attempt picks a working mirror). Callers chain
+     *  the result with `;` and then check for the actual binary (`command -v`) instead of
+     *  trusting apk's exit status with `&&`, which used to skip the whole rest of the command. */
+    private fun apkAddRetry(pkgs: String) = "apk add --no-cache $pkgs || apk add --no-cache $pkgs"
+
     private fun confirmSshServer() {
         val ips = NetworkInfo.localIpv4Addresses()
         val cmds = if (ips.isEmpty()) "(no network address found)" else ips.joinToString("\n") { "ssh -p $SSH_SERVER_PORT root@$it" }
@@ -2009,7 +2015,8 @@ class MainActivity : Activity() {
                 onStarted = { tabs.getOrNull(activeTabIndex)?.let { catchSshPassword(it, 12) } },
                 directCommand = "PORT=$SSH_SERVER_PORT; PWF=/etc/alpdroid/ssh_password; " +
                     "if ! command -v sshd >/dev/null 2>&1; then echo 'Installing openssh…'; " +
-                    "apk add --no-cache openssh || { echo 'apk add openssh failed — check the network'; exit 1; }; fi; " +
+                    "${apkAddRetry("openssh")}; fi; " +
+                    "command -v sshd >/dev/null 2>&1 || { echo 'openssh not installed — apk failed, check the network and try again'; exit 1; }; " +
                     "ssh-keygen -A >/dev/null 2>&1; mkdir -p /etc/alpdroid /root/.ssh /var/empty; chmod 700 /root/.ssh; " +
                     "[ -s \"\$PWF\" ] || { tr -dc 'A-Za-z0-9' </dev/urandom | head -c 14 >\"\$PWF\"; chmod 600 \"\$PWF\"; }; " +
                     "PW=\$(cat \"\$PWF\"); echo \"root:\$PW\" | chpasswd 2>/dev/null; " +

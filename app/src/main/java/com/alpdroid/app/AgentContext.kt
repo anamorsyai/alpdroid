@@ -47,6 +47,7 @@ This is a real Alpine Linux environment on an Android phone, inside the AlpDroid
 
 ## Things that commonly fail here
 - Prebuilt binaries built for glibc may not run (Alpine uses musl). Prefer `apk` packages. Many prebuilt tools need `apk add libstdc++`; some need `gcompat`.
+- `apk add` often exits non-zero here because a mirror hiccuped, even when the package installed. Don't chain with `&&`: run `apk add ... ; command -v <tool>` (retry once, or `apk update`) and decide from whether the tool exists.
 - No graphical programs. Headless tools only.
 - Building native Node/Python modules needs `apk add build-base python3` and is slow.
 

@@ -158,17 +158,25 @@ class SettingsStore(context: Context) {
         }
 
     /** One-time: the extra-keys row now has built-in "alphacode" and "claude" keys, so a
-     *  user-made "alphacode monitor" shortcut (command `alphacode monitor`) is dropped instead of
-     *  sitting next to them. Only exact `alphacode monitor` commands are touched. */
+     *  user-made "AlphaCode monitor" shortcut is dropped instead of sitting next to them. Matches
+     *  by label (case-insensitive), by the exact command `alphacode monitor`, or by a command
+     *  running monitor_alpine.sh — nothing else is touched. (v2: v1 only matched the exact
+     *  command and missed shortcuts that run the monitor script.) */
     fun migrateLegacyAlphacodeShortcut() {
         if (prefs.getBoolean(KEY_SNIPPET_MIG_ALPHACODE, false)) return
-        val kept = customSnippets.filterNot { (_, cmd) -> cmd.trim().equals("alphacode monitor", ignoreCase = true) }
-        if (kept.size != customSnippets.size) customSnippets = kept
+        val before = customSnippets
+        val kept = before.filterNot { (label, cmd) ->
+            val c = cmd.trim()
+            label.trim().equals("alphacode monitor", ignoreCase = true) ||
+                c.equals("alphacode monitor", ignoreCase = true) ||
+                c.contains("monitor_alpine.sh")
+        }
+        if (kept.size != before.size) customSnippets = kept
         prefs.edit().putBoolean(KEY_SNIPPET_MIG_ALPHACODE, true).apply()
     }
 
     companion object {
-        private const val KEY_SNIPPET_MIG_ALPHACODE = "snippet_mig_alphacode_monitor"
+        private const val KEY_SNIPPET_MIG_ALPHACODE = "snippet_mig_alphacode_monitor_v2"
         private const val KEY_THEME = "theme"
         private const val KEY_FONT_SIZE = "font_size_sp"
         private const val KEY_EXTRA_KEYS = "show_extra_keys"

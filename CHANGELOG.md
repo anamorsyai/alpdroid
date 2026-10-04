@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.39 — remove the "AlphaCode monitor" shortcut
+
+- The one-time cleanup of the old monitor shortcut now also matches it by label and by a command
+  that runs `monitor_alpine.sh` (1.7.38 only matched the exact command `alphacode monitor`).
+
 ## 1.7.38 — alphacode and claude keys
 
 - Extra-keys row: built-in `alphacode` (runs plain `alphacode`) and `claude` keys. A user-made

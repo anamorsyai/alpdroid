@@ -230,7 +230,14 @@ class AgentBridge(private val app: AlpineTermApp) {
             path == "/v1/clipboard" -> { onMain { (app.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("AlpDroid", body.optString("text", "").take(256_000))) }; 200 to ok }
             path == "/v1/notify" -> { OperationNotifications.alert(app, OperationNotifications.newId(), str("title").ifEmpty { "AlpDroid" }.take(80), str("text").take(300)); 200 to ok }
             path == "/v1/toast" -> { mainHandler.post { android.widget.Toast.makeText(app, str("text").take(300), android.widget.Toast.LENGTH_LONG).show() }; 200 to ok }
-            h == null -> noUi
+            h == null -> {
+                // No UI host alive — the settings-shaped routes that only need the Application
+                // context still work; GitHub routes moved BEFORE this gate for the same reason.
+                when {
+                    path == "/v1/ping" -> 200 to JSONObject().put("ok", true).put("app", "AlpDroid").put("screen_open", false)
+                    else -> noUi
+                }
+            }
             path == "/v1/state" -> 200 to JSONObject().put("settings", h.settingsJson()).put("tabs", tabsJson()).put("github", h.githubStatus())
             path == "/v1/settings" && method == "GET" -> 200 to h.settingsJson()
             path == "/v1/settings" -> {
@@ -241,8 +248,6 @@ class AgentBridge(private val app: AlpineTermApp) {
             path == "/v1/shortcuts" -> h.addShortcut(str("label"), str("cmd")).let { r -> if (r == "ok") 200 to ok else 400 to error(r) }
             path == "/v1/tabs" -> 200 to JSONObject().put("ok", true).put("status", h.newTab(str("label").ifEmpty { null }?.take(100)))
             path == "/v1/open" -> if (h.openUrl(str("url"))) 200 to ok else 400 to error("only http(s) URLs")
-            path == "/v1/devices" -> 200 to h.devicesJson()
-            h == null -> noUi
             // GitHub routes work without the UI host: the token lives in the app Keystore,
             // reachable from the Application context alone. Previously agents lost git auth
             // whenever the screen host was detached (update, kill) even with the option on.

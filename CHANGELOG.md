@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.42 — claude key restarts a stopped local proxy
+
+- The extra-keys `claude` key now checks whether a locally configured Anthropic-compatible proxy
+  (e.g. a background shim on 127.0.0.1:9086 that `claude` is pointed at) is actually responding,
+  and restarts it (`oc -r`) first if not — that proxy is a plain background process and doesn't
+  survive the guest restarting or the app being killed, which otherwise looked like claude itself
+  failing to connect. No-op when no such setup exists.
+
 ## 1.7.41 — claude key without the messaging warning
 
 - The extra-keys `claude` key now runs `claude --messaging-socket-path /root/.claude/run/msg-$$.sock`

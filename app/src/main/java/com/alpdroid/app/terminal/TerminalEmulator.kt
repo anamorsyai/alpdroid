@@ -15,6 +15,9 @@ import kotlin.math.min
  * *after* the switch, leaving old scrollback/screen content stuck in whatever theme was active
  * when it was written (a visibly "mixed themes" screen).
  */
+/** Bytes fed to the emulator per lock acquisition (see TerminalEmulator.feed). */
+private const val FEED_SLICE = 4096
+
 data class Cell(
     var ch: Char = ' ',
     var fg: Int = TerminalColors.DEFAULT_FG,
@@ -32,7 +35,6 @@ data class Cell(
     var wrapped: Boolean = false,
 ) {
     companion object {
-        private const val FEED_SLICE = 4096
         const val KIND_DEFAULT = -1
         const val KIND_FIXED = -2
         // 0..15: an index into TerminalColors.ANSI16

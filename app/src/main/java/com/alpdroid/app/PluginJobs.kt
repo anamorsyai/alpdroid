@@ -91,26 +91,34 @@ class PluginJobs(private val app: AlpineTermApp) {
         val log = File(j.plugin.dir, "logs/${j.id}.log").also { it.parentFile?.mkdirs() }
         if (log.length() > MAX_LOG) runCatching { log.writeText(log.readText().takeLast(MAX_LOG / 2)) }
         val stamp = { java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date()) }
-        log.appendText("=== started ${stamp()} ===\n")
         val watchdog = if (j.everyMinutes != null) Thread({
             try { Thread.sleep(5 * 60_000L); runCatching { session.destroy() } } catch (_: InterruptedException) {}
         }, "plugin-job-watchdog").apply { isDaemon = true; start() } else null
         watchdog?.let { watchdogs[k] = it }
         var written = 0L
         runCatching {
-            val buf = ByteArray(4096)
-            while (true) {
-                val n = session.stdout.read(buf)
-                if (n <= 0) break
-                val text = ANSI.replace(String(buf, 0, n, Charsets.UTF_8).replace("\r", ""), "")
-                written += text.length
-                if (written <= MAX_LOG) log.appendText(text)
+            // One writer for the whole run (was: open/append/close the log file per 4KB chunk) and a
+            // Reader so a multi-byte UTF-8 character split across two reads isn't garbled.
+            java.io.FileOutputStream(log, true).bufferedWriter(Charsets.UTF_8).use { w -> // append, never truncate
+                w.append("=== started ${stamp()} ===\n")
+                val reader = java.io.InputStreamReader(session.stdout, Charsets.UTF_8)
+                val buf = CharArray(4096)
+                while (true) {
+                    val n = reader.read(buf)
+                    if (n <= 0) break
+                    val text = ANSI.replace(String(buf, 0, n).replace("\r", ""), "")
+                    written += text.length
+                    if (written <= MAX_LOG) { w.append(text); w.flush() }
+                }
             }
         }
         watchdog?.interrupt()
-        watchdogs.remove(k)
+        // Conditional removes: after stop() + a quick relaunch, k already maps to the NEW
+        // session/watchdog — an unconditional remove here used to drop those entries, making the
+        // next tick think the job wasn't running and launch a duplicate.
+        if (watchdog != null) watchdogs.remove(k, watchdog)
         runCatching { session.destroy() }
-        running.remove(k)
+        running.remove(k, session)
         lastEnd[k] = System.currentTimeMillis()
         runCatching { log.appendText("\n=== ended ${stamp()} ===\n") }
     }

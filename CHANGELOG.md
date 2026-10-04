@@ -4,6 +4,7 @@
 
 - The one-time cleanup of the old monitor shortcut now also matches it by label and by a command
   that runs `monitor_alpine.sh` (1.7.38 only matched the exact command `alphacode monitor`).
+- Plugins: state.json saves are synchronized and atomic; approval-hash cache guarded; job logs use one buffered writer, decode UTF-8 across reads, and a stopped-then-relaunched job no longer launches a duplicate. Removed unused ic_edit drawable.
 
 ## 1.7.38 — alphacode and claude keys
 

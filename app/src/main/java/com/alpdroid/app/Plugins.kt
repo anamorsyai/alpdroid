@@ -83,10 +83,19 @@ object Plugins {
         return p.fields.associate { it.id to (if (j.has(it.id)) j.optString(it.id) else it.default) }
     }
 
+    // Synchronized + atomic replace: UI field edits, job switches and the scheduler all
+    // read-modify-write this one file — unsynchronized, concurrent saves lost each other's
+    // keys, and a kill mid-writeText() left a truncated (then ignored) state.json.
+    @Synchronized
     fun saveValue(p: Plugin, fieldId: String, value: String) {
         val j = readStateJson(p)
         j.put(fieldId, value)
-        runCatching { stateFile(p).writeText(j.toString()) }
+        runCatching {
+            val f = stateFile(p)
+            val tmp = File(f.parentFile, "state.json.tmp")
+            tmp.writeText(j.toString())
+            if (!tmp.renameTo(f)) { f.writeText(j.toString()); tmp.delete() }
+        }
     }
 
     // --- job switches (scheduled scripts / keep-running scripts), stored beside the field values ---
@@ -128,13 +137,13 @@ object Plugins {
     private fun fingerprintCached(p: Plugin): String {
         var mtime = 0L
         p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }.forEach {
-            if (it.isFile && it.name != "state.json") mtime = maxOf(mtime, it.lastModified())
+            if (it.isFile && !it.name.startsWith("state.json")) mtime = maxOf(mtime, it.lastModified())
         }
         fpCache[p.id]?.let { (cachedMtime, hash) ->
             if (cachedMtime == mtime && hash.isNotEmpty()) return hash
         }
         val md = MessageDigest.getInstance("SHA-256")
-        p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }.filter { it.isFile && it.name != "state.json" }.sortedBy { it.path }.forEach {
+        p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }.filter { it.isFile && !it.name.startsWith("state.json") }.sortedBy { it.path }.forEach {
             md.update(it.relativeTo(p.dir).path.toByteArray()); hashFile(md, it)
         }
         val hash = md.digest().joinToString("") { "%02x".format(it) }
@@ -156,13 +165,17 @@ object Plugins {
     private fun fingerprintUncached(p: Plugin): String {
         val md = MessageDigest.getInstance("SHA-256")
         var mtime = 0L
-        p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }.filter { it.isFile && it.name != "state.json" }.sortedBy { it.path }.forEach {
+        p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }.filter { it.isFile && !it.name.startsWith("state.json") }.sortedBy { it.path }.forEach {
             mtime = maxOf(mtime, it.lastModified())
             md.update(it.relativeTo(p.dir).path.toByteArray()); hashFile(md, it)
         }
         val hash = md.digest().joinToString("") { "%02x".format(it) }
-        if (fpCache.size > 64) fpCache.clear()
-        fpCache[p.id] = mtime to hash
+        // fpCache is guarded by this object's monitor (fingerprintCached is @Synchronized);
+        // this path is called from other threads and used to mutate it unguarded.
+        synchronized(this) {
+            if (fpCache.size > 64) fpCache.clear()
+            fpCache[p.id] = mtime to hash
+        }
         return hash
     }
     // Uncached: approval must bind exactly what was reviewed — the mtime cache could
@@ -175,7 +188,7 @@ object Plugins {
     fun reviewText(p: Plugin): String {
         val cap = 30_000
         val files = p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }
-            .filter { it.isFile && it.name != "state.json" }.sortedBy { it.path }.toList()
+            .filter { it.isFile && !it.name.startsWith("state.json") }.sortedBy { it.path }.toList()
         val sb = StringBuilder()
         var shown = 0
         for (f in files) {

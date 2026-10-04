@@ -152,7 +152,7 @@ dependencies {
     // Material 3 components (buttons, dialogs, chips, switches, color/shape theming) for the
     // redesign — the app previously used only plain platform widgets (Button, AlertDialog,
     // Switch) with hand-rolled coloring.
-    implementation("com.google.android.material:material:1.12.0")
+    implementation("com.google.android.material:material:1.14.0")
     // The official splash-screen API, backported down to this app's minSdk — a real system
     // splash (not a fake "splash Activity" that just delays showing the real UI) with an
     // animated-vector icon entrance on API 31+, falling back to the same icon shown statically

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.40 — smoother output, SSH keys
+
+- Terminal output is fed to the emulator in 4KB slices instead of holding its lock for a whole
+  32KB read, so drawing no longer stalls behind heavy output (cat of a big file, builds).
+- Settings → Network & SSH → "Add SSH public key": paste a laptop's public key to log in to the
+  SSH server without the password (written to /root/.ssh/authorized_keys, validated, de-duplicated).
+  sshd now also runs with StrictModes off, since proot's fake ownership can trip that check.
+
 ## 1.7.39 — remove the "AlphaCode monitor" shortcut
 
 - The one-time cleanup of the old monitor shortcut now also matches it by label and by a command

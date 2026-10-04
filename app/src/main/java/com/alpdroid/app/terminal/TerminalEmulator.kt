@@ -32,6 +32,7 @@ data class Cell(
     var wrapped: Boolean = false,
 ) {
     companion object {
+        private const val FEED_SLICE = 4096
         const val KIND_DEFAULT = -1
         const val KIND_FIXED = -2
         // 0..15: an index into TerminalColors.ANSI16
@@ -202,9 +203,17 @@ class TerminalEmulator(
     fun feed(buf: ByteArray, len: Int) {
         // Clamp: a caller passing len > buf.size would otherwise throw inside the reader thread.
         val n = len.coerceIn(0, buf.size)
-        synchronized(this) {
-            for (i in 0 until n) processByte(buf[i].toInt() and 0xFF)
-            generation++
+        // Sliced: the reader hands over up to 32KB at a time, and holding the emulator lock for
+        // the whole chunk made the UI thread's renderSnapshot() wait out all of it under heavy
+        // output (visible as scroll jank). Releasing between slices lets a frame slip in.
+        var off = 0
+        while (off < n) {
+            val end = minOf(n, off + FEED_SLICE)
+            synchronized(this) {
+                for (i in off until end) processByte(buf[i].toInt() and 0xFF)
+                generation++
+            }
+            off = end
         }
         // Outside the lock (see fields above). Bells coalesce: one notification per chunk, not
         // per BEL byte — `yes $'\a'` must not notification-spam.

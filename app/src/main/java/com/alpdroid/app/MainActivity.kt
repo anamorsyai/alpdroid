@@ -1260,6 +1260,12 @@ class MainActivity : Activity() {
         )
         panel.addView(
             pillButton().apply {
+                text = "Add SSH public key"
+                setOnClickListener { promptAddSshPublicKey() }
+            },
+        )
+        panel.addView(
+            pillButton().apply {
                 text = "Copy SSH setup command"
                 setOnClickListener {
                     val cmd = "${apkAddRetry("openssh")}; ssh-keygen -A; passwd root; /usr/sbin/sshd -D"
@@ -1999,6 +2005,51 @@ class MainActivity : Activity() {
      * generated once and kept in /etc/alpdroid/ssh_password (delete that file to rotate it).
      * Stop with Ctrl+C in the tab; the keep-alive service/wake lock keep it reachable meanwhile.
      */
+    /**
+     * Lets a laptop log in to the SSH server with a key instead of the password: pastes one public
+     * key line into the guest's /root/.ssh/authorized_keys (written from the host side — the guest
+     * rootfs is just a directory — so it works whether or not sshd is running). Only a single,
+     * well-formed public-key line is accepted; an existing identical line is not duplicated.
+     */
+    private fun promptAddSshPublicKey() {
+        val input = android.widget.EditText(this).apply {
+            hint = "ssh-ed25519 AAAA… you@laptop"
+            setSingleLine(false)
+            minLines = 3
+            setTextColor(0xFFE7ECEF.toInt())
+            setHintTextColor(0xFF8A949C.toInt())
+        }
+        val box = FrameLayout(this).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(input) }
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("Add SSH public key")
+            .setMessage("Paste the contents of your laptop's ~/.ssh/id_ed25519.pub (or id_rsa.pub). It lets that laptop log in as root on the SSH server without the password.")
+            .setView(box)
+            .setPositiveButton("Add") { _, _ ->
+                val key = input.text.toString().trim()
+                val ok = Regex("^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\\.com|sk-ecdsa-sha2-nistp256@openssh\\.com) [A-Za-z0-9+/=]+( [^\\r\\n]*)?$").matches(key) && key.length <= 8192
+                if (!ok) {
+                    android.widget.Toast.makeText(this, "That doesn't look like a single public key line", android.widget.Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                (application as AlpineTermApp).backgroundExecutor.execute {
+                    val msg = runCatching {
+                        if (!AlpineRootfs.isReady(this)) return@runCatching "Alpine isn't set up yet — open a tab first"
+                        val sshDir = File(AlpineRootfs.rootDir(this), "root/.ssh").apply { mkdirs() }
+                        val auth = File(sshDir, "authorized_keys")
+                        val existing = if (auth.isFile) auth.readLines() else emptyList()
+                        if (existing.any { it.trim() == key }) return@runCatching "That key is already added"
+                        auth.appendText((if (existing.isNotEmpty() && !auth.readText().endsWith("\n")) "\n" else "") + key + "\n")
+                        android.system.Os.chmod(sshDir.absolutePath, 448)   // 0700
+                        android.system.Os.chmod(auth.absolutePath, 384)     // 0600
+                        "Key added — log in with: ssh -p $SSH_SERVER_PORT root@<phone>"
+                    }.getOrElse { "Couldn't add the key: ${it.message}" }
+                    mainHandler.post { android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show() }
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     /** `apk add` that retries once: package installs often exit non-zero because a mirror hiccuped
      *  even though the packages landed (or a second attempt picks a working mirror). Callers chain
      *  the result with `;` and then check for the actual binary (`command -v`) instead of
@@ -2021,7 +2072,7 @@ class MainActivity : Activity() {
                     "[ -s \"\$PWF\" ] || { tr -dc 'A-Za-z0-9' </dev/urandom | head -c 14 >\"\$PWF\"; chmod 600 \"\$PWF\"; }; " +
                     "PW=\$(cat \"\$PWF\"); echo \"root:\$PW\" | chpasswd 2>/dev/null; " +
                     "echo \"ssh password \$PW\"; echo \"sshd on 0.0.0.0:\$PORT — Ctrl+C to stop\"; " +
-                    "/usr/sbin/sshd -D -e -p \$PORT -o PermitRootLogin=yes -o PasswordAuthentication=yes -o UsePAM=no -o PidFile=/tmp/sshd.pid",
+                    "/usr/sbin/sshd -D -e -p \$PORT -o PermitRootLogin=yes -o PasswordAuthentication=yes -o UsePAM=no -o StrictModes=no -o PidFile=/tmp/sshd.pid",
             )
         }
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)

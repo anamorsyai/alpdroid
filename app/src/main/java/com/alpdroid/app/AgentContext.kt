@@ -32,9 +32,9 @@ object AgentContext {
     }.getOrNull() ?: "?").also { cachedVersion = it }
 
     fun text(version: String, agentAccessOn: Boolean): String = """
-# You are running inside AlpineTerm (Android app, v$version)
+# You are running inside AlpDroid (Android app, v$version)
 
-This is a real Alpine Linux environment on an Android phone, inside the AlpineTerm app. It is not a normal server or desktop machine — read this before choosing tools.
+This is a real Alpine Linux environment on an Android phone, inside the AlpDroid app. It is not a normal server or desktop machine — read this before choosing tools.
 
 ## The environment
 - OS: Alpine Linux (musl libc, busybox, apk). Install software with `apk add --no-cache <package>`. No systemd, no docker/podman, no sudo — you are already "root", but it is simulated (proot), not real root.
@@ -54,7 +54,7 @@ This is a real Alpine Linux environment on an Android phone, inside the AlpineTe
 ${if (agentAccessOn) AGENT_ON else AGENT_OFF}
 """.trim()
 
-    private const val AGENT_OFF = """Agent access is OFF, so the `alpctl` command does not work yet. If the user wants you to change app settings, use tabs, send notifications or add plugins, tell them to turn on Settings → Agent access & GitHub → "Let programs in the terminal control AlpineTerm". `alpctl about` prints this note."""
+    private const val AGENT_OFF = """Agent access is OFF, so the `alpctl` command does not work yet. If the user wants you to change app settings, use tabs, send notifications or add plugins, tell them to turn on Settings → Agent access & GitHub → "Let programs in the terminal control AlpDroid". `alpctl about` prints this note."""
 
     private const val AGENT_ON = """Agent access is ON. Use the `alpctl` command (run `alpctl` alone for the full list):
 - Look around: `alpctl state`, `alpctl settings`, `alpctl devices`, `alpctl tabs`, `alpctl plugin list`.

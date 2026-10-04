@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.7.33 — AlpDroid everywhere + agent token that survives restarts
+
+- All user-facing "AlpineTerm" wording is now AlpDroid: guide, notifications, toasts,
+  agent notes, alpctl messages, browser login label. The APK filename, the app's
+  internal class names, and the managed AGENTS.md markers keep the historic
+  AlpineTerm prefix (identifiers + compatibility).
+- GitHub token for agents no longer rides the UI host lifecycle: after an update or
+  process kill, `alpctl github token` (and git push/pull with it) keeps working while
+  "Let agents use my GitHub token" is on. Previously agents lost the token until you
+  toggled the option or reopened the app.
+
 ## 1.7.32 — alphacode button installs even when apk index fetches fail
 
 - The alphacode (musl) button no longer chains through `apk add --no-cache curl`: busybox wget fetches the installer directly. On networks where Alpine's index mirrors time out, the old `apk add && curl …` chain skipped the install entirely ("4 errors" then nothing). wget needs no packages, so the button now installs in one tap anywhere.

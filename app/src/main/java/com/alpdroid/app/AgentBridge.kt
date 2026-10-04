@@ -192,7 +192,7 @@ class AgentBridge(private val app: AlpineTermApp) {
         return out.get().getOrThrow()
     }
 
-    private val noUi = 503 to JSONObject().put("error", "the AlpineTerm screen isn't open — open the app and retry (tabs, notify, toast and clipboard still work without it)")
+    private val noUi = 503 to JSONObject().put("error", "the AlpDroid screen isn't open — open the app and retry (tabs, notify, toast and clipboard still work without it)")
 
     private fun route(h: Host?, method: String, path: String, q: Map<String, String>, body: JSONObject): Pair<Int, JSONObject> {
         val ok = JSONObject().put("ok", true)
@@ -222,13 +222,13 @@ class AgentBridge(private val app: AlpineTermApp) {
         }
         val tabsJson = { JSONArray(onMain { app.tabs.mapIndexed { i, t -> tabJson(t, i == app.activeTabIndex) } }) }
         return when {
-            path == "/v1/ping" -> 200 to JSONObject().put("ok", true).put("app", "AlpineTerm").put("screen_open", h != null)
+            path == "/v1/ping" -> 200 to JSONObject().put("ok", true).put("app", "AlpDroid").put("screen_open", h != null)
             path == "/v1/tabs" && method == "GET" -> 200 to JSONObject().put("tabs", tabsJson())
             path == "/v1/clipboard" && method == "GET" -> 200 to JSONObject().put("text", onMain {
                 (app.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).primaryClip?.getItemAt(0)?.coerceToText(app)?.toString() ?: ""
             })
-            path == "/v1/clipboard" -> { onMain { (app.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("AlpineTerm", body.optString("text", "").take(256_000))) }; 200 to ok }
-            path == "/v1/notify" -> { OperationNotifications.alert(app, OperationNotifications.newId(), str("title").ifEmpty { "AlpineTerm" }.take(80), str("text").take(300)); 200 to ok }
+            path == "/v1/clipboard" -> { onMain { (app.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("AlpDroid", body.optString("text", "").take(256_000))) }; 200 to ok }
+            path == "/v1/notify" -> { OperationNotifications.alert(app, OperationNotifications.newId(), str("title").ifEmpty { "AlpDroid" }.take(80), str("text").take(300)); 200 to ok }
             path == "/v1/toast" -> { mainHandler.post { android.widget.Toast.makeText(app, str("text").take(300), android.widget.Toast.LENGTH_LONG).show() }; 200 to ok }
             h == null -> noUi
             path == "/v1/state" -> 200 to JSONObject().put("settings", h.settingsJson()).put("tabs", tabsJson()).put("github", h.githubStatus())

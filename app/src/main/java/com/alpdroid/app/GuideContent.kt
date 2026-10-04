@@ -8,7 +8,7 @@ object GuideContent {
         Section(
             "Getting started",
             "The basics in one minute",
-            """AlpineTerm gives you a real Linux command line (Alpine Linux) on your phone. No root needed.
+            """AlpDroid gives you a real Linux command line (Alpine Linux) on your phone. No root needed.
 
 • Tap + at the top to open another tab. Each tab is its own session.
 • Long-press a tab to rename it, close it, or save everything on its screen to a text file.
@@ -42,7 +42,7 @@ Add a button to the key row that types a command for you in one tap, for example
 • Keep sessions alive (Settings → Sessions & Background) is on by default. You'll see a notification saying how many sessions are running. Tap it to come back, or tap Exit to close everything.
 • Hold a wake lock also stops the phone's processor from sleeping. It helps very long jobs but uses more battery, so it's off unless you turn it on.
 
-If your phone still stops the app, look for battery or "background activity" settings for AlpineTerm in Android and allow it to run in the background.""",
+If your phone still stops the app, look for battery or "background activity" settings for AlpDroid in Android and allow it to run in the background.""",
         ),
         Section(
             "Packages & Quick Install",
@@ -118,12 +118,12 @@ USING IT
 Turn on "Let agents use my GitHub token" and `git` in the terminal (clone, push, pull) works with your account without asking for a password.
 
 SIGNING OUT
-Tap Sign out to remove it from the phone. To also cancel the permission on GitHub, remove AlpineTerm at github.com/settings/applications.""",
+Tap Sign out to remove it from the phone. To also cancel the permission on GitHub, remove AlpDroid at github.com/settings/applications.""",
         ),
         Section(
             "Agent access",
             "Let a coding assistant control the app",
-            """Coding assistants running in a tab (like opencode or Claude Code) can be allowed to control AlpineTerm: change the theme, open and read tabs, type commands, copy text, show notifications and more.
+            """Coding assistants running in a tab (like opencode or Claude Code) can be allowed to control AlpDroid: change the theme, open and read tabs, type commands, copy text, show notifications and more.
 
 • It's OFF until you turn it on in Settings → Agent access & GitHub.
 • When on, any program running in a tab can do this — including software you've installed — so only turn it on when you want it.
@@ -131,7 +131,7 @@ Tap Sign out to remove it from the phone. To also cancel the permission on GitHu
 • "Regenerate token" cuts off anything that had access before.
 
 HOW AGENTS LEARN ABOUT THE APP
-AlpineTerm saves a short note about itself where coding assistants look on their own (AGENTS.md, CLAUDE.md and similar in the home folder). It explains what the environment is and what to avoid, and — when Agent access is on — how to use `alpctl`. Anything you wrote in those files is kept; only a marked block is managed. You can switch the note off in the same screen, and type `alpctl about` to read it.
+AlpDroid saves a short note about itself where coding assistants look on their own (AGENTS.md, CLAUDE.md and similar in the home folder). It explains what the environment is and what to avoid, and — when Agent access is on — how to use `alpctl`. Anything you wrote in those files is kept; only a marked block is managed. You can switch the note off in the same screen, and type `alpctl about` to read it.
 
 Try it: turn it on, open a tab and type `alpctl` to see what's available.""",
         ),
@@ -145,7 +145,7 @@ GET STARTED
 2. Tap Open on it, change the fields, and press a button. The result appears below.
 
 WHO MAKES THEM
-You, or a coding assistant — just ask it to "create an AlpineTerm plugin that does X". Nothing runs until you've seen the script and tapped Allow, and you're asked again if it changes.
+You, or a coding assistant — just ask it to "create an AlpDroid plugin that does X". Nothing runs until you've seen the script and tapped Allow, and you're asked again if it changes.
 
 GOOD TO KNOW
 • Your entries are remembered per plugin.
@@ -159,7 +159,7 @@ GOOD TO KNOW
 
 • Open the plugin and use the switches under Automation.
 • "Run now" runs a job immediately. "View log" shows what it printed.
-• Jobs keep going while the AlpineTerm notification is showing. After restarting your phone, open the app once to start them again.
+• Jobs keep going while the AlpDroid notification is showing. After restarting your phone, open the app once to start them again.
 • The notification's Exit button pauses all jobs until you next open the app.
 • Times are approximate — a job set for every 10 minutes runs about every 10 minutes.""",
         ),

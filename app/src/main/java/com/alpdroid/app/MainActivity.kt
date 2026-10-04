@@ -1710,7 +1710,7 @@ class MainActivity : Activity() {
             (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).primaryClip?.getItemAt(0)?.coerceToText(this@MainActivity)?.toString() ?: ""
         }
         override fun clipboardSet(text: String) = onMain {
-            (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("AlpineTerm", text))
+            (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("AlpDroid", text))
         }
         override fun notify(title: String, text: String) = OperationNotifications.alert(this@MainActivity, OperationNotifications.newId(), title.take(80), text.take(300))
         override fun toast(text: String) = runOnUiThread { android.widget.Toast.makeText(this@MainActivity, text.take(300), android.widget.Toast.LENGTH_LONG).show() }
@@ -1735,7 +1735,12 @@ class MainActivity : Activity() {
             .put("login", GitHubAuth.login(this@MainActivity) ?: JSONObject.NULL)
             .put("agents_may_use_token", settingsStore.agentGithubToken)
 
-        override fun githubToken(): String? = if (settingsStore.agentGithubToken) GitHubAuth.validToken(this@MainActivity) else null
+        override fun githubToken(): String? = if (settingsStore.agentGithubToken) {
+            // Runs on the bridge pool thread (not UI): Keystore decrypt + possible silent
+            // refresh are allowed to block here, so the token survives app updates and
+            // process kills — previously this raced the UI host lifecycle.
+            GitHubAuth.validToken(this@MainActivity)
+        } else null
     }
 
     /** Re-applies every user-visible setting after one was changed programmatically. */
@@ -1760,7 +1765,7 @@ class MainActivity : Activity() {
     // Read by the device-flow poll thread, written on UI: volatile so cancel is seen.
     @Volatile private var githubCancelled = false
 
-    /** AlpineTerm's own OAuth App ID (res/values/github.xml); the user-pasted one is only a fallback while that's blank. */
+    /** AlpDroidx27s own OAuth App ID (res/values/github.xml); the user-pasted one is only a fallback while that's blank. */
     private fun githubClientId(): String = getString(R.string.github_client_id).trim().ifBlank { settingsStore.githubClientId }
     private fun hasBuiltInGithubClient() = getString(R.string.github_client_id).isNotBlank()
 
@@ -1771,7 +1776,7 @@ class MainActivity : Activity() {
         panel.addView(sectionLabel("Agent access (local control API)"))
         panel.addView(
             MaterialSwitch(this).apply {
-                text = "Let programs in the terminal control AlpineTerm"
+                text = "Let programs in the terminal control AlpDroid"
                 setTextColor(0xFFD4D4D4.toInt())
                 isChecked = settingsStore.agentAccessEnabled
                 setOnCheckedChangeListener { _, checked ->
@@ -1784,7 +1789,7 @@ class MainActivity : Activity() {
         panel.addView(guideLink("Agent access"))
         panel.addView(
             MaterialSwitch(this).apply {
-                text = "Tell coding agents about AlpineTerm (AGENTS.md note)"
+                text = "Tell coding agents about AlpDroid (AGENTS.md note)"
                 setTextColor(0xFFD4D4D4.toInt())
                 isChecked = settingsStore.agentContextFiles
                 setOnCheckedChangeListener { _, checked ->

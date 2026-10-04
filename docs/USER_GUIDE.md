@@ -13,7 +13,7 @@ Contents: [Install](#1-install) · [First run](#2-first-run) · [Tabs & terminal
 
 ## 1. Install
 
-1. Download the APK from [Releases](https://github.com/anamorsyai/alpdroid/releases) (pick the newest `AlpineTerm-vX.Y.Z.apk`).
+1. Download the APK from [Releases](https://github.com/anamorsyai/alpdroid/releases) (pick the newest `AlpineTerm-vX.Y.Z.apk` — the APK file name keeps the historic AlpineTerm prefix).
 2. Open it. Android asks to allow installs from that source once — allow, then install.
 3. Updates install straight over the old version (same signing key). If Android ever reports a package conflict, back up first, uninstall, then fresh-install + restore.
 
@@ -112,7 +112,7 @@ Custom Settings screens with fields + buttons running your scripts.
 
 1. Settings → Plugins → Create sample plugin.
 2. Open it, set fields, press a button; output shows below.
-3. Ask a coding assistant to "create an AlpineTerm plugin that does X".
+3. Ask a coding assistant to "create an AlpDroid plugin that does X".
 4. Nothing runs until you review the script and tap Allow; re-asked on changes.
 
 Format: folder with `plugin.json` + scripts; fields reach scripts as `FIELD_<ID>` env (toggles `1`/`0`); buttons can run in background; schedules included. Entries persist and are backed up.

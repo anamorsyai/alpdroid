@@ -468,11 +468,11 @@ object AlpineSession {
     const val BRIDGE_PORT = 47615
     private val REPO_HOST_RE = Regex("""^https?://([^/]+)/""")
     private const val ALPCTL_SCRIPT = """#!/bin/sh
-# alpctl — control the AlpineTerm app from inside the terminal. Needs "Agent access" switched on
+# alpctl — control the AlpDroid app from inside the terminal. Needs "Agent access" switched on
 # in the app (Settings → Agent access). Config is read fresh on every call from /etc/alpdroid/bridge.
 CONF=/etc/alpdroid/bridge
 [ "${"$"}1" = about ] && { cat /etc/alpdroid/about.md 2>/dev/null || echo "alpctl: no about note yet (open a new tab)"; exit 0; }
-[ -r "${"$"}CONF" ] || { echo "alpctl: agent access is off (enable it in AlpineTerm → Settings → Agent access)" >&2; exit 2; }
+[ -r "${"$"}CONF" ] || { echo "alpctl: agent access is off (enable it in AlpDroid → Settings → Agent access)" >&2; exit 2; }
 . "${"$"}CONF"
 esc() { printf '%s' "${"$"}1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' | awk '{printf "%s%s", (NR>1?"\\n":""), ${"$"}0}'; }
 call() { case "${"$"}1" in *'"error":'*) printf '%s\n' "${"$"}1" >&2; return 1;; esac; printf '%s\n' "${"$"}1"; }
@@ -529,7 +529,7 @@ case "${"$"}1" in
            ID=${"$"}(basename "${"$"}(cd "${"$"}3" && pwd)")
            case "${"$"}ID" in ""|.|..|*/*|*..*) echo "alpctl: bad plugin id" >&2; exit 1;; esac
            mkdir -p "${"$"}P" && rm -rf "${"$"}P/${"$"}ID" && cp -r "${"$"}3" "${"$"}P/${"$"}ID" \
-             && echo "installed ${"$"}ID — open AlpineTerm → Settings → Plugins to review and use it" ;;
+             && echo "installed ${"$"}ID — open AlpDroid → Settings → Plugins to review and use it" ;;
       remove) case "${"$"}3" in ""|*/*|*..*) echo "alpctl: bad plugin id" >&2; exit 1;; *) rm -rf "${"$"}P/${"$"}3" && echo removed;; esac ;;
       *) usage ;;
     esac ;;

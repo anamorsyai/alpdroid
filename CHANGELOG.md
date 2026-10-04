@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.38 — alphacode and claude keys
+
+- Extra-keys row: built-in `alphacode` (runs plain `alphacode`) and `claude` keys. A user-made
+  shortcut whose command is exactly `alphacode monitor` is removed once, since the new key
+  replaces it.
+
 ## 1.7.37 — one-tap SSH server
 
 - Settings → Network & SSH → "Start SSH server (port 8022)": installs openssh on first use,

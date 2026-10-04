@@ -3653,6 +3653,7 @@ class MainActivity : Activity() {
 
     private fun buildExtraKeysRow(row: LinearLayout) {
         row.removeAllViews()
+        settingsStore.migrateLegacyAlphacodeShortcut()
         fun keyBackground() = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = dp(12).toFloat()
@@ -3769,6 +3770,11 @@ class MainActivity : Activity() {
         // User-defined shortcuts (Settings -> Display -> Custom shortcuts) — a literal command
         // string rather than a control character, so it goes straight to the active session
         // exactly like typing it, not through sendControlAware()'s CTRL/ALT-arming logic.
+        // Built-in launchers for the two coding CLIs (see Quick install): a plain `alphacode` /
+        // `claude` run — alphacode's own subcommands (monitor etc.) are typed by hand or saved as
+        // a custom shortcut.
+        addKey("alphacode") { runShortcutCommand("alphacode\n") }
+        addKey("claude") { runShortcutCommand("claude\n") }
         settingsStore.customSnippets.forEach { (label, cmd) ->
             addKey(label) { runShortcutCommand(cmd) }
         }

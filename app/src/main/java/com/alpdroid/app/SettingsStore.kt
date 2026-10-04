@@ -157,7 +157,18 @@ class SettingsStore(context: Context) {
             snippetsCache = value
         }
 
+    /** One-time: the extra-keys row now has built-in "alphacode" and "claude" keys, so a
+     *  user-made "alphacode monitor" shortcut (command `alphacode monitor`) is dropped instead of
+     *  sitting next to them. Only exact `alphacode monitor` commands are touched. */
+    fun migrateLegacyAlphacodeShortcut() {
+        if (prefs.getBoolean(KEY_SNIPPET_MIG_ALPHACODE, false)) return
+        val kept = customSnippets.filterNot { (_, cmd) -> cmd.trim().equals("alphacode monitor", ignoreCase = true) }
+        if (kept.size != customSnippets.size) customSnippets = kept
+        prefs.edit().putBoolean(KEY_SNIPPET_MIG_ALPHACODE, true).apply()
+    }
+
     companion object {
+        private const val KEY_SNIPPET_MIG_ALPHACODE = "snippet_mig_alphacode_monitor"
         private const val KEY_THEME = "theme"
         private const val KEY_FONT_SIZE = "font_size_sp"
         private const val KEY_EXTRA_KEYS = "show_extra_keys"

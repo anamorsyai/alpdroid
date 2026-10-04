@@ -1254,6 +1254,12 @@ class MainActivity : Activity() {
         )
         panel.addView(
             pillButton().apply {
+                text = "Start SSH server (port $SSH_SERVER_PORT)"
+                setOnClickListener { confirmSshServer() }
+            },
+        )
+        panel.addView(
+            pillButton().apply {
                 text = "Copy SSH setup command"
                 setOnClickListener {
                     val cmd = "apk add openssh && ssh-keygen -A && passwd root && /usr/sbin/sshd -D"
@@ -1984,6 +1990,74 @@ class MainActivity : Activity() {
             .show()
     }
 
+
+    /**
+     * One-tap SSH server so a laptop can log in to this phone's Alpine guest. Same direct-exec
+     * tab pattern as the opencode server (nothing typed, no proot-startup race). Android blocks
+     * ports below 1024 for app processes, so this listens on [SSH_SERVER_PORT] (Termux's choice
+     * too). First run installs openssh and generates host keys; the root password is random,
+     * generated once and kept in /etc/alpdroid/ssh_password (delete that file to rotate it).
+     * Stop with Ctrl+C in the tab; the keep-alive service/wake lock keep it reachable meanwhile.
+     */
+    private fun confirmSshServer() {
+        val ips = NetworkInfo.localIpv4Addresses()
+        val cmds = if (ips.isEmpty()) "(no network address found)" else ips.joinToString("\n") { "ssh -p $SSH_SERVER_PORT root@$it" }
+        fun start() {
+            drawerLayout.closeDrawer(GravityCompat.END)
+            addTab(
+                "sshd",
+                onStarted = { tabs.getOrNull(activeTabIndex)?.let { catchSshPassword(it, 12) } },
+                directCommand = "PORT=$SSH_SERVER_PORT; PWF=/etc/alpdroid/ssh_password; " +
+                    "if ! command -v sshd >/dev/null 2>&1; then echo 'Installing openssh…'; " +
+                    "apk add --no-cache openssh || { echo 'apk add openssh failed — check the network'; exit 1; }; fi; " +
+                    "ssh-keygen -A >/dev/null 2>&1; mkdir -p /etc/alpdroid /root/.ssh /var/empty; chmod 700 /root/.ssh; " +
+                    "[ -s \"\$PWF\" ] || { tr -dc 'A-Za-z0-9' </dev/urandom | head -c 14 >\"\$PWF\"; chmod 600 \"\$PWF\"; }; " +
+                    "PW=\$(cat \"\$PWF\"); echo \"root:\$PW\" | chpasswd 2>/dev/null; " +
+                    "echo \"ssh password \$PW\"; echo \"sshd on 0.0.0.0:\$PORT — Ctrl+C to stop\"; " +
+                    "/usr/sbin/sshd -D -e -p \$PORT -o PermitRootLogin=yes -o PasswordAuthentication=yes -o UsePAM=no -o PidFile=/tmp/sshd.pid",
+            )
+        }
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("Start SSH server?")
+            .setMessage(
+                "Runs OpenSSH (installed on first use) on port $SSH_SERVER_PORT in a new tab, so you can log in as root from a laptop on the same Wi-Fi. A random password is generated and shown to you. Anyone on this network with it gets full access: only use on networks you trust.\n\n" +
+                    "From your laptop:\n$cmds\n\nStop with Ctrl+C in that tab.",
+            )
+            .setPositiveButton("Start server") { _, _ -> start() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** Waits for the sshd tab's printed `ssh password X` line (first run installs openssh, so
+     *  this polls longer than the opencode one) and then shows the connect details. */
+    private fun catchSshPassword(tab: TerminalTab, attemptsLeft: Int) {
+        if (attemptsLeft <= 0) return
+        mainHandler.postDelayed({
+            if (isFinishing || isDestroyed || !tabs.contains(tab)) return@postDelayed
+            val hit = Regex("ssh password (\\S+)").find(tab.emulator.tailText(60))
+            if (hit != null) showSshReadyDialog(tab, hit.groupValues[1])
+            else catchSshPassword(tab, attemptsLeft - 1)
+        }, 5000)
+    }
+
+    private fun showSshReadyDialog(tab: TerminalTab, password: String) {
+        if (isFinishing || isDestroyed || !tabs.contains(tab)) return
+        val ips = NetworkInfo.localIpv4Addresses()
+        val first = ips.firstOrNull()?.let { "ssh -p $SSH_SERVER_PORT root@$it" } ?: "ssh -p $SSH_SERVER_PORT root@<phone>"
+        val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("ssh password", password))
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("SSH server running")
+            .setMessage("Password copied. From a laptop on this Wi-Fi:\n\n" +
+                (if (ips.isEmpty()) first else ips.joinToString("\n") { "ssh -p $SSH_SERVER_PORT root@$it" }) +
+                "\n\nUser: root\nPassword: $password\n\nStop with Ctrl+C in the \"sshd\" tab.")
+            .setPositiveButton("Copy ssh command") { _, _ ->
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("ssh command", first))
+                android.widget.Toast.makeText(this, "Command copied", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Done", null)
+            .show()
+    }
 
     /** Watches a just-started serve tab for its printed `server password X` line, then
      *  hands the URL + password to the user (serve always generates one; there is no
@@ -4238,6 +4312,8 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        /** Android apps cannot bind ports below 1024, so the one-tap SSH server uses this. */
+        const val SSH_SERVER_PORT = 8022
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
         private const val LOCATION_PERMISSION_REQUEST_CODE = 1002
         private const val BACKUP_CREATE_REQUEST_CODE = 2001

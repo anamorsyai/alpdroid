@@ -83,6 +83,7 @@ Your plugins and their saved values are included in every backup.""",
             """Settings → Network & SSH:
 • Shows your phone's address on your Wi-Fi.
 • Save SSH connections (server, port, user) and reconnect with one tap.
+• "Start SSH server" runs OpenSSH on port 8022 in a new tab so you can log in from a laptop on the same Wi-Fi: ssh -p 8022 root@<phone address>. The first run installs openssh; a random root password is generated, shown and copied for you (kept in /etc/alpdroid/ssh_password — delete that file to get a new one). Anyone on the network with the password gets full access, so only use trusted networks. Stop with Ctrl+C in that tab.
 • A web server you start in a tab can be opened on the phone itself at 127.0.0.1 with the port number.
 
 OPENCODE IN YOUR BROWSER

@@ -4,7 +4,7 @@
 <h1 align="center">AlpDroid</h1>
 <p align="center">Real Alpine Linux on your phone. No root, no VM.</p>
 <p align="center">
-  <img src="https://img.shields.io/static/v1?label=version&message=1.7.36&color=blue" alt="version">
+  <img src="https://img.shields.io/static/v1?label=version&message=1.7.37&color=blue" alt="version">
   <img src="https://img.shields.io/static/v1?label=license&message=MIT&color=green" alt="license">
   <img src="https://img.shields.io/static/v1?label=platform&message=Android&color=brightgreen" alt="platform">
   <img src="https://img.shields.io/static/v1?label=minSdk&message=24&color=orange" alt="minSdk">
@@ -21,6 +21,7 @@ device's live network inside the guest.
 - **Own VT100 emulator** — scrollback, 256-color + truecolor, bracketed paste, auto-wrap, mouse reporting for TUIs, reflow-on-resize, pinch zoom.
 - **Alpine via proot, no root** — minirootfs on first launch; `proot` fetched at build time.
 - **File browser** — Android + Alpine sides, copy/move/zip/share; `/sdcard` bind-mounted.
+- **One-tap SSH server** — Settings → Network & SSH starts OpenSSH on port 8022 with a generated password, so a laptop on the same Wi-Fi can log in.
 - **One-tap opencode web** — Settings button opens a tab serving the web UI on your LAN.
 - **Plugins with approval** — custom Settings screens (`plugin.json` + scripts), schedules, background jobs.
 - **Agent API (`alpctl`)** — token-guarded app control for CLI coding agents in a tab.

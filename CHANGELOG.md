@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.37 — one-tap SSH server
+
+- Settings → Network & SSH → "Start SSH server (port 8022)": installs openssh on first use,
+  generates host keys and a random root password (kept in /etc/alpdroid/ssh_password), starts
+  sshd in a new tab and shows/copies the `ssh -p 8022 root@<phone>` command and password.
+  Port 8022 because Android apps cannot bind ports below 1024.
+
 ## 1.7.36 — background reliability + perf/bug fixes
 
 - Servers and long operations no longer die once the app is backgrounded, even with the

@@ -144,7 +144,7 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.core:core-ktx:1.19.1")
     // DrawerLayout alone (not the full material/appcompat stack) for the right-edge-swipe
     // settings panel — it's a small, standalone artifact with its own built-in edge-drag
     // gesture detection, not worth reimplementing by hand.

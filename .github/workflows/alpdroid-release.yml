@@ -7,6 +7,11 @@ on:
         description: "Release tag (e.g. v1.7.1)"
         required: true
         default: "v1.7.1"
+      publish_release:
+        description: "Publish a GitHub release (off = only upload the APK as a run artifact)"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -50,13 +55,25 @@ jobs:
           chmod +x gradlew
           ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
+      - name: Stage APK
+        env:
+          TAG: ${{ inputs.tag_name }}
+        run: cp app/build/outputs/apk/release/app-release.apk "AlpineTerm-${TAG}.apk"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlpineTerm-${{ inputs.tag_name }}
+          path: AlpineTerm-${{ inputs.tag_name }}.apk
+          if-no-files-found: error
+
       - name: Create release with the APK attached
+        if: ${{ inputs.publish_release }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag_name }}
         run: |
           APK="AlpineTerm-${TAG}.apk"
-          cp app/build/outputs/apk/release/app-release.apk "$APK"
           cat > notes.md <<'EOF'
           AlpineTerm — real Alpine Linux on your phone, no root. Install the attached APK (it updates an existing install signed with the same key).
 
@@ -72,4 +89,4 @@ jobs:
 
           Tabs are temporary sessions — running programs stop when the app is closed or updated. See Settings → Guide inside the app.
           EOF
-          gh release create "$TAG" "$APK" --target main --title "AlpineTerm $TAG" --notes-file notes.md
+          gh release create "$TAG" "$APK" --target "$GITHUB_SHA" --title "AlpineTerm $TAG" --notes-file notes.md

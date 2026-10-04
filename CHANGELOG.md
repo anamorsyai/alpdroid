@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — background reliability + perf/bug fixes
+## 1.7.36 — background reliability + perf/bug fixes
 
 - Servers and long operations no longer die once the app is backgrounded, even with the
   battery exemption on: the foreground service now holds a partial wake lock (now on by

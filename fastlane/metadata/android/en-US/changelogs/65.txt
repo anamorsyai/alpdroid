@@ -1,0 +1,3 @@
+Long pastes no longer hang the terminal: chunked, cancellable with Ctrl+C
+Paste limit raised to 5M characters
+More unit tests

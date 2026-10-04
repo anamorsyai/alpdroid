@@ -56,6 +56,10 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
     /** Raw bytes to write to the pty — key input, IME commits, and extra-key-row buttons all funnel through this. */
     var onInput: ((ByteArray) -> Unit)? = null
 
+    /** Long pasted text (payload, bracketed?) — delivered through a chunked, cancellable writer
+     *  instead of [onInput]'s single write. Falls back to [onInput] when not set. */
+    var onPaste: ((ByteArray, Boolean) -> Unit)? = null
+
     /** Cell grid size changed (from a layout pass) — the owner resizes the pty accordingly. */
     var onGridSize: ((rows: Int, cols: Int) -> Unit)? = null
 
@@ -996,8 +1000,16 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             paste = paste.take(MAX_PASTE_CHARS)
             Toast.makeText(context, "Pasted text truncated", Toast.LENGTH_SHORT).show()
         }
-        if (emulator?.bracketedPasteEnabled == true) {
-            paste = paste.replace("\u001B[201~", "").replace("\u001B[200~", "")
+        val bracketed = emulator?.bracketedPasteEnabled == true
+        if (bracketed) paste = paste.replace("\u001B[201~", "").replace("\u001B[200~", "")
+        if (paste.length > PASTE_HINT_CHARS) {
+            Toast.makeText(context, "Pasting ${paste.length / 1000} KB — Ctrl+C cancels", Toast.LENGTH_SHORT).show()
+        }
+        val handler = onPaste
+        if (handler != null) {
+            scrollOffset = 0
+            handler(paste.toByteArray(Charsets.UTF_8), bracketed)
+        } else if (bracketed) {
             send(("\u001B[200~" + paste + "\u001B[201~").toByteArray(Charsets.UTF_8))
         } else {
             sendText(paste)
@@ -1216,7 +1228,8 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         /** Combined row+column distance (in cells) within which a long-press is treated as
          *  grabbing an existing selection's endpoint rather than starting a fresh one. */
         private const val NEAR_ENDPOINT_THRESHOLD = 3
-        private const val MAX_PASTE_CHARS = 1_000_000
+        private const val MAX_PASTE_CHARS = 5_000_000
+        private const val PASTE_HINT_CHARS = 200_000
 
         /** How long applyGridSize() waits for the pixel size to stop changing before actually
          *  resizing the emulator and the PTY — covers a pinch gesture's continuous stream of calls

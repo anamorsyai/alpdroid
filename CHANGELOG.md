@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.44 — long pastes can't hang the terminal
+
+- Pasting long text is now written to the session in 8KB chunks on its own writer thread (never the UI
+  thread) instead of one giant write, and the paste limit rose from 1M to 5M characters.
+- Ctrl+C cancels a paste in progress and drops anything queued behind it; a cancelled bracketed paste
+  still sends its closing marker so the program doesn't stay stuck in paste mode.
+- Large pastes show a "Pasting N KB — Ctrl+C cancels" hint.
+- 7 more unit tests cover the chunked writer (30 total).
+
 ## 1.7.43 — lighter, smoother, tested
 
 - Release files are now named `AlpDroid-vX.Y.Z.apk` (the in-app updater accepts any `.apk` asset, so

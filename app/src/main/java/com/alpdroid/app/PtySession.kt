@@ -7,7 +7,9 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
-import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 /**
  * Spawns [libraryDir]/libpty_bridge.so (see app/src/main/cpp/pty_bridge.c), which gives [argv]
@@ -37,9 +39,34 @@ class PtySession private constructor(
      *  itself is backed up) used to stall keystrokes to every OTHER tab too, not just the one
      *  actually stuck, since they all queued behind the same single thread. Daemon threads so a
      *  missed destroy() can never pin the whole process alive on its own. */
-    private val writeExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "pty-write").apply { isDaemon = true } }
+    private val writeExecutor = ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS, LinkedBlockingQueue<Runnable>(),
+    ) { r -> Thread(r, "pty-write").apply { isDaemon = true } }
+
+    /** Bumped by [cancelPendingWrites]; a running [pasteAsync] stops after its current chunk when it
+     *  sees the value change. */
+    @Volatile private var writeGeneration = 0
+
+    /** Drops everything queued for this session and tells an in-flight paste to stop. Called when the
+     *  user sends Ctrl+C: a long paste into a program that isn't reading otherwise leaves the
+     *  interrupt (and every later keystroke) queued behind writes that cannot finish. */
+    fun cancelPendingWrites() {
+        writeGeneration++
+        runCatching { writeExecutor.queue.clear() }
+    }
+
+    /** Long pasted text, written in chunks on this session's writer thread — never on the UI thread,
+     *  and cancellable (see [PasteWriter]). Markers and payload stay together: it is one queued task. */
+    fun pasteAsync(bytes: ByteArray, bracketed: Boolean) {
+        val gen = writeGeneration
+        runCatching { if (!writeExecutor.isShutdown) writeExecutor.execute {
+            runCatching { PasteWriter.write(stdin, bytes, bracketed) { writeGeneration != gen } }
+        } }
+    }
 
     fun writeAsync(bytes: ByteArray) {
+        // A lone ETX is the user's interrupt: it must not wait behind (or be dropped with) a stuck paste.
+        if (bytes.size == 1 && bytes[0] == 0x03.toByte()) cancelPendingWrites()
         // Guard: execute() after destroy()'s shutdownNow() throws RejectedExecutionException
         // synchronously — a late IME keystroke racing tab close must be dropped, not crash.
         runCatching { if (!writeExecutor.isShutdown) writeExecutor.execute {

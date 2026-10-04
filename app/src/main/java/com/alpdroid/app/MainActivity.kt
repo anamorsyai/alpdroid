@@ -183,6 +183,7 @@ class MainActivity : Activity() {
         terminalView = TerminalView(this, null)
         terminalContainer.addView(terminalView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         terminalView.onInput = { bytes -> writeToActiveSession(bytes) }
+        terminalView.onPaste = { bytes, bracketed -> tabs.getOrNull(activeTabIndex)?.session?.pasteAsync(bytes, bracketed) }
         terminalView.onGridSize = { rows, cols -> onGridSize(rows, cols) }
         terminalView.onFontScaleChanged = { sp -> settingsStore.fontSizeSp = sp }
         terminalView.onSwipeTab = { next -> switchToTab(activeTabIndex + if (next) 1 else -1) }

@@ -33,6 +33,11 @@ jobs:
           yes | "$SDKM" --licenses > /dev/null || true
           "$SDKM" "ndk;26.3.11579264" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
 
+      - name: Unit tests
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+
       - name: Restore release keystore from secrets
         # The keystore never lives in git (see .gitignore + SECURITY.md): it arrives here as
         # base64 in KEYSTORE_BASE64, with passwords/alias in ALPDROID_* secrets. One-time

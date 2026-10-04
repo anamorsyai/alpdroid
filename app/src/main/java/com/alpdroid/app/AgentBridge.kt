@@ -242,8 +242,17 @@ class AgentBridge(private val app: AlpineTermApp) {
             path == "/v1/tabs" -> 200 to JSONObject().put("ok", true).put("status", h.newTab(str("label").ifEmpty { null }?.take(100)))
             path == "/v1/open" -> if (h.openUrl(str("url"))) 200 to ok else 400 to error("only http(s) URLs")
             path == "/v1/devices" -> 200 to h.devicesJson()
-            path == "/v1/github" -> 200 to h.githubStatus()
-            path == "/v1/github/token" -> h.githubToken()?.let { 200 to JSONObject().put("token", it) }
+            h == null -> noUi
+            // GitHub routes work without the UI host: the token lives in the app Keystore,
+            // reachable from the Application context alone. Previously agents lost git auth
+            // whenever the screen host was detached (update, kill) even with the option on.
+            path == "/v1/github" -> {
+                200 to JSONObject()
+                    .put("signed_in", GitHubTokenReader.signedIn(app))
+                    .put("login", GitHubAuth.login(app) ?: JSONObject.NULL)
+                    .put("agents_may_use_token", GitHubTokenReader.allowed(app))
+            }
+            path == "/v1/github/token" -> GitHubTokenReader.token(app)?.let { 200 to JSONObject().put("token", it) }
                 ?: (403 to error("not signed in to GitHub, or 'Let agents use my GitHub token' is off"))
             else -> 404 to error("unknown endpoint")
         }

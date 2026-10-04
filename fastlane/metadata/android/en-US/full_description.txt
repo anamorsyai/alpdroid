@@ -3,8 +3,8 @@ AlpDroid puts a real Alpine Linux shell on your phone — no root, no virtual ma
 TERMINAL BUILT FOR PHONES
 Multi-tab terminal with a from-scratch emulator: truecolor, mouse support for full-screen apps, pinch-to-zoom, ligatures, themes, and an extra-keys row (ESC, TAB, CTRL, ALT, arrows, your own shortcuts).
 
-REAL LINUX, NO ROOT
-Alpine runs in userspace via proot. Install packages with apk, run Node.js, Python and git.
+REAL LINUX, NO ROOT, TINY
+Alpine runs in userspace via proot. About 2.4 MB for the app plus a 3-4 MB base system on first run (under 15 MB installed). Install packages with apk, run Node.js, Python and git.
 
 SERVERS IN ONE TAP
 Start an SSH server and log in from your laptop (password or public key), or serve the opencode web UI on your Wi-Fi.

@@ -13,15 +13,17 @@ Contents: [Install](#1-install) · [First run](#2-first-run) · [Tabs & terminal
 
 ## 1. Install
 
-1. Download the APK from [Releases](https://github.com/anamorsyai/alpdroid/releases) (pick the newest `AlpineTerm-vX.Y.Z.apk` — the APK file name keeps the historic AlpineTerm prefix).
+1. Download the APK from [Releases](https://github.com/anamorsyai/alpdroid/releases) (pick the newest `AlpDroid-vX.Y.Z.apk`).
 2. Open it. Android asks to allow installs from that source once — allow, then install.
 3. Updates install straight over the old version (same signing key). If Android ever reports a package conflict, back up first, uninstall, then fresh-install + restore.
 
-Requirements: Android 7.0 (API 24)+, ~500 MB free for Alpine + tools, internet for first setup.
+Requirements: Android 7.0 (API 24)+, internet for first setup.
+
+Size: the APK is about 2.4 MB, the first-run download (Alpine's minirootfs, the smallest official Alpine image) about 3-4 MB, and the app plus base system take under 15 MB on disk. Tools you install later (Node.js, Python, git, agents) add their own size.
 
 ## 2. First run
 
-1. Open AlpDroid. It downloads the Alpine minirootfs into app-private storage (one-time, needs internet).
+1. Open AlpDroid. It downloads the Alpine minirootfs (about 3-4 MB) into app-private storage (one-time, needs internet).
 2. Your first tab opens a shell inside Alpine (`/root`).
 3. Grant **All files access** when prompted to share `/sdcard` with Alpine.
 4. Settings → Quick Install to add Node.js, Python, git/curl, or agent tools.

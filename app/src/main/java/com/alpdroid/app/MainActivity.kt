@@ -285,7 +285,7 @@ class MainActivity : Activity() {
     private fun findPendingUpdateApk(): java.io.File? {
         val dir = getExternalFilesDir(null)?.let { java.io.File(it, "updates") } ?: return null
         val (_, currentCode) = AppUpdater.currentVersion(this)
-        return dir.listFiles { f -> f.isFile && f.name.startsWith("AlpineTerm-") && f.name.endsWith(".apk") }
+        return dir.listFiles { f -> f.isFile && (f.name.startsWith("AlpDroid-") || f.name.startsWith("AlpineTerm-")) && f.name.endsWith(".apk") }
             ?.sortedByDescending { it.lastModified() }
             ?.firstOrNull { apk -> (runCatching { AppUpdater.apkVersionCode(this, apk) }.getOrNull() ?: 0) > currentCode }
     }
@@ -762,7 +762,7 @@ class MainActivity : Activity() {
         )
         panel.addView(
             MaterialSwitch(this).apply {
-                text = "Also hold a wake lock (uses more battery)"
+                text = "Keep CPU and Wi-Fi awake in the background (uses more battery)"
                 setTextColor(0xFFD4D4D4.toInt())
                 isChecked = settingsStore.wakeLockEnabled
                 setOnCheckedChangeListener { _, checked ->
@@ -781,6 +781,28 @@ class MainActivity : Activity() {
                 setOnClickListener { openBatteryExemption() }
             },
         )
+        // Android 12+ also caps how many child processes an app may keep ("phantom process
+        // killer"); a foreground service does not exempt them. It can only be lifted over adb.
+        panel.addView(
+            TextView(this).apply {
+                text = "Background processes still dying on Android 12+? The system limits child processes; it can only be lifted from a computer with USB or wireless debugging."
+                setTextColor(0xFF8B93A1.toInt())
+                textSize = 12f
+                setPadding(0, dp(8), 0, dp(4))
+            },
+        )
+        panel.addView(
+            pillButton().apply {
+                text = "Copy adb fix for killed processes"
+                setOnClickListener {
+                    val cmd = "adb shell \"settings put global settings_enable_monitor_phantom_procs false\"\n" +
+                        "adb shell device_config set_sync_disabled_for_tests persistent\n" +
+                        "adb shell device_config put activity_manager max_phantom_processes 2147483647"
+                    (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("adb fix", cmd))
+                    android.widget.Toast.makeText(this@MainActivity, "Copied — run these three commands from a computer connected with adb", android.widget.Toast.LENGTH_LONG).show()
+                }
+            },
+        )
 
         panel.addView(sectionLabel("Terminal bell"))
         panel.addView(
@@ -789,6 +811,21 @@ class MainActivity : Activity() {
                 setTextColor(0xFFD4D4D4.toInt())
                 isChecked = settingsStore.bellSoundEnabled
                 setOnCheckedChangeListener { _, checked -> settingsStore.bellSoundEnabled = checked }
+            },
+        )
+
+        panel.addView(sectionLabel("Terminal memory"))
+        panel.addView(
+            pillButton().apply {
+                fun label() = "Scrollback: ${settingsStore.scrollbackLines} lines per tab"
+                text = label()
+                setOnClickListener {
+                    val options = SettingsStore.SCROLLBACK_OPTIONS
+                    val next = options[(options.indexOf(settingsStore.scrollbackLines) + 1) % options.size]
+                    settingsStore.scrollbackLines = next
+                    text = label()
+                    android.widget.Toast.makeText(this@MainActivity, "Applies to new tabs. Fewer lines use less memory.", android.widget.Toast.LENGTH_SHORT).show()
+                }
             },
         )
     }
@@ -2026,7 +2063,7 @@ class MainActivity : Activity() {
             .setView(box)
             .setPositiveButton("Add") { _, _ ->
                 val key = input.text.toString().trim()
-                val ok = Regex("^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\\.com|sk-ecdsa-sha2-nistp256@openssh\\.com) [A-Za-z0-9+/=]+( [^\\r\\n]*)?$").matches(key) && key.length <= 8192
+                val ok = SshKeys.isValidPublicKeyLine(key)
                 if (!ok) {
                     android.widget.Toast.makeText(this, "That doesn't look like a single public key line", android.widget.Toast.LENGTH_LONG).show()
                     return@setPositiveButton
@@ -2680,6 +2717,7 @@ class MainActivity : Activity() {
             isFocusable = false
             background = ResourcesCompat.getDrawable(resources, android.R.drawable.list_selector_background, theme)
             setOnClickListener { action() }
+            attachPressFeedback(this)
         }
         val input = android.widget.EditText(this).apply {
             hint = "Search scrollback"
@@ -3211,6 +3249,7 @@ class MainActivity : Activity() {
                 result.onSuccess { started ->
                     val emulator = TerminalEmulator(
                         lastRows, lastCols,
+                        maxScrollback = settingsStore.scrollbackLines,
                         respond = { text -> writeToSession(started.session, text) },
                     )
                     val tab = TerminalTab(id, started.session, emulator, started.backendLabel, initialLabel)
@@ -3349,6 +3388,7 @@ class MainActivity : Activity() {
 
     private fun switchToTab(index: Int) {
         if (index !in tabs.indices) return
+        val changed = index != activeTabIndex
         activeTabIndex = index
         val tab = tabs[index]
         // The newly-active tab may have gone stale in size while backgrounded (a pinch-zoom or
@@ -3360,6 +3400,11 @@ class MainActivity : Activity() {
         // scrollback view happened to be scrolled to (and possibly still show Tab A's selection).
         terminalView.resetViewState()
         terminalView.emulator = tab.emulator
+        if (changed) {
+            // Short cross-fade so switching tabs isn't an abrupt pop.
+            terminalView.alpha = 0.55f
+            terminalView.animate().alpha(1f).setDuration(160).start()
+        }
         rebuildTabBar()
         rebuildSessionsList()
     }
@@ -3698,9 +3743,28 @@ class MainActivity : Activity() {
         isClickable = true
         isFocusable = true
         setOnClickListener { addTab() }
+        attachPressFeedback(this)
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    /** A quick scale-down while a key is held and a springy return on release, so taps feel
+     *  responsive. Observes touches only (returns false) — clicks, scrolling the key row and
+     *  long-presses behave exactly as before. ViewPropertyAnimator follows the system's
+     *  animator-duration scale, so it disappears when the user turned animations off. */
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    private fun attachPressFeedback(v: View) {
+        v.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN ->
+                    view.animate().scaleX(0.92f).scaleY(0.92f).setDuration(70).start()
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(120)
+                        .setInterpolator(android.view.animation.OvershootInterpolator(2f)).start()
+            }
+            false
+        }
+    }
 
     private fun buildExtraKeysRow(row: LinearLayout) {
         row.removeAllViews()
@@ -3732,6 +3796,7 @@ class MainActivity : Activity() {
                 isFocusable = false
                 isFocusableInTouchMode = false
                 setOnClickListener { action() }
+                attachPressFeedback(this)
             }
             row.addView(button, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(38)).apply { marginEnd = dp(6) })
         }
@@ -3765,6 +3830,7 @@ class MainActivity : Activity() {
                 button.setTextColor(if (armed) ContextCompat.getColor(this@MainActivity, R.color.accent) else 0xFFE7ECEF.toInt())
             }
             button.setOnClickListener { toggle(); refresh() }
+            attachPressFeedback(button)
             refresh()
             modifierRefreshers += ::refresh
             row.addView(button, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(38)).apply { marginEnd = dp(6) })
@@ -3786,6 +3852,7 @@ class MainActivity : Activity() {
                     },
                 )
                 setOnClickListener { action() }
+                attachPressFeedback(this)
             }
             row.addView(button, LinearLayout.LayoutParams(dp(38), dp(38)).apply { marginEnd = dp(6) })
         }

@@ -33,8 +33,8 @@ android {
         applicationId = "com.alpdroid.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 63
-        versionName = "1.7.42"
+        versionCode = 64
+        versionName = "1.7.43"
 
         ndk {
             // Keep in sync with fetch_proot.py's ANDROID_ABI_TO_TERMUX_ARCH — no point building
@@ -130,6 +130,10 @@ android {
     buildFeatures {
         viewBinding = false
     }
+    testOptions {
+        // The emulator logs through android.util.Log; plain JVM unit tests get no-op stubs.
+        unitTests.isReturnDefaultValues = true
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -154,4 +158,6 @@ dependencies {
     // animated-vector icon entrance on API 31+, falling back to the same icon shown statically
     // (no animation) on everything below that, which is the library's own documented behavior.
     implementation("androidx.core:core-splashscreen:1.0.1")
+
+    testImplementation("junit:junit:4.13.2")
 }

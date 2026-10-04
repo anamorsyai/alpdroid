@@ -1,0 +1,5 @@
+Release files are now named AlpDroid-vX.Y.Z.apk
+Smoother UI: key press feedback and tab-switch fade
+Lighter on memory: scrollback is configurable (default 1000 lines)
+Settings button to copy the adb fix for background processes killed on Android 12+
+Unit tests and a refreshed CI

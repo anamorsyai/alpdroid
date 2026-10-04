@@ -19,7 +19,7 @@ import java.net.URL
  * this process and the user re-opens the new version — that *is* the restart.
  */
 object AppUpdater {
-    /** Owner/repo whose releases carry AlpineTerm-*.apk assets. */
+    /** Owner/repo whose releases carry AlpDroid-*.apk assets (releases before 1.7.43 used the AlpineTerm- prefix; any .apk asset is accepted). */
     const val RELEASES_REPO = "anamorsyai/alpdroid"
 
     data class Update(val tag: String, val name: String, val notes: String, val apkUrl: String, val apiUrl: String, val size: Long)
@@ -91,7 +91,7 @@ object AppUpdater {
      */
     fun download(context: Context, update: Update, onProgress: (Long, Long) -> Unit, isCancelled: () -> Boolean): File {
         val dir = File(context.getExternalFilesDir(null), "updates").apply { mkdirs() }
-        val dest = File(dir, "AlpineTerm-${update.tag}.apk")
+        val dest = File(dir, "AlpDroid-${update.tag}.apk")
         // Size alone isn't proof the cached file is intact: also require it to parse as an APK.
         if (dest.isFile && dest.length() == update.size && update.size > 0) {
             if (runCatching { apkVersionCode(context, dest) }.isSuccess) return dest

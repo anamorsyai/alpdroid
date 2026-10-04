@@ -33,7 +33,7 @@ terminal built from scratch for touch.
 
 | | |
 |---|---|
-| **Real Linux, no root** | Alpine runs in userspace through `proot`. Your apps and data stay untouched. |
+| **Real Linux, no root — and tiny** | Alpine runs in userspace through `proot`. A ~2.4 MB app plus a ~3-4 MB base-system download; under 15 MB installed. |
 | **A terminal made for phones** | Multi-tab, own VT100/xterm emulator, truecolor, mouse support for TUIs, pinch-zoom, ligatures, an extra-keys row (ESC, TAB, CTRL, ALT, arrows, and your own shortcuts). |
 | **One-tap servers** | Start an **SSH server** to log in from your laptop, or the **opencode web** UI for your LAN — each with a generated password. |
 | **Built for coding agents** | One-tap installs for opencode, Claude Code and alphacode, keys to launch them, and `alpctl` — a token-guarded API so agents can use the app. |
@@ -43,16 +43,27 @@ terminal built from scratch for touch.
 
 ## Install
 
-1. Download the latest **`AlpineTerm-vX.Y.Z.apk`** from the [Releases](https://github.com/anamorsyai/alpdroid/releases/latest) page.
-   (The file name keeps its historic prefix so updates keep working.)
+1. Download the latest **`AlpDroid-vX.Y.Z.apk`** (about 2.4 MB) from the [Releases](https://github.com/anamorsyai/alpdroid/releases/latest) page.
 2. Open it and allow installs from your browser or file manager when Android asks.
-3. Launch AlpDroid. The first start downloads Alpine once (internet needed, ~500 MB free recommended).
+3. Launch AlpDroid. The first start downloads the tiny Alpine base system once (about 3-4 MB) — see [Size](#size).
 4. Allow **All files access** if you want `/sdcard` inside Linux.
 
 Updates install straight over the old version — releases are signed with the same key, and the app can
 check for and download new versions itself.
 
 **Requirements:** Android 7.0 (API 24) or newer · arm64, armv7, x86_64 or x86.
+
+### Size
+
+AlpDroid uses Alpine's *minirootfs*, the smallest official Alpine image, so the base install is tiny:
+
+| | Size |
+|---|---|
+| APK download | ~2.4 MB |
+| First-run download (Alpine base system) | ~3-4 MB |
+| On disk after setup (app + base system) | under 15 MB |
+
+Anything you install afterwards (Node.js, Python, git, agents...) adds its own size on top. Packages come from Alpine's repositories, which are far smaller than other distributions'.
 
 ## Quick start
 

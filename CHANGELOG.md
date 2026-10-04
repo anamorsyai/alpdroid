@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.7.43 — lighter, smoother, tested
+
+- Release files are now named `AlpDroid-vX.Y.Z.apk` (the in-app updater accepts any `.apk` asset, so
+  updates from older versions keep working). Docs now say AlpDroid throughout and state the real sizes:
+  ~2.4 MB app, ~3-4 MB first-run download (Alpine minirootfs), under 15 MB installed.
+- Smoother UI: extra keys and the add-tab button scale on press, switching tabs cross-fades.
+- Lighter on memory: terminal scrollback is configurable (500 / 1000 / 2000 / 5000 lines; default
+  1000, was 2000) under Settings -> Sessions & Background -> Terminal memory. Applies to new tabs.
+- Settings -> Sessions & Background: "Copy adb fix for killed processes" for Android 12+ devices that
+  cap child processes; the wake-lock switch now says it also covers Wi-Fi.
+- SSH public key validation moved to a small tested helper (`SshKeys`).
+- 23 unit tests (terminal emulator, snapshot logic, SSH key validation) run in CI; CI and release workflow
+  moved to `checkout@v5` / `setup-java@v5`; Dependabot keeps actions and Gradle dependencies current.
+
 ## 1.7.42 — claude key restarts a stopped local proxy
 
 - The extra-keys `claude` key now checks whether a locally configured Anthropic-compatible proxy

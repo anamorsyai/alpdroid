@@ -48,7 +48,7 @@ use Android's auto-generated debug key unless you place an `app/debug.keystore`.
 1. Fork and branch from `main`.
 2. Keep each PR focused on one change.
 3. Describe what changed and how you tested it (device, Android version).
-4. Make sure `./gradlew :app:assembleDebug` passes — CI runs it on every PR.
+4. Make sure `./gradlew :app:testDebugUnitTest :app:assembleDebug` passes — CI runs both on every PR. Add a unit test for logic you touch (see `app/src/test/`).
 5. Update [`CHANGELOG.md`](CHANGELOG.md) for user-visible changes.
 
 ## Rules that matter
@@ -64,4 +64,4 @@ use Android's auto-generated debug key unless you place an `app/debug.keystore`.
 Releases are built by [`alpdroid-release.yml`](.github/workflows/alpdroid-release.yml) from a manual run:
 bump `versionCode`/`versionName`, add a `## X.Y.Z — title` section to `CHANGELOG.md` (it becomes the release
 notes), push, then run the workflow with the tag (`vX.Y.Z`). With *publish_release* off it only uploads the
-signed APK as a workflow artifact. Signing secrets live in repository Actions secrets, never in the tree.
+signed `AlpDroid-vX.Y.Z.apk` as a workflow artifact. Signing secrets live in repository Actions secrets, never in the tree.

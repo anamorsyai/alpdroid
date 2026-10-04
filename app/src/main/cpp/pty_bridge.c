@@ -135,6 +135,57 @@ static void sigterm_handler(int sig) {
     wake_self_pipe();
 }
 
+/** Writes all of buf to fd (blocking semantics). Returns 0 ok, -1 on a dead fd. */
+static int write_all_stdout(const char *buf, ssize_t len) {
+    ssize_t off = 0;
+    while (off < len) {
+        ssize_t w = write(STDOUT_FILENO, buf + off, (size_t) (len - off));
+        // Dead stdout (EPIPE/EIO/EBADF) is session-over, not retryable: retrying it
+        // would just spin.
+        if (w <= 0) { if (errno == EINTR) continue; return -1; }
+        off += w;
+    }
+    return 0;
+}
+
+/** Forwards whatever the pty master currently has to stdout. master is O_NONBLOCK.
+ *  Returns 1 if data moved, 0 if nothing was ready (EAGAIN), -1 on master EOF/error or a
+ *  dead stdout. */
+static int pump_master(int master, char *buf, size_t cap) {
+    ssize_t r = read(master, buf, cap);
+    if (r < 0) return (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) ? 0 : -1;
+    if (r == 0) return -1;
+    return write_all_stdout(buf, r) == 0 ? 1 : -1;
+}
+
+/** Writes input to the pty master without ever wedging the relay: master is O_NONBLOCK, and on a
+ *  full pty buffer we keep draining the master's own output to stdout while waiting for room.
+ *  A plain blocking write() here deadlocked on large pastes (the shell echoes input, the echo
+ *  fills the master->stdout direction we were no longer reading, and the shell then stops
+ *  reading input). Returns 0 ok, -1 if the session is over (dead pty/stdout, or SIGTERM). */
+static int write_master_all(int master, const char *data, ssize_t len) {
+    char tmp[4096];
+    ssize_t off = 0;
+    while (off < len) {
+        if (term_requested) return -1;
+        ssize_t w = write(master, data + off, (size_t) (len - off));
+        if (w > 0) { off += w; continue; }
+        if (w < 0 && errno == EINTR) continue;
+        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            struct pollfd pfd;
+            pfd.fd = master;
+            pfd.events = POLLIN | POLLOUT;
+            if (poll(&pfd, 1, -1) < 0 && errno != EINTR) return -1;
+            if (pfd.revents & POLLIN) {
+                if (pump_master(master, tmp, sizeof(tmp)) < 0) return -1;
+            }
+            continue;
+        }
+        return -1; // EIO etc.: the slave side is gone
+    }
+    return 0;
+}
+
 /** Returns 1 and fills *out_status if this function itself reaped `child` (the SIGCHLD path,
  *  the whole reason this function takes an out-param instead of just running to completion like
  *  it used to) — the caller must not waitpid() on `child` again in that case, it's already gone.
@@ -182,21 +233,9 @@ static int relay_loop(int master, int control_fd, pid_t child, int self_pipe_rea
         if (term_requested) break;
 
         if (fds[master_idx].revents & (POLLIN | POLLHUP | POLLERR)) {
-            ssize_t r = read(master, buf, sizeof(buf));
-            if (r <= 0) break; // master closed: every process holding the pty is gone
-            ssize_t off = 0;
-            int stdout_broken = 0;
-            while (off < r) {
-                ssize_t w = write(STDOUT_FILENO, buf + off, (size_t) (r - off));
-                // EPIPE (Kotlin closed our stdout: tab gone) used to break only this inner
-                // loop — poll() then re-read the master and re-EPIPE'd in a 100% CPU spin
-                // until externally killed. Treat it as session-over, not retryable. Same for
-                // any other non-EINTR write error (EIO/EBADF): retrying a permanently dead
-                // stdout is the same spin with a different errno.
-                if (w <= 0) { if (errno == EINTR) continue; stdout_broken = 1; break; }
-                off += w;
-            }
-            if (stdout_broken) break;
+            // Non-blocking master: 0 means "nothing ready after all", -1 is master EOF
+            // (every process holding the pty is gone) or a dead stdout.
+            if (pump_master(master, buf, sizeof(buf)) < 0) break;
         }
 
         if (fds[sigchld_idx].revents & POLLIN) {
@@ -217,18 +256,7 @@ static int relay_loop(int master, int control_fd, pid_t child, int self_pipe_rea
                     pfd.fd = master;
                     pfd.events = POLLIN;
                     if (poll(&pfd, 1, 200) <= 0) break;
-                    ssize_t r = read(master, buf, sizeof(buf));
-                    if (r <= 0) break;
-                    ssize_t off = 0;
-                    int out_dead = 0;
-                    while (off < r) {
-                        ssize_t w = write(STDOUT_FILENO, buf + off, (size_t) (r - off));
-                        // A dead stdout here must end the drain, not spin it: breaking only
-                        // the inner loop re-polls a master that keeps delivering.
-                        if (w <= 0) { if (errno == EINTR) continue; out_dead = 1; break; }
-                        off += w;
-                    }
-                    if (out_dead) break;
+                    if (pump_master(master, buf, sizeof(buf)) <= 0) break;
                 }
                 *out_status = status;
                 return 1;
@@ -243,12 +271,8 @@ static int relay_loop(int master, int control_fd, pid_t child, int self_pipe_rea
             if (r <= 0) {
                 stdin_open = 0; // Kotlin closed the pipe; keep relaying master -> stdout
             } else {
-                ssize_t off = 0;
-                while (off < r) {
-                    ssize_t w = write(master, buf + off, (size_t) (r - off));
-                    if (w <= 0) { if (errno == EINTR) continue; break; }
-                    off += w;
-                }
+                // Input lost to a dead pty is harmless (session ends via SIGCHLD/EOF).
+                if (write_master_all(master, buf, r) < 0 && term_requested) break;
             }
         }
 
@@ -314,6 +338,13 @@ int main(int argc, char **argv) {
     int master = open_pty_master();
     if (master < 0) {
         fprintf(stderr, "pty_bridge: failed to open /dev/ptmx: %s\n", strerror(errno));
+        return 1;
+    }
+    // Non-blocking so a large paste can never wedge the relay (see write_master_all). Only this
+    // open file description is affected; the child opens the slave by path separately.
+    if (fcntl(master, F_SETFL, fcntl(master, F_GETFL, 0) | O_NONBLOCK) != 0) {
+        fprintf(stderr, "pty_bridge: fcntl O_NONBLOCK on master failed: %s\n", strerror(errno));
+        close(master);
         return 1;
     }
     char slave_path[64];

@@ -317,6 +317,10 @@ class MainActivity : Activity() {
         // Returning from the installer / browser / Settings is exactly when an update may
         // have appeared — re-check here (throttled) so no restart is ever needed to see it.
         maybeAutoUpdateCheck()
+        // A foreground start refused while we were backgrounded (API 31+) is retried here, the
+        // first moment we are foreground again — otherwise the process stays killable.
+        if (tabs.isNotEmpty()) updateKeepAliveService()
+        maybeAskBatteryExemption()
         terminalView.setTextSizePx(spToPx(settingsStore.fontSizeSp))
         extraKeysScroll.visibility = if (settingsStore.showExtraKeys) View.VISIBLE else View.GONE
         terminalView.requestFocus()
@@ -347,6 +351,22 @@ class MainActivity : Activity() {
             android.widget.Toast.makeText(this, "Find AlpDroid in the list and set it to Unrestricted", android.widget.Toast.LENGTH_LONG).show()
         }
         return false
+    }
+
+    /** One-time explanation + system prompt for the battery exemption: the keep-alive service
+     *  and wake lock only work reliably when the app is also exempt from Doze/standby limits.
+     *  Shown once, and only once a session exists (so it is clearly tied to background work). */
+    private fun maybeAskBatteryExemption() {
+        if (isFinishing || isDestroyed || tabs.isEmpty() || settingsStore.batteryPromptShown) return
+        val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
+        if (pm.isIgnoringBatteryOptimizations(packageName)) { settingsStore.batteryPromptShown = true; return }
+        settingsStore.batteryPromptShown = true
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("Keep sessions running in the background?")
+            .setMessage("Servers and long commands stop when Android puts the app to sleep. Allow AlpDroid to ignore battery optimizations so they keep running with the screen off. You can change this later in Settings.")
+            .setPositiveButton("Allow") { _, _ -> openBatteryExemption() }
+            .setNegativeButton("Not now", null)
+            .show()
     }
 
     /** The previous process died to a system kill (not a crash, not an exit): explain and
@@ -3094,7 +3114,7 @@ class MainActivity : Activity() {
 
     private fun startReaderThread(tab: TerminalTab) {
         Thread({
-            val buf = ByteArray(8192)
+            val buf = ByteArray(32 * 1024)
             // Wrapping the whole loop, not just the read() above — any *other* uncaught exception
             // here (a bug in TerminalEmulator.feed() processing some byte sequence, in particular)
             // would otherwise kill this thread right there, skipping the mainHandler.post below

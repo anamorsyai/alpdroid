@@ -83,9 +83,13 @@ class PtySession private constructor(
             if (!resizeThreadRunning) break
             val out = controlOut
             if (out == null) {
-                // Only in the brief window right after start() before openControlChannelAsync()
-                // finishes opening the FIFO — back off briefly and re-check the same target size.
-                Thread.sleep(5)
+                // Control channel never opened (bridge failed to start): resize is a permanent
+                // no-op, so stop instead of polling every 5ms until destroy().
+                if (controlOpenFailed) break
+                // Otherwise only the brief window right after start() before
+                // openControlChannelAsync() finishes opening the FIFO — back off briefly and
+                // re-check the same target size.
+                try { Thread.sleep(5) } catch (_: InterruptedException) { break }
                 continue
             }
             // Always advances past this size, success or failure — a write failing here means the
@@ -107,6 +111,9 @@ class PtySession private constructor(
      *  controlOut — never closed by anything, since destroy() (the only thing that closes it) has
      *  already run and won't run again for this session. */
     @Volatile private var destroyed = false
+
+    /** Set when the FIFO open gave up after its retry window — resizeThread exits on it. */
+    @Volatile private var controlOpenFailed = false
 
     /** Opens the write end of the resize FIFO on a background thread. A plain blocking
      *  FileOutputStream(controlFifo) here would wait forever for pty_bridge's own read end to
@@ -137,6 +144,8 @@ class PtySession private constructor(
                 }
                 if (System.currentTimeMillis() >= deadline) {
                     Log.w(TAG, "control channel unavailable after retrying; resize will be a no-op", opened.exceptionOrNull())
+                    controlOpenFailed = true
+                    synchronized(resizeLock) { resizeLock.notifyAll() }
                     return@Thread
                 }
                 Thread.sleep(20)

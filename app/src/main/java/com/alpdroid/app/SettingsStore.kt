@@ -22,15 +22,22 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_FONT_FAMILY, "monospace") ?: "monospace"
         set(value) = prefs.edit().putString(KEY_FONT_FAMILY, value).apply()
 
+    /** Whether the one-time "exempt from battery optimization" prompt was already shown. */
+    var batteryPromptShown: Boolean
+        get() = prefs.getBoolean(KEY_BATTERY_PROMPT_SHOWN, false)
+        set(value) = prefs.edit().putBoolean(KEY_BATTERY_PROMPT_SHOWN, value).apply()
+
     /** On by default: a coding agent (opencode, Claude Code, Cline, ...) or a build running
      *  unattended in the background is exactly the case this exists for. */
     var keepAliveEnabled: Boolean
         get() = prefs.getBoolean(KEY_KEEP_ALIVE, true)
         set(value) = prefs.edit().putBoolean(KEY_KEEP_ALIVE, value).apply()
 
-    /** Off by default — a real, ongoing battery cost, unlike the foreground service alone. */
+    /** On by default: without it the CPU/Wi-Fi sleep with the screen off even under a foreground
+     *  service and a battery exemption, which stalls servers and long operations. Only held while
+     *  sessions/jobs exist (the service stops otherwise); costs battery, so it stays toggleable. */
     var wakeLockEnabled: Boolean
-        get() = prefs.getBoolean(KEY_WAKE_LOCK, false)
+        get() = prefs.getBoolean(KEY_WAKE_LOCK, true)
         set(value) = prefs.edit().putBoolean(KEY_WAKE_LOCK, value).apply()
 
     /** Off by default. When on, a backup is taken at app start if the last automatic one is more
@@ -157,6 +164,7 @@ class SettingsStore(context: Context) {
         private const val KEY_FONT_FAMILY = "font_family"
         private const val KEY_KEEP_ALIVE = "keep_alive_enabled"
         private const val KEY_WAKE_LOCK = "wake_lock_enabled"
+        private const val KEY_BATTERY_PROMPT_SHOWN = "battery_prompt_shown"
         private const val KEY_AGENT = "agent_access"
         private const val KEY_AGENT_CTX = "agent_context_files"
         private const val KEY_AGENT_GH = "agent_github_token"

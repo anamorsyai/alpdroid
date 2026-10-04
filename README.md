@@ -4,7 +4,7 @@
 <h1 align="center">AlpDroid</h1>
 <p align="center">Real Alpine Linux on your phone. No root, no VM.</p>
 <p align="center">
-  <img src="https://img.shields.io/static/v1?label=version&message=1.7.24&color=blue" alt="version">
+  <img src="https://img.shields.io/static/v1?label=version&message=1.7.35&color=blue" alt="version">
   <img src="https://img.shields.io/static/v1?label=license&message=MIT&color=green" alt="license">
   <img src="https://img.shields.io/static/v1?label=platform&message=Android&color=brightgreen" alt="platform">
   <img src="https://img.shields.io/static/v1?label=minSdk&message=24&color=orange" alt="minSdk">

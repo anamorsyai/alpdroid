@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — background reliability + perf/bug fixes
+
+- Servers and long operations no longer die once the app is backgrounded, even with the
+  battery exemption on: the foreground service now holds a partial wake lock (now on by
+  default; toggle in Settings) **and** a Wi-Fi lock, so the CPU and Wi-Fi don't sleep with the
+  screen off. A foreground start refused while backgrounded (Android 12+) is retried on the
+  next resume instead of leaving the process killable. A one-time prompt asks for the battery
+  exemption the first time a session exists.
+- pty_bridge: master is non-blocking and large pastes keep draining output while writing —
+  fixes a deadlock where a big paste into a program that echoes could wedge the tab.
+- PtySession: resize thread no longer polls every 5ms forever when the control FIFO fails.
+- Renderer: per-frame snapshot copies only the scrollback rows actually visible (was the whole
+  2000-row scrollback every frame). PTY reader buffer 8KB -> 32KB.
+- Updater: a cached APK of the right size must also parse as an APK to be reused.
+- README version badge corrected.
+
 ## 1.7.33 — AlpDroid everywhere + agent token that survives restarts
 
 - All user-facing "AlpineTerm" wording is now AlpDroid: guide, notifications, toasts,

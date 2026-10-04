@@ -623,7 +623,10 @@ class TerminalEmulator(
         val cols: Int,
         val scrollbackSize: Int,
         val screenRows: List<Array<Cell>>,
+        /** Only the tail of the scrollback that this frame can actually show (empty when not
+         *  scrolled back); entry 0 is absolute scrollback index [scrollbackBase]. */
         val scrollbackRows: List<Array<Cell>>,
+        val scrollbackBase: Int,
         val cursorRow: Int,
         val cursorCol: Int,
         val cursorVisible: Boolean,
@@ -635,16 +638,26 @@ class TerminalEmulator(
     // same snapshot, so no crash), and geometry fields are @Volatile. Callers needing a stable
     // text scan (search, selection) copy row text under the emulator lock instead.
     @Synchronized
-    fun renderSnapshot(): RenderSnapshot = RenderSnapshot(
-        rows = rows,
-        cols = cols,
-        scrollbackSize = scrollback.size,
-        screenRows = screen.toList(),
-        scrollbackRows = scrollback.toList(),
-        cursorRow = cursorRow,
-        cursorCol = cursorCol,
-        cursorVisible = cursorVisible,
-    )
+    fun renderSnapshot(scrollOffset: Int = 0): RenderSnapshot {
+        // Copying the whole scrollback (up to maxScrollback rows) on every frame was the bulk of
+        // per-frame allocation under heavy output. A frame scrolled back by scrollOffset shows
+        // scrollback rows [size - scrollOffset, size - scrollOffset + min(scrollOffset, rows));
+        // while following the tail (offset 0) it shows none.
+        val sbSize = scrollback.size
+        val base = (sbSize - scrollOffset).coerceIn(0, sbSize)
+        val end = (sbSize - scrollOffset + minOf(scrollOffset, rows)).coerceIn(base, sbSize)
+        return RenderSnapshot(
+            rows = rows,
+            cols = cols,
+            scrollbackSize = sbSize,
+            screenRows = screen.toList(),
+            scrollbackRows = if (scrollOffset <= 0 || end == base) emptyList() else scrollback.subList(base, end).toList(),
+            scrollbackBase = base,
+            cursorRow = cursorRow,
+            cursorCol = cursorCol,
+            cursorVisible = cursorVisible,
+        )
+    }
 
     // --- Byte-level parsing -------------------------------------------------------------
 

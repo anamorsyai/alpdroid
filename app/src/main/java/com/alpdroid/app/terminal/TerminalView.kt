@@ -515,7 +515,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         // One atomic snapshot for the whole frame (see renderSnapshot): reading rows, the
         // scrollback size and each row through separate calls let feed()/resize() on the
         // pty-reader thread shrink the grid between two reads and crash on a stale index.
-        val snap = em.renderSnapshot()
+        val snap = em.renderSnapshot(scrollOffset)
         val rows = snap.rows
         val scrollbackSize = snap.scrollbackSize
         val shift = renderShiftPx(em)
@@ -527,7 +527,8 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             val sourceIndex = screenRow - scrollOffset
             val row: Array<Cell> = if (sourceIndex < 0) {
                 val sbIndex = scrollbackSize + sourceIndex
-                if (sbIndex < 0 || sbIndex >= snap.scrollbackRows.size) continue else snap.scrollbackRows[sbIndex]
+                val local = sbIndex - snap.scrollbackBase
+                if (local < 0 || local >= snap.scrollbackRows.size) continue else snap.scrollbackRows[local]
             } else {
                 if (sourceIndex >= snap.screenRows.size) continue else snap.screenRows[sourceIndex]
             }

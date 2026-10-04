@@ -92,7 +92,11 @@ object AppUpdater {
     fun download(context: Context, update: Update, onProgress: (Long, Long) -> Unit, isCancelled: () -> Boolean): File {
         val dir = File(context.getExternalFilesDir(null), "updates").apply { mkdirs() }
         val dest = File(dir, "AlpineTerm-${update.tag}.apk")
-        if (dest.isFile && dest.length() == update.size && update.size > 0) return dest
+        // Size alone isn't proof the cached file is intact: also require it to parse as an APK.
+        if (dest.isFile && dest.length() == update.size && update.size > 0) {
+            if (runCatching { apkVersionCode(context, dest) }.isSuccess) return dest
+            dest.delete()
+        }
         val tmp = File(dir, "${dest.name}.part")
         val token = runCatching {
             if (SettingsStore(context).agentGithubToken) GitHubAuth.validToken(context) else null

@@ -8,7 +8,9 @@ import android.app.Service
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.net.wifi.WifiManager
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 
 /**
@@ -20,11 +22,15 @@ import androidx.core.app.NotificationCompat
  * process foreground (this service) protects all of them equally; there's no need to move
  * session ownership into the service itself.
  *
- * Optionally also holds a partial wake lock (opt-in, since it costs real battery) so CPU-bound
- * background work keeps running with the screen off, not just avoids being killed outright.
+ * Also holds a partial wake lock (on by default; the Settings toggle turns it off) plus a Wi-Fi
+ * lock, so servers (opencode web, dev servers) and CPU-bound work keep running — and keep their
+ * LAN connectivity — with the screen off. A foreground service alone only prevents the process
+ * being killed; it does NOT stop the CPU suspending or Wi-Fi power-saving, and that (not
+ * the battery exemption) is what used to stall servers/operations once the app was backgrounded.
  */
 class TerminalKeepAliveService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -52,20 +58,31 @@ class TerminalKeepAliveService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        startForeground(NOTIFICATION_ID, buildNotification())
+        // Android 12+ can refuse a foreground start made from the background (and 14+ is
+        // pickier still). Never crash the service over it: without the wake lock below the
+        // process is just as killable as before, so also bail out cleanly and let the app retry
+        // from its next foreground moment (MainActivity.onResume re-runs updateKeepAliveService).
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        } catch (e: Exception) {
+            Log.w("AlpDroid/KeepAlive", "startForeground refused; will retry when the app is next foreground", e)
+            stopSelf()
+            return START_NOT_STICKY
+        }
         // A null intent means Android restarted this service on its own after killing it
         // (guaranteed by START_STICKY) — not the caller saying "wake lock off". Falling back to
         // the persisted setting here, rather than treating a null intent as false, is what keeps
         // an opted-in wake lock actually held across that restart instead of silently dropping
         // the moment the OS reclaims the service under memory pressure, mid-build.
         val wakeLockWanted = intent?.getBooleanExtra(EXTRA_WAKE_LOCK, false) ?: SettingsStore(this).wakeLockEnabled
-        if (wakeLockWanted) acquireWakeLock() else releaseWakeLock()
+        if (wakeLockWanted) { acquireWakeLock(); acquireWifiLock() } else { releaseWakeLock(); releaseWifiLock() }
         return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
         releaseWakeLock()
+        releaseWifiLock()
     }
 
     private fun acquireWakeLock() {
@@ -75,6 +92,22 @@ class TerminalKeepAliveService : Service() {
             setReferenceCounted(false)
             acquire()
         }
+    }
+
+    private fun acquireWifiLock() {
+        if (wifiLock?.isHeld == true) return
+        runCatching {
+            val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL, "AlpDroid:wifi").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }
+    }
+
+    private fun releaseWifiLock() {
+        runCatching { wifiLock?.let { if (it.isHeld) it.release() } }
+        wifiLock = null
     }
 
     private fun releaseWakeLock() {
@@ -112,6 +145,8 @@ class TerminalKeepAliveService : Service() {
             .setContentIntent(openApp)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Exit", exitAll)
             .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
     }
 

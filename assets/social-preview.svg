@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <rect width="1280" height="640" fill="#0D1117"/>
+  <rect width="1280" height="8" fill="#3ED0B8"/>
+  <rect y="632" width="1280" height="8" fill="#3ED0B8"/>
+  <g transform="translate(90 150)">
+    <rect width="300" height="300" rx="68" fill="#0D1117" stroke="#3ED0B8" stroke-width="9"/>
+    <text x="34" y="190" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="96" font-weight="bold" fill="#3ED0B8">~ $</text>
+    <rect x="212" y="112" width="46" height="76" rx="6" fill="#3ED0B8"/>
+  </g>
+  <text x="440" y="270" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="120" font-weight="bold" fill="#FFFFFF">Alp<tspan fill="#3ED0B8">Droid</tspan></text>
+  <text x="444" y="340" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="36" fill="#8B949E">Real Alpine Linux on your phone.</text>
+  <text x="444" y="390" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="36" fill="#8B949E">No root. No VM.</text>
+  <g font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="26" fill="#0D1117">
+    <rect x="444" y="440" width="200" height="52" rx="26" fill="#3ED0B8"/><text x="474" y="476">SSH server</text>
+    <rect x="662" y="440" width="260" height="52" rx="26" fill="#3ED0B8"/><text x="692" y="476">Coding agents</text>
+    <rect x="940" y="440" width="250" height="52" rx="26" fill="#3ED0B8"/><text x="970" y="476">Open source</text>
+  </g>
+</svg>

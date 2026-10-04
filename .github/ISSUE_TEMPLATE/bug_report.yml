@@ -1,0 +1,43 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please search existing issues first. **Security problems: do not file here** —
+        use the private vulnerability reporting described in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: AlpDroid version
+      description: Settings → About, or the APK name (e.g. 1.7.41)
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and Android version
+      placeholder: "Pixel 7, Android 14"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, what you got. Paste terminal output if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. ...\n2. ..."
+  - type: dropdown
+    id: background
+    attributes:
+      label: Is it about background / killed processes?
+      options:
+        - "No"
+        - "Yes — battery set to Unrestricted"
+        - "Yes — battery not set to Unrestricted"

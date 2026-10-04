@@ -1,32 +1,36 @@
 # AlpDroid brand assets
 
-Hand-authored SVG **sources**. Dark Alpine theme: bg `#0D1117`, teal accent `#3ED0B8`, monospace.
+Dark Alpine theme: background `#0D1117`, teal accent `#3ED0B8`, monospace type.
 
 | File | Size | Use |
 |------|------|-----|
-| `logo.svg` | 512x512 | App icon source. Terminal `~ $` + cursor block on rounded square. |
-| `banner.svg` | 1600x600 | README / GitHub social preview. Logo mark + wordmark + tagline. |
-| `architecture.svg` | 1200x800 | Docs diagram. Terminal-only: App UI ↔ PTY bridge (C) ↔ proot + Alpine rootfs, plus alpctl / plugins / GitHub OAuth. No proxy. |
-| `store-graphic.svg` | 1024x500 | Play Store feature graphic. Logo + tagline + 3 chips (Tabs, Plugins, No root). |
+| `logo.svg` | 512x512 | App icon source: terminal `~ $` + cursor block on a rounded square. |
+| `banner.svg` / `banner.png` | 1600x600 | README header. |
+| `social-preview.svg` / `social-preview.png` | 1280x640 | GitHub *Social preview* image (upload under Settings -> General). |
+| `store-graphic.svg` | 1024x500 | Store feature graphic. |
+| `architecture.svg` | 1200x700 | "How it works" diagram used in the README. |
+| `screenshots/` | - | Real on-device screenshots (see below). |
 
-## Exporting PNGs
+The SVGs are the sources; the PNGs are rendered from them.
 
-SVGs are sources only — Android and Play need PNGs:
+## Re-rendering PNGs
 
-1. **Launcher icon (logo):** import `logo.svg` at **1024x1024** via
-   Android Studio → *File → New → Image Asset* → Foreground Layer → Path →
-   `assets/logo.svg`, then generate `mipmap-*` densities. Do not hand-place PNGs in `app/src/main/res/`.
-2. **Banner / store graphic:** export in any SVG editor (Inkscape, Figma,
-   `rsvg-convert`, `resvg`) at exact pixel sizes (1600x600, 1024x500) for upload.
-3. **Screenshots:** must be captured **on-device** (real phone, `adb screencap`
-   or system screenshot) showing the actual terminal UI. Save PNGs into
-   `assets/screenshots/` — never mock them up from SVG.
-
-## Validity
-
-Keep SVGs clean: single root `<svg>` with `xmlns`, matching open/close tags,
-only standard shapes + `<text>` with monospace stack. Rough check:
+Any SVG renderer works. With a headless Chromium:
 
 ```sh
-for f in assets/*.svg; do echo "== $f"; grep -o '<svg' "$f" | wc -l; grep -o '</svg>' "$f" | wc -l; done
+chrome --headless --no-sandbox --hide-scrollbars --window-size=1280,800 \
+  --screenshot=/tmp/social.png file://$PWD/assets/social-preview.svg
+convert /tmp/social.png -crop 1280x640+0+0 +repage assets/social-preview.png
 ```
+
+## Launcher icon
+
+Import `logo.svg` via Android Studio -> *File -> New -> Image Asset* -> Foreground Layer -> Path, then
+generate the `mipmap-*` densities. Do not hand-place PNGs in `app/src/main/res/`.
+
+## Screenshots
+
+Must be **real captures from a device** (system screenshot or `adb exec-out screencap -p`), never mock-ups.
+Save PNGs in `assets/screenshots/` and keep personal data out of frame (notifications, private paths,
+tokens). Suggested set: terminal with a running tool, the Settings panel, the file browser, the SSH server
+dialog. Phone-sized portrait, about 1080x2400.

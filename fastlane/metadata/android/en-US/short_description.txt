@@ -1,1 +1,1 @@
-Multi-tab Alpine terminal with its own emulator, file browser, plugins and agent API. No root, no VM.
+Real Alpine Linux on your phone: terminal, SSH server, coding agents.

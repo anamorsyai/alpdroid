@@ -39,7 +39,7 @@ Tabs are temporary sessions: running programs stop when the app is closed or upd
 
 ## 4. Keyboard & keys
 
-The row above the keyboard has CTRL, ALT, arrows, ESC, TAB. Tap CTRL/ALT once, then the next key (sticky modifiers). Hide the row in Settings → Display if unneeded. Add your own one-tap buttons there (e.g. `git status`) in the same screen.
+The row above the keyboard has keyboard toggle, search, ESC, TAB, CTRL, ALT, arrows, HOME/END, `/`, `-`, `|`, and one-tap launchers for **`alphacode`** and **`claude`**. Tap CTRL/ALT once, then the next key (sticky modifiers). Hide the row in Settings → Display if unneeded. Add your own one-tap buttons there (e.g. `git status`) in the same screen.
 
 ## 5. Display & themes
 
@@ -78,6 +78,7 @@ Settings → Network & SSH.
 
 - Shows your Wi-Fi address. A server in a tab is reachable on the LAN at `http://<phone-ip>:<port>`.
 - **SSH profiles**: save host/port/user, reconnect in one tap.
+- **SSH server** (log in from a laptop): "Start SSH server (port 8022)" installs OpenSSH on first use, starts it in a new tab and shows `ssh -p 8022 root@<phone-ip>` with a generated root password (kept in `/etc/alpdroid/ssh_password`; delete that file to get a new one). Android apps cannot use ports below 1024, hence 8022. Use "Add SSH public key" to paste your laptop's `~/.ssh/id_ed25519.pub` and log in without the password. Phone and laptop must be on the same network; stop with Ctrl+C. Anyone on that network with the password gets full access (trusted networks only).
 - **opencode web**: "Start opencode web server" opens a tab running `opencode serve` on `0.0.0.0:4096`. It prints a generated password, which the app catches and shows you with a Copy button — enter it in the browser. Anyone on that network with the password gets full access (trusted networks only). Stop with Ctrl+C.
 - **Refresh network / DNS**: rewrites guest DNS live after Wi-Fi/mobile switches.
 
@@ -133,8 +134,9 @@ Settings → check for updates (auto-check throttled; manual anytime).
 Android stops background apps. Countermeasures (Settings → Sessions & Background):
 
 - **Keep sessions alive** (default on): foreground notification with session count; tap to return, Exit closes all.
-- **Wake lock**: keeps CPU awake for very long jobs; costs battery, off by default.
-- If the system still kills the app, allow Unrestricted battery use for AlpDroid (in-app button under Settings), lock it in Recents.
+- **Wake lock** (default on, also holds a Wi-Fi lock): keeps the CPU and Wi-Fi awake so servers and long jobs keep running with the screen off. It only applies while sessions or jobs exist; turn it off in Settings to save battery.
+- The first time a session starts, AlpDroid asks to be exempt from battery optimization. Accept it — without it servers and builds can still be stopped when the screen is off. You can also set Unrestricted battery use for AlpDroid from Settings and lock it in Recents.
+- On Android 12+ some devices additionally cap child processes ("phantom process killer"). If background processes still die, that limit can only be lifted from Developer options or `adb` (not from the app).
 - After a system kill, the app says so plainly on next launch (not a crash) with a battery-settings shortcut. Open sessions can't survive a kill — everything running stops.
 
 ## 17. Home-screen widget
@@ -148,6 +150,8 @@ Add the AlpDroid widget → tap jumps straight into a new session.
 - Drive missing: new tab after plugging in; check all-files access; FAT32/exFAT only.
 - Empty Wi-Fi list: location permission + Location on.
 - Slow builds: Linux runs through a compatibility layer, so heavy jobs take longer than on a computer.
+- SSH or a server stops with the screen off: see [Sessions & keep-alive](#16-sessions--keep-alive) (battery exemption, wake lock).
+- `apk add` prints errors but the tool installed: mirrors can hiccup even when packages land. Check with `command -v <tool>`; if it's missing, run "Update package index" and retry.
 - Still broken: new tab → else backup + Reinstall Alpine.
 
 ## 19. Security notes

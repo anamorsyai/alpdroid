@@ -1,0 +1,6 @@
+One-tap SSH server (port 8022) with password or public key login
+Servers and builds keep running with the screen off (wake lock + Wi-Fi lock, battery prompt)
+alphacode and claude launch keys
+Smoother terminal output, large pastes no longer hang
+Quick installs no longer skip steps when a mirror hiccups
+Plugin reliability fixes

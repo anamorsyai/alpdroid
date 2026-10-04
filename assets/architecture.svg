@@ -1,74 +1,58 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800">
-  <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3ED0B8"/>
-    </marker>
-  </defs>
-  <rect x="0" y="0" width="1200" height="800" fill="#0D1117"/>
-  <text x="40" y="60" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="32" font-weight="bold" fill="#FFFFFF">AlpDroid — Terminal-only Architecture</text>
-  <text x="40" y="92" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="18" fill="#8B949E">No proxy. Android UI talks to Alpine guest over proot + PTY bridge.</text>
-
-  <g font-family="ui-monospace, Menlo, Consolas, monospace">
-    <rect x="40" y="130" width="310" height="200" rx="12" fill="#161B22" stroke="#3ED0B8" stroke-width="2"/>
-    <text x="60" y="162" font-size="20" font-weight="bold" fill="#3ED0B8">Android App UI</text>
-    <text x="60" y="192" font-size="16" fill="#8B949E">Tabs • File Browser</text>
-    <text x="60" y="216" font-size="16" fill="#8B949E">Compose + WebView</text>
-    <text x="60" y="260" font-size="16" fill="#FFFFFF">- Tab manager</text>
-    <text x="60" y="286" font-size="16" fill="#FFFFFF">- File browser</text>
-    <text x="60" y="312" font-size="16" fill="#FFFFFF">- Plugin screens</text>
-
-    <rect x="40" y="370" width="310" height="170" rx="12" fill="#161B22" stroke="#3ED0B8" stroke-width="2"/>
-    <text x="60" y="402" font-size="20" font-weight="bold" fill="#3ED0B8">Terminal Emulator</text>
-    <text x="60" y="432" font-size="16" fill="#8B949E">Compose canvas</text>
-    <text x="60" y="474" font-size="16" fill="#FFFFFF">- vt100 / xterm.js</text>
-    <text x="60" y="500" font-size="16" fill="#FFFFFF">- touch keyboard</text>
-
-    <rect x="440" y="250" width="280" height="180" rx="12" fill="#161B22" stroke="#3ED0B8" stroke-width="3"/>
-    <text x="460" y="282" font-size="20" font-weight="bold" fill="#3ED0B8">PTY Bridge (C)</text>
-    <text x="460" y="312" font-size="16" fill="#8B949E">JNI • forkpty</text>
-    <text x="460" y="354" font-size="16" fill="#FFFFFF">- pty master/slave</text>
-    <text x="460" y="380" font-size="16" fill="#FFFFFF">- stdin/stdout pipe</text>
-    <text x="460" y="406" font-size="16" fill="#FFFFFF">- resize / signals</text>
-
-    <rect x="810" y="250" width="350" height="180" rx="12" fill="#161B22" stroke="#3ED0B8" stroke-width="2"/>
-    <text x="830" y="282" font-size="20" font-weight="bold" fill="#3ED0B8">proot + Alpine rootfs</text>
-    <text x="830" y="312" font-size="16" fill="#8B949E">guest, no root</text>
-    <text x="830" y="354" font-size="16" fill="#FFFFFF">- apk packages</text>
-    <text x="830" y="380" font-size="16" fill="#FFFFFF">- shell / tmux / ssh</text>
-    <text x="830" y="406" font-size="16" fill="#FFFFFF">- /sdcard bind mount</text>
-
-    <rect x="440" y="560" width="280" height="160" rx="12" fill="#161B22" stroke="#3ED0B8" stroke-width="2"/>
-    <text x="460" y="592" font-size="20" font-weight="bold" fill="#3ED0B8">Agent API (alpctl)</text>
-    <text x="460" y="622" font-size="16" fill="#8B949E">control plane</text>
-    <text x="460" y="664" font-size="16" fill="#FFFFFF">- tabs, notify, clip</text>
-    <text x="460" y="690" font-size="16" fill="#FFFFFF">- plugins, settings</text>
-
-    <rect x="810" y="560" width="350" height="160" rx="12" fill="#161B22" stroke="#30363D" stroke-width="2"/>
-    <text x="830" y="592" font-size="20" font-weight="bold" fill="#FFFFFF">Plugins</text>
-    <text x="830" y="622" font-size="16" fill="#8B949E">user scripts + fields</text>
-    <text x="830" y="664" font-size="16" fill="#FFFFFF">- FIELD_* env vars</text>
-    <text x="830" y="690" font-size="16" fill="#FFFFFF">- via alpctl only</text>
-
-    <rect x="810" y="130" width="350" height="90" rx="12" fill="#161B22" stroke="#30363D" stroke-width="2"/>
-    <text x="830" y="162" font-size="20" font-weight="bold" fill="#FFFFFF">GitHub OAuth</text>
-    <text x="830" y="192" font-size="16" fill="#8B949E">plain git auth, device flow</text>
-  </g>
-
-  <g stroke="#3ED0B8" stroke-width="2" fill="none">
-    <line x1="350" y1="230" x2="435" y2="300" marker-end="url(#arrow)"/>
-    <line x1="350" y1="455" x2="435" y2="360" marker-end="url(#arrow)"/>
-    <line x1="720" y1="340" x2="805" y2="340" marker-end="url(#arrow)"/>
-    <line x1="805" y1="360" x2="725" y2="360" marker-end="url(#arrow)"/>
-    <line x1="580" y1="430" x2="580" y2="555" marker-end="url(#arrow)"/>
-    <line x1="720" y1="640" x2="805" y2="640" marker-end="url(#arrow)"/>
-    <line x1="880" y1="220" x2="620" y2="245" marker-end="url(#arrow)"/>
-  </g>
-  <g font-family="ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#3ED0B8">
-    <text x="372" y="262">ui</text>
-    <text x="372" y="432">pty io</text>
-    <text x="735" y="322">shell io</text>
-    <text x="585" y="505">alpctl</text>
-    <text x="730" y="622">plugin calls</text>
-    <text x="700" y="212">git auth</text>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">
+<defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3ED0B8"/></marker><marker id="as" markerWidth="10" markerHeight="10" refX="1" refY="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3ED0B8"/></marker></defs>
+<rect width="1200" height="700" fill="#0D1117"/>
+<text x="40" y="48" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="28" font-weight="bold" fill="#FFFFFF">How AlpDroid works</text>
+<text x="40" y="78" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="15" fill="#8B949E">One Android app process: UI, native PTY helper, and an Alpine guest running under proot. No root.</text>
+<rect x="40" y="120" width="300" height="200" rx="14" fill="#161B22" stroke="#3ED0B8" stroke-width="2"/>
+<text x="60" y="154" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#3ED0B8">Terminal UI</text>
+<text x="60" y="180" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#8B949E">Kotlin, plain Android Views</text>
+<text x="60" y="212" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- Canvas TerminalView</text>
+<text x="60" y="236" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- hand-written emulator</text>
+<text x="60" y="260" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- tabs, search, extra keys</text>
+<text x="60" y="284" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- file browser, settings</text>
+<rect x="440" y="120" width="300" height="200" rx="14" fill="#161B22" stroke="#3ED0B8" stroke-width="2"/>
+<text x="460" y="154" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#3ED0B8">pty_bridge</text>
+<text x="460" y="180" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#8B949E">native C executable</text>
+<text x="460" y="212" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- allocates a real PTY</text>
+<text x="460" y="236" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- relays bytes via pipes</text>
+<text x="460" y="260" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- resize over a named pipe</text>
+<text x="460" y="284" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- kills the guest group on close</text>
+<rect x="840" y="120" width="300" height="200" rx="14" fill="#161B22" stroke="#3ED0B8" stroke-width="2"/>
+<text x="860" y="154" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#3ED0B8">proot + Alpine</text>
+<text x="860" y="180" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#8B949E">userspace Linux, no root</text>
+<text x="860" y="212" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- apk packages, shell, ssh</text>
+<text x="860" y="236" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- /sdcard + USB/SD bound in</text>
+<text x="860" y="260" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- device network shared</text>
+<text x="860" y="284" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- Node, Python, git, agents</text>
+<line x1="340" y1="220" x2="440" y2="220" stroke="#3ED0B8" stroke-width="2" marker-end="url(#a)" marker-start="url(#as)"/>
+<text x="390" y="208" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="12" fill="#3ED0B8" text-anchor="middle">pipes</text>
+<line x1="740" y1="220" x2="840" y2="220" stroke="#3ED0B8" stroke-width="2" marker-end="url(#a)" marker-start="url(#as)"/>
+<text x="790" y="208" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="12" fill="#3ED0B8" text-anchor="middle">PTY</text>
+<rect x="40" y="380" width="300" height="170" rx="14" fill="#161B22" stroke="#30363D" stroke-width="2"/>
+<text x="60" y="414" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#FFFFFF">Agent API (alpctl)</text>
+<text x="60" y="440" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#8B949E">loopback HTTP + bearer token</text>
+<text x="60" y="472" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- guest programs control the app</text>
+<text x="60" y="496" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- tabs, clipboard, notify</text>
+<text x="60" y="520" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- off unless you enable it</text>
+<rect x="440" y="380" width="300" height="170" rx="14" fill="#161B22" stroke="#30363D" stroke-width="2"/>
+<text x="460" y="414" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#FFFFFF">Plugins and jobs</text>
+<text x="460" y="440" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#8B949E">plugin.json + scripts</text>
+<text x="460" y="472" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- your own Settings screens</text>
+<text x="460" y="496" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- schedules, background jobs</text>
+<text x="460" y="520" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- run only after you approve</text>
+<rect x="840" y="380" width="300" height="170" rx="14" fill="#161B22" stroke="#30363D" stroke-width="2"/>
+<text x="860" y="414" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#FFFFFF">Keep-alive service</text>
+<text x="860" y="440" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#8B949E">foreground service</text>
+<text x="860" y="472" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- holds the process alive</text>
+<text x="860" y="496" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- wake lock + Wi-Fi lock</text>
+<text x="860" y="520" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#E6EDF3">- battery-exemption prompt</text>
+<line x1="190" y1="380" x2="190" y2="320" stroke="#3ED0B8" stroke-width="2" marker-end="url(#a)"/>
+<text x="190" y="358" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="12" fill="#3ED0B8" text-anchor="middle">controls the app</text>
+<line x1="590" y1="380" x2="900" y2="320" stroke="#3ED0B8" stroke-width="2" marker-end="url(#a)"/>
+<text x="735" y="338" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="12" fill="#3ED0B8" text-anchor="middle">runs scripts in the guest</text>
+<line x1="990" y1="380" x2="990" y2="320" stroke="#3ED0B8" stroke-width="2" marker-end="url(#a)"/>
+<text x="990" y="358" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="12" fill="#3ED0B8" text-anchor="middle">keeps it running</text>
+<rect x="40" y="590" width="1100" height="70" rx="14" fill="#161B22" stroke="#30363D" stroke-width="2"/>
+<text x="60" y="620" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="16" font-weight="bold" fill="#FFFFFF">Reachable from your network</text>
+<text x="60" y="645" font-family="DejaVu Sans Mono, ui-monospace, Menlo, Consolas, monospace" font-size="14" fill="#8B949E">SSH server on :8022, opencode web on :4096, any server you start in a tab - on the phone IP over Wi-Fi.</text>
 </svg>

@@ -1,1 +1,22 @@
-AlpDroid puts a real Alpine Linux shell on your phone: multi-tab terminal with a from-scratch VT100 emulator, Alpine running via proot (no root, no VM), a file browser for Android and Alpine storage, scriptable plugins with your approval, one-tap GitHub sign-in, backup and restore, SSH profiles, widgets, themes, and an agent control API (alpctl) for CLI coding agents.
+AlpDroid puts a real Alpine Linux shell on your phone — no root, no virtual machine, no cloud.
+
+TERMINAL BUILT FOR PHONES
+Multi-tab terminal with a from-scratch emulator: truecolor, mouse support for full-screen apps, pinch-to-zoom, ligatures, themes, and an extra-keys row (ESC, TAB, CTRL, ALT, arrows, your own shortcuts).
+
+REAL LINUX, NO ROOT
+Alpine runs in userspace via proot. Install packages with apk, run Node.js, Python and git.
+
+SERVERS IN ONE TAP
+Start an SSH server and log in from your laptop (password or public key), or serve the opencode web UI on your Wi-Fi.
+
+MADE FOR CODING AGENTS
+One-tap installs and launch keys for opencode, Claude Code and alphacode, plus a token-guarded control API (alpctl).
+
+STAYS RUNNING
+Foreground service, wake lock and Wi-Fi lock keep builds and servers alive with the screen off.
+
+FILES, BACKUP, MORE
+File browser for Android and Alpine, /sdcard and USB/SD drives inside Linux, one-file backup and restore, GitHub sign-in, plugins you approve, home-screen widget, in-app updater.
+
+PRIVATE BY DEFAULT
+No analytics, no ads, no tracking. Open source (MIT).

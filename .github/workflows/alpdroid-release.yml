@@ -1,4 +1,4 @@
-name: Create AlpineTerm release
+name: Create AlpDroid release
 
 on:
   workflow_dispatch:
@@ -74,19 +74,19 @@ jobs:
           TAG: ${{ inputs.tag_name }}
         run: |
           APK="AlpineTerm-${TAG}.apk"
-          cat > notes.md <<'EOF'
-          AlpineTerm — real Alpine Linux on your phone, no root. Install the attached APK (it updates an existing install signed with the same key).
-
-          **Highlights since v1.1.0**
-          - **Agent access:** coding agents in a tab can control the app through `alpctl` (off by default, token-guarded), and learn about the environment automatically via managed AGENTS.md / CLAUDE.md notes
-          - **GitHub sign-in in one tap** (device flow, token encrypted in the Android Keystore) with automatic git authentication
-          - **Plugins:** your own settings panels with fields and buttons that run scripts, including scheduled and background jobs; included in backups; scripts need your approval
-          - **opencode:** installs put it on PATH automatically; start its web server on your network from Settings
-          - **Devices panel:** SD cards / USB drives (mounted at /mnt/...), USB devices, network adapters, Wi-Fi scan
-          - **Progress notifications** for copy, move, compress, extract, backup and restore; safer backups (no corrupt files, low-storage warning, optional weekly auto-backup)
-          - Plain-language **Guide** in Settings
-          - Many fixes: scrolling in the terminal and in opencode, wrapped text re-joining on resize, prompt redraw glitches, and a full security/bug review pass
-
-          Tabs are temporary sessions — running programs stop when the app is closed or updated. See Settings → Guide inside the app.
-          EOF
-          gh release create "$TAG" "$APK" --target "$GITHUB_SHA" --title "AlpineTerm $TAG" --notes-file notes.md
+          VER="${TAG#v}"
+          # Release notes = this version's section of CHANGELOG.md ("## X.Y.Z — title").
+          awk -v ver="$VER" 'index($0, "## " ver " ") == 1 { f = 1; next } /^## / { f = 0 } f' CHANGELOG.md > changes.md
+          [ -s changes.md ] || echo "See CHANGELOG.md for what changed." > changes.md
+          {
+            echo "## What's new"
+            echo
+            cat changes.md
+            echo
+            echo "## Install"
+            echo
+            echo "Download **${APK}** below and open it. It installs over an existing AlpDroid because every release is signed with the same key. First launch downloads Alpine once (internet needed)."
+            echo
+            echo "Android 7.0+ · arm64, armv7, x86_64, x86. Full docs: [User guide](https://github.com/${GITHUB_REPOSITORY}/blob/main/docs/USER_GUIDE.md) · [Changelog](https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md)"
+          } > notes.md
+          gh release create "$TAG" "$APK" --target "$GITHUB_SHA" --title "AlpDroid $TAG" --notes-file notes.md

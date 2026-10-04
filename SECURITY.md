@@ -34,6 +34,10 @@ This defines the trust model:
   never in plain preferences. By default it is *not* exposed to the guest;
   sharing it with guest programs requires explicitly opting in
   (`agentGithubToken` in Settings).
+- **SSH server.** The optional one-tap SSH server listens on all network interfaces (port 8022) and
+  accepts root login by a generated password or an added public key, so anyone on the same network
+  who knows the password has full guest access. Use it on networks you trust, stop it with Ctrl+C
+  when done, and delete `/etc/alpdroid/ssh_password` to rotate the password.
 - **Backups and shared storage.** Rootfs backups (`.tar.gz`) and anything
   under shared storage (`/sdcard`) are unencrypted files — whoever can read
   the storage can read them. Keep backups somewhere private.

@@ -1,1 +1,1 @@
-AlpDroid — real Alpine Linux terminal, no root
+AlpDroid: Linux terminal

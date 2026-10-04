@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.41 — claude key without the messaging warning
+
+- The extra-keys `claude` key now runs `claude --messaging-socket-path /root/.claude/run/msg-$$.sock`
+  (after creating that directory), which avoids Claude Code's "Cross-session messaging is off:
+  ... without a uid mapping" warning under proot's fake root. Typing plain `claude` still works;
+  it just shows the warning.
+
 ## 1.7.40 — smoother output, SSH keys
 
 - Terminal output is fed to the emulator in 4KB slices instead of holding its lock for a whole

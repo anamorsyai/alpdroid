@@ -3825,7 +3825,10 @@ class MainActivity : Activity() {
         // `claude` run — alphacode's own subcommands (monitor etc.) are typed by hand or saved as
         // a custom shortcut.
         addKey("alphacode") { runShortcutCommand("alphacode\n") }
-        addKey("claude") { runShortcutCommand("claude\n") }
+        // proot's fake root (-0) makes Claude Code's cross-session-messaging uid check fail
+        // ("Cross-session messaging is off ... without a uid mapping"); an explicit per-tab socket
+        // path (unique via the shell's $$) under a directory we own avoids that check.
+        addKey("claude") { runShortcutCommand("mkdir -p /root/.claude/run; claude --messaging-socket-path /root/.claude/run/msg-\$\$.sock\n") }
         settingsStore.customSnippets.forEach { (label, cmd) ->
             addKey(label) { runShortcutCommand(cmd) }
         }

@@ -157,7 +157,7 @@ dependencies {
     // splash (not a fake "splash Activity" that just delays showing the real UI) with an
     // animated-vector icon entrance on API 31+, falling back to the same icon shown statically
     // (no animation) on everything below that, which is the library's own documented behavior.
-    implementation("androidx.core:core-splashscreen:1.0.1")
+    implementation("androidx.core:core-splashscreen:1.2.0")
 
     testImplementation("junit:junit:4.13.2")
 }

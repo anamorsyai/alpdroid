@@ -43,7 +43,7 @@ The app uses the network only for these user-visible purposes:
 | `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_SPECIAL_USE` | Keep shells and long agent/build runs alive in background (`TerminalKeepAliveService`) |
 | `POST_NOTIFICATIONS` | Keep-alive status and agent-run notifications |
 | `REQUEST_INSTALL_PACKAGES` | Hand a downloaded update APK to the system installer (you confirm there) |
-| `WAKE_LOCK` | Optional, off by default; keeps CPU awake during long runs |
+| `WAKE_LOCK` | Keeps CPU awake (and a Wi-Fi lock held) while sessions run in the background; on by default, can be turned off in Settings |
 | `VIBRATE` | Haptic/notification feedback |
 | `READ/WRITE_EXTERNAL_STORAGE` (max SDK 29) | Legacy scoped-storage fallback on API 24–29 |
 | `MANAGE_EXTERNAL_STORAGE` | Full shared-storage access on API 30+ so `/sdcard` bind-mounts into the guest |

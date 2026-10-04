@@ -1,10 +1,8 @@
 version: 2
 updates:
+  # Only the GitHub Actions used by the workflows. App libraries (Gradle) are bumped by hand together
+  # with compileSdk and a device test: newer androidx/Material releases need a newer SDK than we build with.
   - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: monthly
-  - package-ecosystem: gradle
     directory: /
     schedule:
       interval: monthly

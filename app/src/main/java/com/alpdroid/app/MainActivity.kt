@@ -3895,7 +3895,8 @@ class MainActivity : Activity() {
         addKey("alphacode") { runShortcutCommand("alphacode\n") }
         // proot's fake root (-0) makes Claude Code's cross-session-messaging uid check fail
         // ("Cross-session messaging is off ... without a uid mapping"); an explicit per-tab socket
-        // path (unique via the shell's $$) under a directory we own avoids that check.
+        // path (unique via the shell's $$) under a directory we own avoids that check. Claude Code
+        // insists that directory is private (mode 0700), and `mkdir -p` leaves an existing one as is.
         // If a local Anthropic-compatible proxy is set up (e.g. a hunting-rig style shim on
         // 127.0.0.1:9086 that `claude` is pointed at via ANTHROPIC_BASE_URL in
         // ~/.claude/settings.json) and it isn't answering — the proxy is a plain background
@@ -3904,7 +3905,7 @@ class MainActivity : Activity() {
         // dead proxy doesn't look like a claude/network problem. A no-op when no such setup
         // exists (no `oc` on PATH).
         addKey("claude") { runShortcutCommand(
-            "mkdir -p /root/.claude/run; " +
+            "mkdir -p /root/.claude/run && chmod 700 /root/.claude/run; " +
                 "if command -v oc >/dev/null 2>&1 && ! curl -s -o /dev/null -m 3 http://127.0.0.1:9086/v1/models 2>/dev/null; then " +
                 "echo 'local proxy not responding — restarting it (oc -r)...'; oc -r || true; fi; " +
                 "claude --messaging-socket-path /root/.claude/run/msg-\$\$.sock\n",

@@ -1,0 +1,1 @@
+claude key: fixes the private socket directory error

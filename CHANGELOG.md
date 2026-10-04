@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.45 — claude key: private socket directory
+
+- The extra-keys `claude` key now makes `/root/.claude/run` private (mode 0700) before launching
+  `claude --messaging-socket-path ...`; Claude Code refuses a directory that is group/world accessible
+  ("socket directory must be mode 0700"), which is what a plain `mkdir -p` produced.
+
 ## 1.7.44 — long pastes can't hang the terminal
 
 - Pasting long text is now written to the session in 8KB chunks on its own writer thread (never the UI

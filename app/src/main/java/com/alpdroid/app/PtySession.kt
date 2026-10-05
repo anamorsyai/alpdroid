@@ -261,9 +261,30 @@ class PtySession private constructor(
     fun awaitExit(timeoutMs: Long): Boolean =
         runCatching { process.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(true)
 
+    /** Pids of everything below the bridge (proot, the shell, servers, detached daemons), read from /proc.
+     *  Empty when the bridge is already gone: a dead pid may have been reused, and we must never signal
+     *  by a stale number. */
+    private fun guestTreePids(): List<Int> {
+        if (!isAlive()) return emptyList()
+        val root = pid
+        if (root <= 0) return emptyList()
+        val parentOf = HashMap<Int, Int>()
+        File("/proc").list()?.forEach { name ->
+            val p = name.toIntOrNull() ?: return@forEach
+            val stat = runCatching { File("/proc/$p/stat").readText() }.getOrNull()?.let { ResourcePolicy.parseStat(it) } ?: return@forEach
+            parentOf[p] = stat.ppid
+        }
+        return ResourcePolicy.descendants(root, parentOf).filter { it != android.os.Process.myPid() }
+    }
+
     fun destroy() {
+        // Snapshot before the SIGTERM: once the shell dies its children are reparented to init and a
+        // daemon that detached from the process group (a server that setsid()s) could no longer be found
+        // — it would keep running, and keep its port, after the tab was closed.
+        val tree = if (destroyed) emptyList() else runCatching { guestTreePids() }.getOrDefault(emptyList())
         destroyed = true
         runCatching { process.destroy() }
+        tree.forEach { runCatching { android.os.Process.killProcess(it) } }
         // The guest tree (proot + shell + daemons) is the bridge's child subtree: destroy()
         // SIGTERMs the bridge, whose handler SIGKILLs that whole process group — but a wedged
         // bridge must never pin a leaked guest. Re-check after a grace period and force.

@@ -3646,7 +3646,16 @@ class MainActivity : Activity() {
     /** Closing a tab (its own or another's) just kills that session — [onTabExited], on that
      *  tab's own reader thread, is what actually removes it and picks the next active tab. */
     private fun closeTab(index: Int) {
-        tabs.getOrNull(index)?.session?.destroy()
+        val tab = tabs.getOrNull(index) ?: return
+        tab.session.destroy()
+        forceRemoveTabIfStuck(tab, 2500)
+    }
+
+    /** A tab normally disappears when its reader thread sees the pty close. If that never happens (a
+     *  wedged session whose bridge or guest will not die), take the tab down anyway so "close" always
+     *  works from the user's side; destroy() already SIGKILLs the bridge after a short grace period. */
+    private fun forceRemoveTabIfStuck(tab: TerminalTab, afterMs: Long) {
+        mainHandler.postDelayed({ if (tabs.contains(tab)) onTabExited(tab) }, afterMs)
     }
 
     private fun showRenameTabDialog(index: Int) {
@@ -3701,6 +3710,7 @@ class MainActivity : Activity() {
                 android.widget.Toast.makeText(this, "Force-stopping the server…", android.widget.Toast.LENGTH_SHORT).show()
                 tab.session.forceKill()
                 mainHandler.postDelayed({ tab.session.destroy() }, 1500)
+                forceRemoveTabIfStuck(tab, 4000)
                 return
             }
             tab.lastCtrlCMs = now

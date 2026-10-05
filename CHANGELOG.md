@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.7.55 — a server tab can always be stopped and closed
+
+- Fixed: an `opencode serve` (or any server) tab could refuse to stop after the web page disconnected: Ctrl+C,
+  the double-Ctrl+C force stop and even closing the tab all appeared to do nothing. Three hardening changes:
+  the bridge's force kill and tab-close now SIGKILL the guest's whole process tree (found through /proc), not only
+  its process group, so a daemon that detached from the group can no longer keep the session alive; the bridge no
+  longer waits forever for the shell after the terminal closes (bounded wait, then kill); and closing a tab, or a
+  force stop, now removes the tab from the app a couple of seconds later even if the session never reports its end;
+  closing a tab also kills detached descendants found before the shell dies, so a closed server tab no longer
+  leaves the server running and its port taken.
+
 ## 1.7.54 — opencode server button: browser + password again
 
 - Fixed: the one-tap "opencode serve" button sometimes no longer opened the browser and copied the password.

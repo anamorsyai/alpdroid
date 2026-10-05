@@ -1,0 +1,1 @@
+Fix: server tabs can always be stopped and closed (force kill reaches detached processes)

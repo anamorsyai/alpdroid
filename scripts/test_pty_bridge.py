@@ -124,6 +124,16 @@ def main():
     wait(p, 6)
     check("AFF restricts an already-running guest", "Cpus_allowed_list:\t0" in bytes(out).decode(errors="replace"), bytes(out).decode(errors="replace"))
 
+    # KILL must also reach a daemon that setsid()'d out of the guest's process group.
+    p, w, out = start(["sh", "-c", "setsid sleep 33.7 & sleep 30"], "daemon")
+    time.sleep(0.5)
+    control(w, "KILL")
+    wait(p, 5)
+    time.sleep(0.5)
+    alive = subprocess.run(["pgrep", "-x", "-f", "^sleep 33.7$"], capture_output=True).stdout.strip()
+    check("KILL also kills a setsid()'d descendant", alive == b"", alive.decode())
+    subprocess.run(["pkill", "-9", "-x", "-f", "^sleep 33.7$"])
+
     # Large input to a program that does read it (cat echoes it back): no deadlock.
     p, w, out = start(["cat"], "cat")
     data = b"y" * 100 + b"\n"

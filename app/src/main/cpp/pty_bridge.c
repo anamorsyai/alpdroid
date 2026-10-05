@@ -156,6 +156,7 @@ static void signal_foreground(int master, int sig) {
 }
 
 static void apply_affinity(unsigned long mask);
+static void kill_tree(void);
 
 static void service_control(int master) {
     if (g_control_fd < 0) return;
@@ -185,7 +186,7 @@ static void service_control(int master) {
             unsigned long m = strtoul(line + 4, NULL, 16);
             apply_affinity(m == 0 ? ~0UL : m);
         } else if (strcmp(line, "KILL") == 0) {
-            if (g_child > 0) { kill(-g_child, SIGKILL); kill(g_child, SIGKILL); }
+            kill_tree();
         } else if (sscanf(line, "%d %d", &rr, &cc) == 2 && rr > 0 && cc > 0) {
             // Same clamp as argv parsing: set_winsize truncates to unsigned short.
             if (rr > 1000) rr = 1000;
@@ -199,18 +200,16 @@ static void service_control(int master) {
     g_ctl_len = remaining;
 }
 
-/** Restricts the guest's whole process tree (every thread of every descendant of `g_child`) to the CPUs in
- *  `mask` — the app's load balancer uses this to park busy background sessions on the phone's low-power
- *  cores and to give them all cores back. Affinity is reversible without privileges (unlike nice), and
- *  touches only our own session's processes. Best-effort: unreadable /proc entries are skipped. */
+/** Collects the pids of the guest's whole process tree (`g_child` and every descendant, found by walking
+ *  /proc ppid links) into `out`; returns how many. Best-effort: unreadable /proc entries are skipped. */
 #define MAX_TRACKED_PIDS 16384
-static void apply_affinity(unsigned long mask) {
+static int collect_tree(int *out, int cap) {
     static int pids[MAX_TRACKED_PIDS], ppids[MAX_TRACKED_PIDS];
     static char in_tree[MAX_TRACKED_PIDS];
-    if (g_child <= 0 || mask == 0) return;
+    if (g_child <= 0) return 0;
     int count = 0;
     DIR *proc = opendir("/proc");
-    if (proc == NULL) return;
+    if (proc == NULL) return 0;
     struct dirent *de;
     while ((de = readdir(proc)) != NULL && count < MAX_TRACKED_PIDS) {
         int pid = atoi(de->d_name);
@@ -242,10 +241,33 @@ static void apply_affinity(unsigned long mask) {
             }
         }
     }
-    for (int i = 0; i < count; i++) {
-        if (!in_tree[i]) continue;
+    int n = 0;
+    for (int i = 0; i < count && n < cap; i++) if (in_tree[i]) out[n++] = pids[i];
+    return n;
+}
+
+/** SIGKILLs the whole guest tree, including daemons that setsid(2)'d out of the process group (a
+ *  group kill alone misses those, and one of them can keep a session — and its tab — alive). */
+static void kill_tree(void) {
+    static int tree[MAX_TRACKED_PIDS];
+    // Snapshot first: once the shell dies its children are reparented to init and can no longer be
+    // found through their parent links.
+    int n = collect_tree(tree, MAX_TRACKED_PIDS);
+    for (int i = 0; i < n; i++) kill(tree[i], SIGKILL);
+    if (g_child > 0) { kill(-g_child, SIGKILL); kill(g_child, SIGKILL); }
+}
+
+/** Restricts the guest's whole process tree (every thread of every descendant of `g_child`) to the CPUs in
+ *  `mask` — the app's load balancer uses this to park busy background sessions on the phone's low-power
+ *  cores and to give them all cores back. Affinity is reversible without privileges (unlike nice), and
+ *  touches only our own session's processes. */
+static void apply_affinity(unsigned long mask) {
+    static int tree[MAX_TRACKED_PIDS];
+    if (g_child <= 0 || mask == 0) return;
+    int n = collect_tree(tree, MAX_TRACKED_PIDS);
+    for (int i = 0; i < n; i++) {
         char taskdir[64];
-        snprintf(taskdir, sizeof(taskdir), "/proc/%d/task", pids[i]);
+        snprintf(taskdir, sizeof(taskdir), "/proc/%d/task", tree[i]);
         DIR *tasks = opendir(taskdir);
         if (tasks == NULL) continue;
         struct dirent *te;
@@ -586,6 +608,7 @@ int main(int argc, char **argv) {
         // hanging — a daemon that setsid(2)'d out of the group could otherwise wedge this
         // blocking waitpid() forever.
         if (term_requested) {
+            kill_tree();
             int waited = 0;
             while (waitpid(child, &status, WNOHANG) != child && waited < 50) {
                 usleep(20000);
@@ -593,7 +616,19 @@ int main(int argc, char **argv) {
             }
             if (waited >= 50) waitpid(child, &status, WNOHANG);
         } else {
-            waitpid(child, &status, 0);
+            // Bounded (2 s), then a tree kill: this used to be an unconditional blocking waitpid(), so a
+            // guest that outlived the end of the relay (master EOF while the shell or a daemon was still
+            // running) wedged the bridge for good — control messages and Ctrl+C then went unanswered.
+            int waited = 0;
+            while (waitpid(child, &status, WNOHANG) != child && waited < 100) {
+                usleep(20000);
+                waited++;
+            }
+            if (waited >= 100) {
+                kill_tree();
+                int again = 0;
+                while (waitpid(child, &status, WNOHANG) != child && again < 100) { usleep(20000); again++; }
+            }
         }
     }
     close(master);

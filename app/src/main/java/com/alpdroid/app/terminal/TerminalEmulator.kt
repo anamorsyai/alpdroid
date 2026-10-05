@@ -200,9 +200,14 @@ class TerminalEmulator(
     private var pendingBells = 0
     private var pendingAlt: Boolean? = null
     private var pendingResponses: MutableList<String>? = null
+
+    private fun queueResponse(text: String) {
+        (pendingResponses ?: mutableListOf<String>().also { pendingResponses = it }).add(text)
+    }
     // OSC has no buffer (only its terminator is watched) — without a length cap a binary dump
     // containing ESC ] with no BEL/ESC\ would wedge the parser in OSC state indefinitely.
     private var oscLen = 0
+    private var oscLimit = 1024
 
     fun feed(buf: ByteArray, len: Int) {
         // Clamp: a caller passing len > buf.size would otherwise throw inside the reader thread.
@@ -334,8 +339,16 @@ class TerminalEmulator(
                 val row = combinedRow(r)
                 val fromCol = if (r == r1) c1.coerceIn(0, row.size) else 0
                 val toCol = if (r == r2) c2.coerceIn(0, row.size - 1) else row.size - 1
-                for (c in fromCol..toCol) append(row[c].ch)
-                if (r != r2) append('\n')
+                val seg = StringBuilder()
+                for (c in fromCol..toCol) seg.append(row[c].ch)
+                // A row that soft-wrapped into the next continues the same logical line: no newline, and its
+                // trailing cell is real text rather than padding.
+                if (r != r2 && toCol == row.size - 1 && row.isNotEmpty() && row.last().wrapped) {
+                    append(seg)
+                } else {
+                    append(seg.toString().trimEnd())
+                    if (r != r2) append('\n')
+                }
             }
         }.trimEnd()
     }
@@ -739,7 +752,7 @@ class TerminalEmulator(
         when {
             b == 0x1B -> { state = State.ESCAPE; csiBuf.clear() }
             b == 0x07 -> pendingBells++
-            b == 0x08 -> cursorCol = max(0, cursorCol - 1)
+            b == 0x08 -> cursorCol = max(0, min(cursorCol, cols - 1) - 1)
             b == 0x09 -> { cursorCol = min(cols - 1, ((cursorCol / 8) + 1) * 8) }
             b == 0x0A -> lineFeed()
             b == 0x0D -> cursorCol = 0
@@ -789,7 +802,10 @@ class TerminalEmulator(
         val c = b.toChar()
         when (c) {
             '[' -> { state = State.CSI; csiBuf.clear() }
-            ']' -> { state = State.OSC; csiBuf.clear(); oscLen = 0 }
+            ']' -> { state = State.OSC; csiBuf.clear(); oscLen = 0; oscLimit = 1024 }
+            // DCS / SOS / PM / APC strings (tmux passthrough, sixel, kitty graphics): ended by ST, payload
+            // swallowed instead of printed as text.
+            'P', 'X', '^', '_' -> { state = State.OSC; csiBuf.clear(); oscLen = 0; oscLimit = 65536 }
             '7' -> { savedRow = cursorRow; savedCol = cursorCol; state = State.NORMAL }
             '8' -> { cursorRow = min(savedRow, rows - 1); cursorCol = min(savedCol, cols - 1); state = State.NORMAL }
             'c' -> { resetHard(); state = State.NORMAL }
@@ -813,7 +829,7 @@ class TerminalEmulator(
         else if (b == 0x1B) state = State.ESCAPE
         // Length cap: an unterminated OSC (binary dump through the terminal) must not wedge the
         // parser in this state indefinitely, swallowing all later output until some far-off BEL.
-        else if (++oscLen > 1024) { state = State.NORMAL; oscLen = 0 }
+        else if (++oscLen > oscLimit) { state = State.NORMAL; oscLen = 0 }
     }
 
     private fun processCsi(b: Int) {
@@ -825,8 +841,10 @@ class TerminalEmulator(
             return
         }
         if (b in 0x40..0x7E) {
-            dispatchCsi(b.toChar(), csiBuf.toString())
+            // State first: a dispatch that throws must not leave the parser stuck in CSI (the next
+            // printable byte would then be swallowed as a bogus final byte).
             state = State.NORMAL
+            dispatchCsi(b.toChar(), csiBuf.toString())
             return
         }
         state = State.NORMAL // malformed; bail out rather than hang in CSI forever
@@ -847,7 +865,7 @@ class TerminalEmulator(
         if (prefixChar != null && prefixChar != '?') return
         val private = prefixChar == '?'
         val body = if (private) raw.substring(1) else raw
-        val params = body.split(";").map { it.toIntOrNull() ?: 0 }
+        val params = if (final == 'm' && !private) parseSgrParams(body) else body.split(";").map { it.toIntOrNull() ?: 0 }
         // Clamp: an unbounded count (e.g. 2147483647) would overflow cursor arithmetic to a
         // negative row/col and crash on the next screen[] access.
         fun p(i: Int, default: Int = 0) = params.getOrNull(i)?.takeIf { it != 0 }?.coerceIn(0, 9999) ?: default
@@ -856,7 +874,7 @@ class TerminalEmulator(
             'A' -> cursorRow = max(topMargin, cursorRow - max(1, p(0, 1)))
             'B' -> cursorRow = min(bottomMargin, cursorRow + max(1, p(0, 1)))
             'C' -> cursorCol = min(cols - 1, cursorCol + max(1, p(0, 1)))
-            'D' -> cursorCol = max(0, cursorCol - max(1, p(0, 1)))
+            'D' -> cursorCol = max(0, min(cursorCol, cols - 1) - max(1, p(0, 1)))
             'H', 'f' -> {
                 cursorRow = (p(0, 1) - 1).coerceIn(0, rows - 1)
                 cursorCol = (p(1, 1) - 1).coerceIn(0, cols - 1)
@@ -876,13 +894,18 @@ class TerminalEmulator(
                 topMargin = (p(0, 1) - 1).coerceIn(0, rows - 1)
                 bottomMargin = (if (params.size > 1 && params[1] != 0) params[1] else rows).coerceIn(1, rows) - 1
                 if (topMargin > bottomMargin) { topMargin = 0; bottomMargin = rows - 1 }
+                cursorRow = 0; cursorCol = 0 // DECSTBM homes the cursor
             }
+            'b' -> repeat(min(max(1, p(0, 1)), cols * rows)) { putChar(lastPrinted) } // REP
+            // Primary device attributes: "VT220-ish, with colour" — answered so programs that probe at
+            // startup don't sit waiting for their timeout.
+            'c' -> if (p(0, 0) == 0) queueResponse("\u001B[?62;c")
             'm' -> applySgr(params)
             'h' -> setMode(private, params, true)
             'l' -> setMode(private, params, false)
             's' -> { savedRow = cursorRow; savedCol = cursorCol }
             'u' -> { cursorRow = min(savedRow, rows - 1); cursorCol = min(savedCol, cols - 1) }
-            'n' -> if (p(0, 0) == 6) pendingResponses?.add("\u001B[${cursorRow + 1};${cursorCol + 1}R") ?: run { pendingResponses = mutableListOf("\u001B[${cursorRow + 1};${cursorCol + 1}R") }
+            'n' -> if (p(0, 0) == 6) queueResponse("\u001B[${cursorRow + 1};${min(cursorCol, cols - 1) + 1}R")
             else -> {} // unhandled final byte: ignore rather than crash
         }
     }
@@ -962,6 +985,30 @@ class TerminalEmulator(
         pendingAlt = enable
     }
 
+    /** SGR parameters with ':' sub-parameters (ITU T.416 colours `38:2::r:g:b`, underline styles `4:3`)
+     *  flattened into the classic ';' form. Unknown colon forms are dropped — they used to parse as 0,
+     *  i.e. a full attribute reset. */
+    private fun parseSgrParams(body: String): List<Int> {
+        val out = ArrayList<Int>()
+        for (tok in body.split(';')) {
+            if (':' !in tok) { out.add(tok.toIntOrNull() ?: 0); continue }
+            val sub = tok.split(':')
+            val head = sub[0].toIntOrNull() ?: 0
+            when (head) {
+                38, 48, 58 -> when (sub.getOrNull(1)?.toIntOrNull()) {
+                    5 -> { out.add(head); out.add(5); out.add(sub.getOrNull(2)?.toIntOrNull() ?: 0) }
+                    2 -> {
+                        val rgb = sub.drop(if (sub.size >= 6) 3 else 2).map { it.toIntOrNull() ?: 0 }
+                        if (rgb.size >= 3) { out.add(head); out.add(2); out.addAll(rgb.take(3)) }
+                    }
+                }
+                4 -> out.add(if ((sub.getOrNull(1)?.toIntOrNull() ?: 1) == 0) 24 else 4)
+                else -> {}
+            }
+        }
+        return out
+    }
+
     private fun applySgr(paramsIn: List<Int>) {
         val params = if (paramsIn.isEmpty()) listOf(0) else paramsIn
         var i = 0
@@ -984,6 +1031,9 @@ class TerminalEmulator(
                 49 -> { curBg = TerminalColors.DEFAULT_BG; curBgKind = Cell.KIND_DEFAULT }
                 in 90..97 -> { curFg = TerminalColors.ANSI16[p - 90 + 8]; curFgKind = p - 90 + 8 }
                 in 100..107 -> { curBg = TerminalColors.ANSI16[p - 100 + 8]; curBgKind = p - 100 + 8 }
+                58 -> { // underline colour: not drawn, but its operands must not be read as attributes
+                    if (params.getOrNull(i + 1) == 5) i += 2 else if (params.getOrNull(i + 1) == 2) i += 4
+                }
                 38, 48 -> {
                     val isFg = p == 38
                     if (params.getOrNull(i + 1) == 5 && i + 2 < params.size) {
@@ -1004,7 +1054,10 @@ class TerminalEmulator(
 
     // --- Screen mutation -----------------------------------------------------------------
 
+    private var lastPrinted = ' '
+
     private fun putChar(c: Char) {
+        lastPrinted = c
         // Guard: transient out-of-range cursor (resize race, hostile CSI) must clamp, not crash.
         // cursorCol == cols is the legitimate wrap-pending state (set by cursorCol++ below), so
         // the upper bound stays cols, not cols - 1 — the wrap branch right below handles it.
@@ -1046,25 +1099,30 @@ class TerminalEmulator(
     private fun scrollUp(n: Int) {
         repeat(min(n, bottomMargin - topMargin + 1).coerceAtLeast(0)) {
             val row = screen.removeAt(topMargin)
-            if (topMargin == 0) {
+            // Only lines leaving the top of the *whole primary screen* are history. Alt-screen programs
+            // (vim, less, htop) and partial scroll regions just recycle the row — they used to fill the
+            // shell's scrollback with screen fragments.
+            if (topMargin == 0 && bottomMargin == rows - 1 && primaryScreen == null) {
                 scrollback.addLast(row)
-                while (scrollback.size > maxScrollback) scrollback.removeFirst()
-                screen.add(bottomMargin, blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
+                // When full, the evicted oldest row becomes the new blank bottom row instead of garbage.
+                var recycled: Array<Cell>? = null
+                while (scrollback.size > maxScrollback) recycled = scrollback.removeFirst()
+                screen.add(bottomMargin, if (recycled != null && recycled.size == cols) clearRow(recycled) else blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
             } else {
-                screen.add(
-                    bottomMargin,
-                    row.also { r ->
-                        r.forEach {
-                            it.ch = ' '
-                            it.wrapped = false
-                            it.fg = TerminalColors.DEFAULT_FG; it.bg = TerminalColors.DEFAULT_BG
-                            it.fgKind = Cell.KIND_DEFAULT; it.bgKind = Cell.KIND_DEFAULT
-                            it.bold = false; it.underline = false; it.reverse = false
-                        }
-                    },
-                )
+                screen.add(bottomMargin, clearRow(row))
             }
         }
+    }
+
+    private fun clearRow(r: Array<Cell>): Array<Cell> {
+        for (it in r) {
+            it.ch = ' '
+            it.wrapped = false
+            it.fg = TerminalColors.DEFAULT_FG; it.bg = TerminalColors.DEFAULT_BG
+            it.fgKind = Cell.KIND_DEFAULT; it.bgKind = Cell.KIND_DEFAULT
+            it.bold = false; it.underline = false; it.reverse = false
+        }
+        return r
     }
 
     private fun scrollDown(n: Int) {
@@ -1116,9 +1174,11 @@ class TerminalEmulator(
 
     private fun eraseInLine(mode: Int) {
         val row = screen.getOrNull(cursorRow) ?: return
+        // cursorCol == cols is the wrap-pending state: the cursor is on the last cell.
+        val col = min(cursorCol, cols - 1)
         val range = when (mode) {
-            0 -> cursorCol until cols
-            1 -> 0..cursorCol
+            0 -> col until cols
+            1 -> 0..col
             else -> 0 until cols
         }
         for (i in range) row[i] = Cell(fg = curFg, bg = curBg, fgKind = curFgKind, bgKind = curBgKind)

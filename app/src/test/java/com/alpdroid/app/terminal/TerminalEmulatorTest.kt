@@ -198,4 +198,104 @@ class TerminalEmulatorTest {
         t.type("abc")
         assertEquals(t.contentHash(), t.renderSnapshot().contentHash)
     }
+
+    @Test fun eraseToStartAtWrapPendingCursorDoesNotThrowOrStickInCsi() {
+        val t = TerminalEmulator(3, 5)
+        t.type("abcde")            // cursor is now wrap-pending (col == cols)
+        t.type("\u001B[1K")        // used to throw ArrayIndexOutOfBounds and stay in CSI state
+        t.type("X")                // must print as text (wrapping to the next row), not be eaten as a CSI final byte
+        assertEquals("X", t.rowText(1))
+    }
+
+    @Test fun eraseInDisplayAtWrapPendingCursorWorks() {
+        val t = TerminalEmulator(3, 5)
+        t.type("abcde\u001B[1J")
+        assertEquals("", t.rowText(0))
+    }
+
+    @Test fun backspaceFromWrapPendingMovesOntoPenultimateCell() {
+        val t = TerminalEmulator(3, 5)
+        t.type("abcde\b")
+        assertEquals(3, t.cursorCol)
+    }
+
+    @Test fun altScreenScrollingDoesNotFillShellScrollback() {
+        val t = TerminalEmulator(4, 10)
+        t.type("\u001B[?1049h")
+        repeat(30) { t.type("row $it\r\n") }
+        t.type("\u001B[?1049l")
+        assertEquals(0, t.scrollbackSize())
+    }
+
+    @Test fun partialScrollRegionDoesNotFillScrollback() {
+        val t = TerminalEmulator(6, 10)
+        t.type("\u001B[1;3r")      // region rows 1-3 only, top margin 0
+        t.type("\u001B[3;1H")
+        repeat(10) { t.type("x\r\n") }
+        assertEquals(0, t.scrollbackSize())
+    }
+
+    @Test fun fullScrollbackRecyclesRowsWithoutLeakingOldText() {
+        val t = TerminalEmulator(3, 6, maxScrollback = 2)
+        repeat(20) { t.type("line$it\r\n") }
+        assertEquals(2, t.scrollbackSize())
+        // the newest blank row at the bottom must be clean even though it reuses an evicted row
+        assertEquals("", t.rowText(2))
+        assertEquals("line19", t.rowText(1))
+    }
+
+    @Test fun colonSgrSubparametersDoNotResetAttributes() {
+        val t = TerminalEmulator(3, 20)
+        t.type("\u001B[1m\u001B[4:3mA")
+        val cell = t.rowAt(0)[0]
+        assertTrue(cell.bold)          // curly underline must not wipe bold
+        assertTrue(cell.underline)
+        t.type("\u001B[38:2::10:20:30mB")
+        assertEquals(TerminalColors.rgb(10, 20, 30), t.rowAt(0)[1].fg)
+        assertTrue(t.rowAt(0)[1].bold)
+    }
+
+    @Test fun underlineColourOperandsAreNotReadAsAttributes() {
+        val t = TerminalEmulator(3, 20)
+        t.type("\u001B[1;58;2;1;2;3mA")   // r,g,b = 1,2,3 used to set bold again / etc.
+        val c = t.rowAt(0)[0]
+        assertTrue(c.bold)
+        assertFalse(c.reverse)             // would be set if '7' were misread; here 1,2,3 -> bold only
+    }
+
+    @Test fun stringSequencesAreSwallowedNotPrinted() {
+        val t = TerminalEmulator(3, 30)
+        t.type("a\u001BPq#0;2;0;0;0\u001B\\b")
+        assertEquals("ab", t.rowText(0))
+        t.type("\u001B_Gi=1;payload\u001B\\c")
+        assertEquals("abc", t.rowText(0))
+    }
+
+    @Test fun repeatPrecedingCharacter() {
+        val t = TerminalEmulator(3, 20)
+        t.type("x\u001B[4b")
+        assertEquals("xxxxx", t.rowText(0))
+    }
+
+    @Test fun primaryDeviceAttributesAreAnswered() {
+        val replies = mutableListOf<String>()
+        val t = TerminalEmulator(3, 10, respond = { replies += it })
+        t.type("\u001B[c")
+        assertEquals(listOf("\u001B[?62;c"), replies)
+    }
+
+    @Test fun setScrollRegionHomesCursor() {
+        val t = TerminalEmulator(6, 10)
+        t.type("\u001B[4;5Hxy\u001B[2;5r")
+        assertEquals(0, t.cursorRow)
+        assertEquals(0, t.cursorCol)
+    }
+
+    @Test fun selectionAcrossSoftWrappedRowsHasNoNewlineOrPadding() {
+        val t = TerminalEmulator(4, 5)
+        t.type("abcdefgh")                 // wraps: "abcde" / "fgh"
+        assertEquals("abcdefgh", t.textInRange(0, 0, 1, 4))
+        t.type("\r\nxy\r\nz")
+        assertEquals("abcdefgh\nxy", t.textInRange(0, 0, 2, 4))
+    }
 }

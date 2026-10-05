@@ -197,7 +197,14 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
     private val blinkHandler = Handler(Looper.getMainLooper())
     private val blinkRunnable = object : Runnable {
         override fun run() {
-            cursorBlinkOn = !cursorBlinkOn
+            // After ~10 s without input or output the cursor stays solid and the timer stops: a blink
+            // tick re-runs a whole-view draw (hardware-accelerated invalidate(rect) re-records the
+            // view), so blinking an idle screen all day is steady heat for nothing. Output or a
+            // keystroke re-arms it (kickBlink).
+            val idleMs = SystemClock.uptimeMillis() - maxOf(lastInputMs, lastOutputFrameMs, blinkActivityMs)
+            val stopBlinking = idleMs > BLINK_IDLE_STOP_MS
+            cursorBlinkOn = if (stopBlinking) true else !cursorBlinkOn
+            blinkArmed = !stopBlinking
             // Repaint only the cursor cell, not the whole grid: a full invalidate() here
             // redrew every row (with a fresh renderSnapshot copy) twice a second even idle.
             // Skipped entirely when the cursor isn't visible anyway (hidden, scrolled up,
@@ -207,12 +214,43 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
                 // Includes the centering offset and keyboard shift: without them the dirty rect
                 // missed the real cursor position (artifacts / missed repaint on narrow screens).
                 val shift = renderShiftPx(em)
-                val x = gridOffsetX + em.cursorCol * cellWidth
+                val x = gridOffsetX + minOf(em.cursorCol, em.cols - 1) * cellWidth
                 val y = (em.cursorRow * cellHeight).roundToInt().toFloat() - shift
                 invalidate(x.toInt(), y.toInt(), (x + cellWidth).toInt() + 1, (y + cellHeight).toInt() + 1)
             }
-            blinkHandler.postDelayed(this, 530)
+            if (!stopBlinking) blinkHandler.postDelayed(this, 530)
         }
+    }
+
+    private var blinkArmed = false
+    /** Last time the blink was (re)started, so a freshly shown view blinks for a while before idling. */
+    private var blinkActivityMs = 0L
+
+    /** Restarts the blink timer if it stopped for idleness. Main thread only. */
+    private fun kickBlink() {
+        if (blinkArmed || !windowVisible) return
+        blinkArmed = true
+        blinkActivityMs = SystemClock.uptimeMillis()
+        blinkHandler.removeCallbacks(blinkRunnable)
+        blinkHandler.postDelayed(blinkRunnable, 530)
+    }
+
+    /** False while the activity is stopped (Home, another app on top). Output arriving then only
+     *  records that the screen changed, instead of waking the main thread every frame interval for
+     *  a view nobody can see (a long build with the screen off). Multi-window keeps the window
+     *  visible, so a paused-but-visible activity still repaints. */
+    @Volatile private var windowVisible = true
+    @Volatile private var dirtyWhileHidden = false
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        val visible = visibility == VISIBLE
+        if (visible && !windowVisible && dirtyWhileHidden) {
+            dirtyWhileHidden = false
+            scrollOffset = 0
+            invalidate()
+        }
+        windowVisible = visible
     }
 
     init {
@@ -223,6 +261,8 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        blinkArmed = true
+        blinkActivityMs = SystemClock.uptimeMillis()
         blinkHandler.postDelayed(blinkRunnable, 530)
     }
 
@@ -243,10 +283,15 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
      *  nothing visible, which is exactly the kind of small, needless wakeup this app's own
      *  keep-alive/battery-exemption features are otherwise trying to spend power deliberately on.
      *  Called from MainActivity's onPause()/onResume(). */
-    fun pauseBlink() = blinkHandler.removeCallbacks(blinkRunnable)
+    fun pauseBlink() {
+        blinkArmed = false
+        blinkHandler.removeCallbacks(blinkRunnable)
+    }
 
     fun resumeBlink() {
         cursorBlinkOn = true
+        blinkArmed = true
+        blinkActivityMs = SystemClock.uptimeMillis()
         blinkHandler.removeCallbacks(blinkRunnable)
         blinkHandler.postDelayed(blinkRunnable, 530)
     }
@@ -442,6 +487,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
      *  directly): posts the actual state changes onto the UI thread rather than touching
      *  [scrollOffset]/[cursorBlinkOn] or calling the UI-thread-only invalidate() from elsewhere. */
     fun onPtyOutput() {
+        if (!windowVisible) { dirtyWhileHidden = true; return }
         if (!ptyOutputPending.compareAndSet(false, true)) return
         val work = Runnable {
             ptyOutputPending.set(false)
@@ -451,10 +497,11 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             if (!cursorBlinkOn) {
                 cursorBlinkOn = true
                 mustRepaint = true
-                blinkHandler.removeCallbacks(blinkRunnable)
-                blinkHandler.postDelayed(blinkRunnable, 530)
             }
             lastOutputFrameMs = SystemClock.uptimeMillis()
+            if (windowVisible) {
+                kickBlink()
+            }
             // Nothing to paint while the view isn't on screen (app backgrounded, another screen on
             // top): the emulator keeps the state, and the view repaints on its own when shown again.
             if (isShown) {
@@ -572,7 +619,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         }
 
         if (scrollOffset == 0 && snap.cursorVisible && cursorBlinkOn) {
-            val cx = snap.cursorCol * cellWidth
+            val cx = minOf(snap.cursorCol, snap.cols - 1) * cellWidth
             val cy = (snap.cursorRow * cellHeight).roundToInt().toFloat()
             val cyBottom = ((snap.cursorRow + 1) * cellHeight).roundToInt().toFloat()
             paint.color = TerminalColors.CURSOR
@@ -772,7 +819,8 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
                     } else {
                         if (deltaRows > 0) "\u001B[A" else "\u001B[B"
                     }
-                    repeat(min(abs(deltaRows), 40)) { send(seq.toByteArray(Charsets.UTF_8)) }
+                    // One write for the whole drag, like the mouse path above.
+                    send(seq.repeat(min(abs(deltaRows), 40)).toByteArray(Charsets.UTF_8))
                 }
                 return true
             }
@@ -1193,6 +1241,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
     fun send(bytes: ByteArray) {
         lastInputMs = SystemClock.uptimeMillis()
         scrollOffset = 0
+        if (!blinkArmed) post { kickBlink() }
         onInput?.invoke(bytes)
     }
 
@@ -1268,6 +1317,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         private const val PASTE_HINT_CHARS = 200_000
         /** After a keystroke, output repaints are not rate-capped for this long (it is the echo). */
         private const val INTERACTIVE_WINDOW_MS = 400L
+        private const val BLINK_IDLE_STOP_MS = 10_000L
 
         /** How long applyGridSize() waits for the pixel size to stop changing before actually
          *  resizing the emulator and the PTY — covers a pinch gesture's continuous stream of calls

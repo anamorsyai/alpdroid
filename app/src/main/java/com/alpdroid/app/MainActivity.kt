@@ -302,6 +302,16 @@ class MainActivity : Activity() {
             .show()
     }
 
+    override fun onStart() {
+        super.onStart()
+        (application as AlpineTermApp).resourceManager.appVisible = true
+    }
+
+    override fun onStop() {
+        super.onStop()
+        (application as AlpineTermApp).resourceManager.appVisible = false
+    }
+
     override fun onResume() {
         super.onResume()
         updateStorageBanner()
@@ -822,7 +832,10 @@ class MainActivity : Activity() {
                 text = "Adapt to heat, battery and memory"
                 setTextColor(0xFFD4D4D4.toInt())
                 isChecked = settingsStore.resourceManagerEnabled
-                setOnCheckedChangeListener { _, checked -> settingsStore.resourceManagerEnabled = checked }
+                setOnCheckedChangeListener { _, checked ->
+                    settingsStore.resourceManagerEnabled = checked
+                    (application as AlpineTermApp).resourceManager.onSettingsChanged()
+                }
             },
         )
         panel.addView(
@@ -2933,7 +2946,15 @@ class MainActivity : Activity() {
 
     /** A BEL byte (0x07) — a shell/build/agent signaling it wants attention. Fires from the
      *  pty-reader thread (via TerminalEmulator.feed), so this hops to the UI thread itself. */
+    private val lastBellAtMs = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+
     private fun onTerminalBell(tabId: Int) {
+        // The emulator coalesces bells per 4 KB read, so `yes $'\a'` still arrives hundreds of times a
+        // second — each would post to the UI thread, buzz, play a tone and raise a notification.
+        val now = android.os.SystemClock.uptimeMillis()
+        val last = lastBellAtMs[tabId] ?: 0L
+        if (now - last < BELL_MIN_INTERVAL_MS) return
+        lastBellAtMs[tabId] = now
         mainHandler.post {
             // Vibrate follows the sound switch: silent-mode users who never opted in must not
             // get buzzed by every background BEL.
@@ -4570,6 +4591,7 @@ class MainActivity : Activity() {
         private const val BACKUP_CREATE_REQUEST_CODE = 2001
         private const val RESTORE_OPEN_REQUEST_CODE = 2002
         private const val BELL_CHANNEL_ID = "alpineterm_bell"
+        private const val BELL_MIN_INTERVAL_MS = 1500L
         private const val BELL_NOTIFICATION_BASE_ID = 2000
     }
 }

@@ -37,7 +37,15 @@ class ResourceManager(private val app: AlpineTermApp) {
     private var lastRender: RenderStats.Snapshot? = null
     private var lastRenderAtMs = 0L
 
-    private val enabled: Boolean get() = runCatching { SettingsStore(app).resourceManagerEnabled }.getOrDefault(true)
+    /** Cached: [frameIntervalMs] is read on every reader chunk, and building a SettingsStore + reading
+     *  SharedPreferences each time was pure overhead. Refreshed by every tick and by [onSettingsChanged]. */
+    @Volatile private var enabledCache = true
+    private val enabled: Boolean get() = enabledCache
+
+    private fun refreshEnabled() { enabledCache = runCatching { SettingsStore(app).resourceManagerEnabled }.getOrDefault(true) }
+
+    /** Called when the Smart resource manager switch changes. */
+    fun onSettingsChanged() = refreshEnabled()
 
     /** What TerminalView should wait between output-driven repaints. */
     val frameIntervalMs: Long get() = if (enabled) mode.frameIntervalMs else UNCAPPED_FRAME_MS
@@ -48,7 +56,12 @@ class ResourceManager(private val app: AlpineTermApp) {
     private val detectors = HashMap<Int, ResourcePolicy.RunawayDetector>()
     private val scheduler = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "alpdroid-resources").apply { isDaemon = true } }
 
+    /** False while the app is in the background: ticks then skip the mode/render bookkeeping that only
+     *  matters for what is on screen (the runaway-session check still runs). */
+    @Volatile var appVisible = true
+
     fun start() {
+        refreshEnabled()
         scheduler.scheduleWithFixedDelay({ runCatching { tick() } }, 5, TICK_SECONDS, TimeUnit.SECONDS)
         if (Build.VERSION.SDK_INT >= 29) {
             runCatching {
@@ -98,8 +111,11 @@ class ResourceManager(private val app: AlpineTermApp) {
     }
 
     private fun tick() {
-        recomputeMode()
-        updateRenderLine()
+        refreshEnabled()
+        if (appVisible) {
+            recomputeMode()
+            updateRenderLine()
+        }
         appRssBytes = readText("/proc/self/statm")?.let { ResourcePolicy.parseStatmRssBytes(it) } ?: 0L
         val tabs = app.tabs.toList()
         if (tabs.isEmpty()) { usage = emptyList(); samples.clear(); detectors.clear(); return }
@@ -153,12 +169,17 @@ class ResourceManager(private val app: AlpineTermApp) {
     /** Called from [AlpineTermApp.onTrimMemory]: Android is short on memory — release what is cheapest
      *  to lose first (old scrollback of tabs nobody is looking at). */
     fun onTrimMemory(level: Int) {
-        if (!enabled || level < TRIM_RUNNING_LOW) return
+        if (!enabled) return
         val active = app.tabs.getOrNull(app.activeTabIndex)
+        // Levels: 10/15 = running low/critical, 20 = UI hidden (every Home press — NOT memory pressure,
+        // must not cost the user their history), 40/60/80 = our process is cached and may be killed.
         val (idleKeep, activeKeep) = when {
-            level >= TRIM_BACKGROUND -> 100 to 500
+            level >= TRIM_COMPLETE_ISH -> 100 to 500
+            level >= TRIM_BACKGROUND -> 300 to Int.MAX_VALUE
+            level >= TRIM_UI_HIDDEN -> return
             level >= TRIM_RUNNING_CRITICAL -> 100 to 500
-            else -> 300 to Int.MAX_VALUE
+            level >= TRIM_RUNNING_LOW -> 300 to Int.MAX_VALUE
+            else -> return
         }
         var freed = 0
         for (tab in app.tabs) freed += tab.emulator.trimScrollback(if (tab === active) activeKeep else idleKeep)
@@ -190,6 +211,8 @@ class ResourceManager(private val app: AlpineTermApp) {
         // android.content.ComponentCallbacks2.TRIM_MEMORY_*
         const val TRIM_RUNNING_LOW = 10
         const val TRIM_RUNNING_CRITICAL = 15
+        const val TRIM_UI_HIDDEN = 20
         const val TRIM_BACKGROUND = 40
+        const val TRIM_COMPLETE_ISH = 60
     }
 }

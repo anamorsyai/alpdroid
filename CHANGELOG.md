@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.7.51 — terminal fixes, cooler idle, efficiency-cores option
+
+- Fixed: pressing Home used to cut every tab's history to 500/100 lines (the memory trimmer treated
+  "UI hidden" as memory pressure). History is now only trimmed when Android is really short on memory.
+- Fixed: after a line filled the screen width exactly, `ESC[1K` / `ESC[1J` (ncurses) threw an exception that
+  dropped the rest of the output and left the parser stuck, swallowing the next character.
+- Fixed: lines scrolled inside vim/less/htop or a partial scroll region no longer fill the shell's scrollback.
+- Fixed: colon-style SGR (`4:3` curly underline, `38:2::r:g:b`) no longer resets all attributes; underline colour
+  (`58;…`) is parsed instead of being misread as bold/reverse.
+- Added: DCS/APC/PM strings are swallowed instead of printed; REP (`CSI b`) and primary device attributes
+  (`CSI c`) are implemented; setting a scroll region homes the cursor.
+- Fixed: copying a selection across soft-wrapped rows no longer inserts newlines and padding spaces.
+- Cooler: the cursor stops blinking after 10 s of inactivity (each blink repainted the whole view); output
+  produced while the app is in the background no longer wakes the UI thread; the bell is rate-limited
+  (a `yes $'\a'` flood no longer vibrates, plays tones and raises notifications hundreds of times a second);
+  fewer allocations when scrolling (the evicted history row is reused); the pty bridge reads up to 32 KB
+  per wakeup; the resource manager's settings check is cached and its bookkeeping skipped in the background.
+- Fixed: a rare lost "child exited" notification in the pty bridge could keep a tab open after its shell ended.
+- New (Settings → Sessions & Background): **Run sessions on efficiency cores** pins new tabs to the phone's
+  low-power cores, so a program that keeps a core busy while idle runs much cooler. Off by default.
+
 ## 1.7.50 — prompt says alpdroid
 
 - The shell prompt now reads `root@alpdroid` instead of `root@alpineterm`. It is rewritten at every session

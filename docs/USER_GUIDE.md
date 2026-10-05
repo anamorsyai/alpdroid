@@ -151,6 +151,7 @@ Settings → Sessions & Background → Smart resource manager (on by default) ke
 - **Usage**: the same screen shows each session's CPU and RAM, the app's memory, and the terminal's frames per second, draw time and skipped repaints (tap Refresh usage).
 - **Typing stays instant**: for 0.4 s after a keystroke the repaint cap is lifted, and a repaint that would draw the same frame again is skipped.
 - **Faster process tracing (experimental, off by default)**: lets proot trace only the system calls it needs instead of every one. Programs like opencode, node and python then use much less CPU and run cooler. Applies to new tabs. If `apk` or another tool fails with "Permission denied"/EPERM in a new tab, turn it off.
+- **Run sessions on efficiency cores (off by default)**: pins new tabs to the phone's low-power cores. A program that keeps a core busy while idle (some CLIs do) then runs much cooler and drains less battery; heavy work such as builds is slower. Applies to new tabs.
 
 ## 17. Home-screen widget
 

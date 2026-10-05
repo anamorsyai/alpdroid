@@ -270,7 +270,7 @@ static int write_master_all(int master, const char *data, ssize_t len) {
 static int relay_loop(int master, pid_t child, int self_pipe_read_fd, int *out_status) {
     struct pollfd fds[4];
     int stdin_open = 1;
-    char buf[4096];
+    char buf[32768];
 
     for (;;) {
         int n = 0;
@@ -307,7 +307,15 @@ static int relay_loop(int master, pid_t child, int self_pipe_read_fd, int *out_s
         if (fds[master_idx].revents & (POLLIN | POLLHUP | POLLERR)) {
             // Non-blocking master: 0 means "nothing ready after all", -1 is master EOF
             // (every process holding the pty is gone) or a dead stdout.
-            if (pump_master(master, buf, sizeof(buf)) < 0) break;
+            // Bounded drain: under heavy output one poll() + read() per chunk was three syscalls per
+            // 4 KB; keep reading while data is immediately available, but never starve stdin/control.
+            int pumped = 0, dead = 0;
+            for (int i = 0; i < 8; i++) {
+                pumped = pump_master(master, buf, sizeof(buf));
+                if (pumped < 0) { dead = 1; break; }
+                if (pumped == 0) break;
+            }
+            if (dead) break;
         }
 
         if (fds[sigchld_idx].revents & POLLIN) {
@@ -315,6 +323,9 @@ static int relay_loop(int master, pid_t child, int self_pipe_read_fd, int *out_s
             while (read(self_pipe_read_fd, drain, sizeof(drain)) > 0) {} // clear the wakeup byte(s)
         }
         if (child_exited) {
+            // Cleared *before* waitpid: a SIGCHLD landing between waitpid() and a later clear used to
+            // be lost (flag reset after the fact), leaving the exit unnoticed until master EOF.
+            child_exited = 0;
             int status = 0;
             pid_t reaped = waitpid(child, &status, WNOHANG);
             if (reaped == child) {
@@ -335,7 +346,6 @@ static int relay_loop(int master, pid_t child, int self_pipe_read_fd, int *out_s
             }
             // SIGCHLD for some other reaped descendant (a background server forking off its own
             // children, most likely) — not our shell, so the session isn't actually over yet.
-            child_exited = 0;
         }
 
         if (stdin_idx >= 0 && (fds[stdin_idx].revents & (POLLIN | POLLHUP | POLLERR))) {

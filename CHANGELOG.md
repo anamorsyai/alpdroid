@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.57 — shortcuts instead of built-in launcher keys
+
+- The key row no longer has built-in "alphacode" and "claude" buttons: they are ordinary custom shortcuts now
+  (Settings → Display → Custom shortcuts), so you can edit or delete them. Existing installs keep both buttons
+  once, as shortcuts. The `claude` shortcut no longer restarts the old local proxy first (that shim is gone).
+
 ## 1.7.56 — say why a session ended
 
 - New: when Android killed the previous AlpDroid process (you come back to the splash screen and an empty tab, and

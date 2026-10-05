@@ -4058,6 +4058,7 @@ class MainActivity : Activity() {
     private fun buildExtraKeysRow(row: LinearLayout) {
         row.removeAllViews()
         settingsStore.migrateLegacyAlphacodeShortcut()
+        settingsStore.migrateEmbeddedKeysToShortcuts()
         fun keyBackground() = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = dp(12).toFloat()
@@ -4174,30 +4175,11 @@ class MainActivity : Activity() {
         addKey("/") { terminalView.sendControlAware("/") }
         addKey("-") { terminalView.sendControlAware("-") }
         addKey("|") { terminalView.sendControlAware("|") }
-        // User-defined shortcuts (Settings -> Display -> Custom shortcuts) — a literal command
-        // string rather than a control character, so it goes straight to the active session
-        // exactly like typing it, not through sendControlAware()'s CTRL/ALT-arming logic.
-        // Built-in launchers for the two coding CLIs (see Quick install): a plain `alphacode` /
-        // `claude` run — alphacode's own subcommands (monitor etc.) are typed by hand or saved as
-        // a custom shortcut.
-        addKey("alphacode") { runShortcutCommand("alphacode\n") }
-        // proot's fake root (-0) makes Claude Code's cross-session-messaging uid check fail
-        // ("Cross-session messaging is off ... without a uid mapping"); an explicit per-tab socket
-        // path (unique via the shell's $$) under a directory we own avoids that check. Claude Code
-        // insists that directory is private (mode 0700), and `mkdir -p` leaves an existing one as is.
-        // If a local Anthropic-compatible proxy is set up (e.g. a hunting-rig style shim on
-        // 127.0.0.1:9086 that `claude` is pointed at via ANTHROPIC_BASE_URL in
-        // ~/.claude/settings.json) and it isn't answering — the proxy is a plain background
-        // process, not a service, so it doesn't survive the guest restarting or the app being
-        // killed — restart it via `oc -r` before launching claude, so "no connection" from a
-        // dead proxy doesn't look like a claude/network problem. A no-op when no such setup
-        // exists (no `oc` on PATH).
-        addKey("claude") { runShortcutCommand(
-            "mkdir -p /root/.claude/run && chmod 700 /root/.claude/run; " +
-                "if command -v oc >/dev/null 2>&1 && ! curl -s -o /dev/null -m 3 http://127.0.0.1:9086/v1/models 2>/dev/null; then " +
-                "echo 'local proxy not responding — restarting it (oc -r)...'; oc -r || true; fi; " +
-                "claude --messaging-socket-path /root/.claude/run/msg-\$\$.sock\n",
-        ) }
+        // Everything after the fixed keys is a user-defined shortcut (Settings -> Display -> Custom
+        // shortcuts): a literal command string rather than a control character, so it goes straight to
+        // the active session exactly like typing it, not through sendControlAware()'s CTRL/ALT logic.
+        // (The old built-in "alphacode" and "claude" keys are ordinary shortcuts now; see
+        // SettingsStore.migrateEmbeddedKeysToShortcuts.)
         settingsStore.customSnippets.forEach { (label, cmd) ->
             addKey(label) { runShortcutCommand(cmd) }
         }

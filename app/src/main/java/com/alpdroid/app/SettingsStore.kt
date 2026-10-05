@@ -207,6 +207,23 @@ class SettingsStore(context: Context) {
         prefs.edit().putBoolean(KEY_SNIPPET_MIG_ALPHACODE, true).apply()
     }
 
+    /** One-time: the row's built-in "alphacode" and "claude" keys were removed — those launchers are ordinary
+     *  custom shortcuts now (Settings → Display → Custom shortcuts), so they can be edited or deleted. Existing
+     *  users keep their buttons: both are added once as shortcuts unless a shortcut with that label (any case)
+     *  already exists. The local-proxy restart that the old `claude` key ran first is gone with the shim. */
+    fun migrateEmbeddedKeysToShortcuts() {
+        if (prefs.getBoolean(KEY_SNIPPET_MIG_EMBEDDED, false)) return
+        val current = customSnippets
+        val additions = listOf(
+            "alphacode" to "alphacode\n",
+            // proot's fake root breaks Claude Code's cross-session-messaging uid check; an explicit per-tab socket
+            // path in a private (0700) directory avoids it.
+            "claude" to "mkdir -p /root/.claude/run && chmod 700 /root/.claude/run; claude --messaging-socket-path /root/.claude/run/msg-\$\$.sock\n",
+        ).filter { (label, _) -> current.none { it.first.trim().equals(label, ignoreCase = true) } }
+        if (additions.isNotEmpty()) customSnippets = current + additions
+        prefs.edit().putBoolean(KEY_SNIPPET_MIG_EMBEDDED, true).apply()
+    }
+
     companion object {
         val SCROLLBACK_OPTIONS = listOf(500, 1000, 2000, 5000)
         private const val KEY_SCROLLBACK = "scrollback_lines"
@@ -215,6 +232,7 @@ class SettingsStore(context: Context) {
         private const val KEY_EFFICIENCY_CORES = "efficiency_cores"
         private const val KEY_SMART_BALANCING = "smart_balancing"
         private const val KEY_SNIPPET_MIG_ALPHACODE = "snippet_mig_alphacode_monitor_v2"
+        private const val KEY_SNIPPET_MIG_EMBEDDED = "snippet_mig_embedded_keys_v1"
         private const val KEY_THEME = "theme"
         private const val KEY_FONT_SIZE = "font_size_sp"
         private const val KEY_EXTRA_KEYS = "show_extra_keys"

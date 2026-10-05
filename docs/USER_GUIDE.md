@@ -41,7 +41,7 @@ Tabs are temporary sessions: running programs stop when the app is closed or upd
 
 ## 4. Keyboard & keys
 
-The row above the keyboard has keyboard toggle, search, ESC, TAB, CTRL, ALT, arrows, HOME/END, `/`, `-`, `|`, and one-tap launchers for **`alphacode`** and **`claude`**. Tap CTRL/ALT once, then the next key (sticky modifiers). Hide the row in Settings → Display if unneeded. Add your own one-tap buttons there (e.g. `git status`) in the same screen.
+The row above the keyboard has keyboard toggle, search, ESC, TAB, CTRL, ALT, arrows, HOME/END, `/`, `-`, `|`, and your own one-tap shortcuts at the end (existing installs keep `alphacode` and `claude` as ordinary shortcuts you can edit or delete). Tap CTRL/ALT once, then the next key (sticky modifiers). Hide the row in Settings → Display if unneeded. Add your own one-tap buttons there (e.g. `git status`) in the same screen.
 
 ## 5. Display & themes
 

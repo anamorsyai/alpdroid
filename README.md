@@ -36,7 +36,7 @@ terminal built from scratch for touch.
 | **Real Linux, no root — and tiny** | Alpine runs in userspace through `proot`. A ~2.4 MB app plus a ~3-4 MB base-system download; under 15 MB installed. |
 | **A terminal made for phones** | Multi-tab, own VT100/xterm emulator, truecolor, mouse support for TUIs, pinch-zoom, ligatures, an extra-keys row (ESC, TAB, CTRL, ALT, arrows, and your own shortcuts). |
 | **One-tap servers** | Start an **SSH server** to log in from your laptop, or the **opencode web** UI for your LAN — each with a generated password. |
-| **Built for coding agents** | One-tap installs for opencode, Claude Code and alphacode, keys to launch them, and `alpctl` — a token-guarded API so agents can use the app. |
+| **Built for coding agents** | One-tap installs for opencode, Claude Code and alphacode, shortcut buttons to launch them, and `alpctl` — a token-guarded API so agents can use the app. |
 | **Cool and light** | A smart resource manager caps repaint rate (lower when the phone is hot or in battery saver), trims memory under pressure, and closes frozen sessions. |
 | **Stays alive in the background** | A foreground service, optional wake lock and Wi-Fi lock keep long builds and servers running with the screen off. |
 | **Your files, both sides** | Built-in file browser for Android and Alpine storage; `/sdcard` and USB/SD drives are visible inside Linux. |
@@ -89,7 +89,7 @@ See the full **[User guide](docs/USER_GUIDE.md)** — also available inside the 
 - Independent tabs with rename, close and save-screen; tabs survive backgrounding.
 - Scrollback, 256-color and truecolor, bracketed paste, reflow on resize, mouse reporting, search.
 - Themes, Fira Code / JetBrains Mono, adjustable size, optional ligatures and bell sound.
-- Custom one-tap shortcut buttons, plus built-in `alphacode` and `claude` launchers.
+- Custom one-tap shortcut buttons you define in Settings (e.g. launchers for `alphacode` or `claude`).
 </details>
 
 <details>

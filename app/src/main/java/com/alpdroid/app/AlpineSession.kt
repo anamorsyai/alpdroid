@@ -67,6 +67,7 @@ object AlpineSession {
         writeApkHostsIPv4Only(root)
         writeShellProfile(root)
         writeAgentFiles(context, root)
+        writeAlsaNullConfig(root)
 
         // Shared across tabs (one common guest /tmp, like real Alpine sessions), unlike the
         // per-session proot scratch dir below.
@@ -194,6 +195,7 @@ object AlpineSession {
         val root = AlpineRootfs.rootDir(context)
         writeResolvConf(context, root)
         writeAgentFiles(context, root)
+        writeAlsaNullConfig(root)
         val guestTmp = File(context.cacheDir, "guest-tmp").apply { mkdirs() }
         val prootScratch = File(context.cacheDir, "proot-scratch-plugin-${System.nanoTime()}").apply { mkdirs() }
         val storageRoot = StorageAccess.sharedStorageRoot()
@@ -222,6 +224,14 @@ object AlpineSession {
 
     /** Env vars a plugin/shortcut caller must never override: pointing these at attacker
      *  files would hijack proot's own loader/libraries. */
+    private const val ALSA_MARKER = "# alpdroid: null sound device"
+    private const val ALSA_NULL_CONF = ALSA_MARKER + """
+
+# No sound hardware under proot: make audio calls succeed silently instead of printing ALSA errors.
+pcm.!default { type null }
+ctl.!default { type null }
+"""
+
     private val PROTECTED_ENV = setOf("LD_LIBRARY_PATH", "PROOT_LOADER", "PROOT_TMP_DIR", "PROOT_NO_SECCOMP", "SSL_CERT_FILE")
 
     /**
@@ -358,6 +368,19 @@ object AlpineSession {
      * failing outright.
      */
     /** Writes only when content differs — session start rewrote these on every tab open. */
+    /** There is no sound hardware under proot. Without a default device, any program that tries to play
+     *  a sound (opencode's notification beeps, media players) fills the terminal with pages of
+     *  "ALSA lib ... cannot find card '0'" errors — noise that scrolls the screen, garbles full-screen
+     *  programs, and costs CPU and battery to render. A null default device makes those calls succeed
+     *  silently. A pre-existing /etc/asound.conf the user wrote is left alone. */
+    private fun writeAlsaNullConfig(root: File) {
+        runCatching {
+            val conf = File(root, "etc/asound.conf")
+            if (conf.isFile && runCatching { conf.readText() }.getOrNull()?.startsWith(ALSA_MARKER) != true) return
+            writeIfDifferent(conf, ALSA_NULL_CONF)
+        }
+    }
+
     private fun writeIfDifferent(file: File, text: String): Boolean {
         if (file.isFile && runCatching { file.readText() }.getOrNull() == text) return false
         file.parentFile?.mkdirs()

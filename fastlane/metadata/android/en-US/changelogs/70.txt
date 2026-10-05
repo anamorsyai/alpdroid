@@ -1,0 +1,2 @@
+No more ALSA error floods from programs that try to play sounds
+Less noise and less CPU when running opencode

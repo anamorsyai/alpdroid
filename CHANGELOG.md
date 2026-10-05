@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.49 — no more ALSA error floods
+
+- Programs that try to play a sound (opencode's notification beeps, media players) used to fill the
+  terminal with pages of `ALSA lib ... cannot find card '0'` errors, because there is no sound hardware
+  under proot. The noise scrolled the screen, garbled full-screen programs, and cost CPU and battery to
+  render. Alpine now gets a `/etc/asound.conf` with a null default device (written at session start;
+  an `asound.conf` you wrote yourself is left alone), so those calls succeed silently.
+
 ## 1.7.48 — snappier typing, fewer repaints
 
 - Typing latency: the 1.7.47 repaint cap could delay the echo of a keystroke inside a busy full-screen

@@ -162,6 +162,7 @@ Add the AlpDroid widget → tap jumps straight into a new session.
 - opencode won't quit: `opencode service stop`, then `exit`.
 - Drive missing: new tab after plugging in; check all-files access; FAT32/exFAT only.
 - Empty Wi-Fi list: location permission + Location on.
+- Pages of `ALSA lib ... cannot find card` errors: fixed in 1.7.49 (a null sound device is configured). On older versions create `/etc/asound.conf` with `pcm.!default { type null }` and `ctl.!default { type null }`.
 - Slow builds: Linux runs through a compatibility layer, so heavy jobs take longer than on a computer.
 - SSH or a server stops with the screen off: see [Sessions & keep-alive](#16-sessions--keep-alive) (battery exemption, wake lock).
 - `apk add` prints errors but the tool installed: mirrors can hiccup even when packages land. Check with `command -v <tool>`; if it's missing, run "Update package index" and retry.

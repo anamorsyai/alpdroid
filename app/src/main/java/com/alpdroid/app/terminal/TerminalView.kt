@@ -698,7 +698,15 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         val y = (screenRow * cellHeight).roundToInt().toFloat()
         val yBottom = ((screenRow + 1) * cellHeight).roundToInt().toFloat()
         if (rowCharBuf.size < row.size) rowCharBuf = CharArray(row.size)
-        for (i in row.indices) rowCharBuf[i] = row[i].ch
+        var hasRtl = false
+        for (i in row.indices) {
+            val ch = row[i].ch
+            rowCharBuf[i] = ch
+            if (ch >= '\u0590' && isRtlChar(ch)) hasRtl = true
+        }
+        // Rows with Arabic/Hebrew take the bidi path (reordering + joined letter shapes); every other
+        // row — nearly all of them — keeps the plain fixed-cell path below at zero extra cost.
+        if (hasRtl) { drawRowBidi(canvas, row, y, yBottom); return }
         var runStart = 0
         while (runStart < row.size) {
             val cell = row[runStart]
@@ -739,6 +747,93 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             @Suppress("DEPRECATION")
             canvas.drawPosText(rowCharBuf, runStart, runLen, runPosBuf, paint)
             runStart = runEnd
+        }
+    }
+
+    private fun isRtlChar(c: Char): Boolean =
+        c in '\u0590'..'\u08FF' || c in '\uFB1D'..'\uFDFF' || c in '\uFE70'..'\uFEFF'
+
+    /**
+     * A row containing right-to-left text (Arabic, Hebrew). The grid stores characters in logical
+     * order, one per cell; drawing them cell-by-cell left to right showed Arabic reversed and with
+     * every letter in its isolated form. Here the row is split into directional runs (base direction
+     * LTR, so a shell prompt stays on the left): left-to-right runs keep the exact per-cell layout,
+     * right-to-left runs are shaped and ordered by the platform text engine and fitted into the
+     * columns they occupy. Backgrounds, the cursor and selection stay on logical columns.
+     */
+    private fun drawRowBidi(canvas: Canvas, row: Array<Cell>, y: Float, yBottom: Float) {
+        val cw = cellWidth
+        val n = row.size
+        var runStart = 0
+        while (runStart < n) {
+            val cell = row[runStart]
+            var runEnd = runStart + 1
+            while (runEnd < n && sameStyle(row[runEnd], cell)) runEnd++
+            val bg = if (cell.reverse) cell.fg else cell.bg
+            if (bg != TerminalColors.DEFAULT_BG) {
+                paint.color = bg
+                canvas.drawRect(runStart * cw, y, runEnd * cw, yBottom, paint)
+            }
+            runStart = runEnd
+        }
+        val bidi = java.text.Bidi(String(rowCharBuf, 0, n), java.text.Bidi.DIRECTION_LEFT_TO_RIGHT)
+        for (r in 0 until bidi.runCount) {
+            val s = bidi.getRunStart(r)
+            val e = bidi.getRunLimit(r)
+            if ((bidi.getRunLevel(r) and 1) == 1) drawRtlRun(canvas, row, s, e, y) else drawTextCells(canvas, row, s, e, y)
+        }
+    }
+
+    /** Per-cell text for columns [from, to): the same one-glyph-per-cell drawing as the plain path. */
+    private fun drawTextCells(canvas: Canvas, row: Array<Cell>, from: Int, to: Int, y: Float) {
+        val cw = cellWidth
+        var runStart = from
+        while (runStart < to) {
+            val cell = row[runStart]
+            var runEnd = runStart + 1
+            while (runEnd < to && sameStyle(row[runEnd], cell)) runEnd++
+            var blank = !cell.underline
+            if (blank) for (i in runStart until runEnd) if (rowCharBuf[i] != ' ') { blank = false; break }
+            if (!blank) {
+                paint.color = if (cell.reverse) cell.bg else cell.fg
+                paint.isFakeBoldText = cell.bold
+                paint.isUnderlineText = cell.underline
+                val runLen = runEnd - runStart
+                if (runPosBuf.size < runLen * 2) runPosBuf = FloatArray(runLen * 2)
+                for (i in 0 until runLen) {
+                    runPosBuf[i * 2] = (runStart + i) * cw
+                    runPosBuf[i * 2 + 1] = y + baselineOffset
+                }
+                @Suppress("DEPRECATION")
+                canvas.drawPosText(rowCharBuf, runStart, runLen, runPosBuf, paint)
+            }
+            runStart = runEnd
+        }
+    }
+
+    /** One right-to-left run over columns [from, to): shaped (joined letter forms) and visually
+     *  ordered by the platform, right-aligned in its columns, squeezed horizontally if wider. */
+    private fun drawRtlRun(canvas: Canvas, row: Array<Cell>, from: Int, to: Int, y: Float) {
+        val len = to - from
+        if (len <= 0) return
+        var allBlank = true
+        for (i in from until to) if (rowCharBuf[i] != ' ') { allBlank = false; break }
+        if (allBlank) return
+        val cell = row[from]
+        paint.color = if (cell.reverse) cell.bg else cell.fg
+        paint.isFakeBoldText = cell.bold
+        paint.isUnderlineText = cell.underline
+        val left = from * cellWidth
+        val target = len * cellWidth
+        val baseline = y + baselineOffset
+        val advance = paint.getRunAdvance(rowCharBuf, from, to, from, to, true, to)
+        if (advance > target && advance > 0f) {
+            canvas.save()
+            canvas.scale(target / advance, 1f, left, baseline)
+            canvas.drawTextRun(rowCharBuf, from, len, from, len, left, baseline, true, paint)
+            canvas.restore()
+        } else {
+            canvas.drawTextRun(rowCharBuf, from, len, from, len, left + (target - advance), baseline, true, paint)
         }
     }
 

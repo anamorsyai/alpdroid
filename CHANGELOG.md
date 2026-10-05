@@ -18,6 +18,9 @@
   fewer allocations when scrolling (the evicted history row is reused); the pty bridge reads up to 32 KB
   per wakeup; the resource manager's settings check is cached and its bookkeeping skipped in the background.
 - Fixed: a rare lost "child exited" notification in the pty bridge could keep a tab open after its shell ended.
+- Arabic and Hebrew text is now displayed in the right direction with joined letter shapes (rows containing
+  right-to-left text are laid out with the bidirectional algorithm; other rows are unchanged). The cursor and
+  selection still follow logical (typing-order) columns.
 - New (Settings → Sessions & Background): **Run sessions on efficiency cores** pins new tabs to the phone's
   low-power cores, so a program that keeps a core busy while idle runs much cooler. Off by default.
 

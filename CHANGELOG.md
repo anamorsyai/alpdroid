@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.58 — Claude Code's screen no longer garbles
+
+- Fixed: full-screen terminal apps that redraw in place with the cursor-next-line / cursor-previous-line sequences
+  (`CSI n E` / `CSI n F`) — Claude Code's trust prompt and input box among them — were drawn on top of each other:
+  pressing a key left a duplicate of the dialog above, the cursor ended up on the wrong row and typing seemed to do
+  nothing. Those sequences, plus horizontal/vertical relative positioning (`` CSI ` ``, `CSI a`, `CSI e`) and back-tab
+  (`CSI Z`), are now implemented.
+
 ## 1.7.57 — shortcuts instead of built-in launcher keys
 
 - The key row no longer has built-in "alphacode" and "claude" buttons: they are ordinary custom shortcuts now

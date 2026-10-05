@@ -307,4 +307,33 @@ class TerminalEmulatorTest {
         assertTrue(joined, joined.contains("server password abcdefghijklmnop"))
         assertTrue(joined, joined.endsWith("next"))
     }
+
+    /** Ink / Claude Code style redraw: erase the previous frame with ESC[2K + ESC[1A per line, then ESC[G, and print the new frame. */
+    private fun inkErase(lines: Int): String = buildString {
+        for (i in 0 until lines) { append("\u001B[2K"); if (i < lines - 1) append("\u001B[1A") }
+        append("\u001B[G")
+    }
+
+    @Test fun inkStyleRedrawLeavesNoLeftoverLines() {
+        val cols = 40
+        val t = TerminalEmulator(20, cols)
+        t.type("root@alpdroid:~# claude\r\n")
+        val full = "─".repeat(cols)                   // a full-width border: leaves the cursor wrap-pending
+        val frame1 = listOf(full, "Accessing workspace:", "", "/root", "", "  > No, exit", "    Yes, I trust this folder", "Enter to confirm")
+        val frame2 = listOf(full, "Accessing workspace:", "", "/root", "", "    No, exit", "  > Yes, I trust this folder", "Enter to confirm")
+        t.type(frame1.joinToString("\r\n") + "\r\n")
+        t.type(inkErase(frame1.size + 1) + frame2.joinToString("\r\n") + "\r\n")
+        val rows = (0 until 20).map { t.rowText(it) }.filter { it.isNotEmpty() }
+        assertEquals((listOf("root@alpdroid:~# claude") + frame2).filter { it.isNotEmpty() }, rows)
+    }
+
+    @Test fun cursorNextAndPreviousLineAndHorizontalPositioning() {
+        val t = TerminalEmulator(6, 20)
+        t.type("abc\u001B[2Edef")        // CNL: two lines down, column 1
+        assertEquals(2, t.cursorRow); assertEquals("def", t.rowText(2))
+        t.type("\u001B[1Fxyz")           // CPL: one line up, column 1
+        assertEquals("xyz", t.rowText(1))
+        t.type("\u001B[10`Q")            // HPA: column 10
+        assertEquals('Q', t.rowAt(1)[9].ch)
+    }
 }

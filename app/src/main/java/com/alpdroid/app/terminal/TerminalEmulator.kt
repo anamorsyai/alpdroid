@@ -885,7 +885,13 @@ class TerminalEmulator(
                 cursorRow = (p(0, 1) - 1).coerceIn(0, rows - 1)
                 cursorCol = (p(1, 1) - 1).coerceIn(0, cols - 1)
             }
-            'G' -> cursorCol = (p(0, 1) - 1).coerceIn(0, cols - 1)
+            'G', '`' -> cursorCol = (p(0, 1) - 1).coerceIn(0, cols - 1) // CHA / HPA
+            // CNL / CPL: down / up N lines and to column 1 (TUIs use them to redraw in place).
+            'E' -> { cursorRow = min(bottomMargin, cursorRow + max(1, p(0, 1))); cursorCol = 0 }
+            'F' -> { cursorRow = max(topMargin, cursorRow - max(1, p(0, 1))); cursorCol = 0 }
+            'a' -> cursorCol = min(cols - 1, min(cursorCol, cols - 1) + max(1, p(0, 1))) // HPR
+            'e' -> cursorRow = min(rows - 1, cursorRow + max(1, p(0, 1)))               // VPR
+            'Z' -> repeat(max(1, p(0, 1))) { cursorCol = if (cursorCol <= 0) 0 else ((cursorCol - 1) / 8) * 8 } // CBT
             'd' -> cursorRow = (p(0, 1) - 1).coerceIn(0, rows - 1)
             'J' -> eraseInDisplay(p(0, 0))
             'K' -> eraseInLine(p(0, 0))

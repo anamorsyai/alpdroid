@@ -9,7 +9,8 @@
   longer waits forever for the shell after the terminal closes (bounded wait, then kill); and closing a tab, or a
   force stop, now removes the tab from the app a couple of seconds later even if the session never reports its end;
   closing a tab also kills detached descendants found before the shell dies, so a closed server tab no longer
-  leaves the server running and its port taken.
+  leaves the server running and its port taken. The notification's "Exit" action now also removes any session
+  that did not end by itself after a short grace period.
 
 ## 1.7.54 — opencode server button: browser + password again
 

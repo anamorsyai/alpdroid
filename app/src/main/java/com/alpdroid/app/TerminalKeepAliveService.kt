@@ -52,8 +52,22 @@ class TerminalKeepAliveService : Service() {
             // EOF right after and run the same tab.onExit → onTabExited() teardown a normal typed
             // "exit" already goes through, instead of this duplicating that bookkeeping itself and
             // risking getting it out of sync with the real one.
-            (application as AlpineTermApp).tabs.forEach { it.session.destroy() }
-            (application as AlpineTermApp).pluginJobs.apply { paused = true; stopAll() }
+            val app = application as AlpineTermApp
+            val doomed = app.tabs.toList()
+            doomed.forEach { it.session.destroy() }
+            app.pluginJobs.apply { paused = true; stopAll() }
+            // Normally the reader threads report EOF and the tabs disappear. A wedged session never
+            // does — "Exit" must still end it from the user's side, so after a short grace period any
+            // tab still listed is torn down through the same path (and dropped outright if no Activity
+            // is left to do it).
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                doomed.forEach { tab ->
+                    if (app.tabs.contains(tab)) {
+                        runCatching { tab.onExit?.invoke() }
+                        app.tabs.remove(tab)
+                    }
+                }
+            }, 2500)
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY

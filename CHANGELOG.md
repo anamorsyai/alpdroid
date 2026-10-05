@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.50 — prompt says alpdroid
+
+- The shell prompt now reads `root@alpdroid` instead of `root@alpineterm`. It is rewritten at every session
+  start, so existing installs pick it up in new tabs without reinstalling Alpine.
+
 ## 1.7.49 — no more ALSA error floods, no stale server tab names
 
 - Programs that try to play a sound (opencode's notification beeps, media players) used to fill the

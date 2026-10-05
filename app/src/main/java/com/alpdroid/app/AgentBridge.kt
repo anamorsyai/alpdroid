@@ -93,9 +93,12 @@ class AgentBridge(private val app: AlpineTermApp) {
         private val TAB_ROUTE = Regex("^/v1/tabs/(\\d+)/(send|screen|select|close)$")
     }
 
-    private fun readLine(input: InputStream): String? {
+    private fun readLine(input: InputStream, deadlineNs: Long): String? {
         val sb = StringBuilder()
         while (sb.length < 8192) {
+            // Absolute deadline for the whole header phase: the per-read socket timeout alone let a client that
+            // sends one byte every few seconds hold a handler thread (there are only 8) indefinitely.
+            if (System.nanoTime() > deadlineNs) return null
             val b = input.read()
             if (b == -1) return if (sb.isEmpty()) null else sb.toString()
             if (b == '\n'.code) return sb.toString().trimEnd('\r')
@@ -105,9 +108,11 @@ class AgentBridge(private val app: AlpineTermApp) {
     }
 
     private fun handle(sock: Socket) {
-        sock.soTimeout = 20_000
+        // Pre-auth phase: short per-read timeout and an absolute 8 s limit to deliver the request line and headers.
+        sock.soTimeout = 3_000
+        val headerDeadline = System.nanoTime() + 8_000_000_000L
         val input = BufferedInputStream(sock.getInputStream())
-        val requestLine = readLine(input) ?: return
+        val requestLine = readLine(input, headerDeadline) ?: return
         val parts = requestLine.split(" ")
         // Only what this tiny API speaks; anything else (a stray browser probe, garbage)
         // is dropped before it reaches routing or auth handling.
@@ -116,7 +121,7 @@ class AgentBridge(private val app: AlpineTermApp) {
         val headers = HashMap<String, String>()
         var headerCount = 0
         while (true) {
-            val line = readLine(input) ?: break
+            val line = readLine(input, headerDeadline) ?: return
             if (line.isEmpty()) break
             // Unbounded header count (only each line was length-capped) let one connection
             // pile up HashMap entries indefinitely.
@@ -133,6 +138,7 @@ class AgentBridge(private val app: AlpineTermApp) {
         if (token.isEmpty() || !MessageDigest.isEqual(supplied.toByteArray(), token.toByteArray())) {
             return respond(sock, 401, error("missing or wrong token"))
         }
+        sock.soTimeout = 20_000 // authenticated: allow the body and slower handlers
 
         val length = headers["content-length"]?.toIntOrNull() ?: 0
         if (length < 0 || length > 1_000_000) return respond(sock, 413, error("body too large"))

@@ -6,6 +6,26 @@
   (Settings → Display → Custom shortcuts), so you can edit or delete them. Existing installs keep both buttons
   once, as shortcuts. The `claude` shortcut no longer restarts the old local proxy first (that shim is gone).
 - Removed the "Claude hunting rig" Quick-install button (it built and started the local shim proxy, which is no longer needed).
+- Full review of the app; fixes:
+  - Plugins: approval now covers every file at any depth (a `state.json*` file in a subfolder used to be run but
+    never hashed or shown); symbolic links inside a plugin are never followed and make it unapprovable; deleting or
+    replacing a plugin no longer follows planted links; the approval dialog approves exactly what it showed (and
+    plugins too large to review in full cannot be approved); `.ad` import is atomic, clears old job switches and
+    validates field/job id collisions, path conflicts, text lengths and types; delete revokes the approval.
+  - The notification-permission request no longer loops after it is denied; the agent API's `tab close` no longer
+    recurses; `alpctl shortcut add` adds the Enter and refreshes the key row; "Open terminal here" actually types its
+    `cd`; commands are not typed into server tabs; widget launches no longer re-add a tab or pop the keyboard on
+    every resume; a tab whose shell ended while no screen was open is removed; Retry after a failed Alpine setup keeps
+    the server command; the two core-placement switches show what is really in effect.
+  - Bridge: the final output drain after the shell exits is capped, and the shell's leftover process group is killed;
+    a dropped CPU-affinity message is retried instead of assumed delivered; the agent API enforces an 8 s limit on
+    request headers (slow-client attack).
+  - The SSH server's password is no longer included in backups; `ssh` connect commands end options with `--`; the update
+    token is sent only to the real api.github.com host; files the app writes into Alpine refuse planted symlinks;
+    `alpctl` JSON escaping handles control characters.
+  - The Android 11+ "stopped by Android" dialog no longer stacks with the older guess or fires after a deliberate exit.
+  - Release workflow: publishing fails early when the tag doesn't match versionName / the CHANGELOG section / the
+    fastlane changelog.
 
 ## 1.7.56 — say why a session ended
 

@@ -421,13 +421,17 @@ static int relay_loop(int master, pid_t child, int self_pipe_read_fd, int *out_s
                 // because this loop is about to end on our own initiative rather than master's EOF.
                 // Bounded (200ms idle): a detached daemon holding the slave open with nothing to
                 // say used to wedge this blocking read() forever, pinning the relay process.
-                for (;;) {
+                // Capped (64 passes) and abandoned on SIGTERM: a leftover daemon that keeps writing to the pty
+                // would otherwise keep this loop — and the tab — alive for good.
+                for (int pass = 0; pass < 64 && !term_requested; pass++) {
                     struct pollfd pfd;
                     pfd.fd = master;
                     pfd.events = POLLIN;
                     if (poll(&pfd, 1, 200) <= 0) break;
                     if (pump_master(master, buf, sizeof(buf)) <= 0) break;
                 }
+                // The shell is gone: whatever is left in its session (a daemon it started) must not outlive the tab.
+                if (g_child > 0) kill(-g_child, SIGKILL);
                 *out_status = status;
                 return 1;
             }

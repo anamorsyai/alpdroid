@@ -82,4 +82,28 @@ class PluginPackageTest {
         assertEquals("hello-ad", parsed.id)
         assertTrue(parsed.files.containsKey("greet.sh"))
     }
+
+    @Test fun rejectsStateJsonAtAnyDepthAndDotSegments() {
+        rejects("""{"alpdroid":1,"id":"x","files":{"lib/state.json":"x"}}""", "not allowed")
+        rejects("""{"alpdroid":1,"id":"x","files":{"lib/state.json.sh":"x"}}""", "not allowed")
+        rejects("""{"alpdroid":1,"id":"x","files":{"a/./b.sh":"x"}}""", "not allowed")
+        rejects("""{"alpdroid":1,"id":"x","buttons":[{"id":"b","script":"state.json.sh"}],"files":{}}""", "not an allowed file name")
+    }
+
+    @Test fun rejectsAFileThatIsAlsoAFolder() {
+        rejects("""{"alpdroid":1,"id":"x","files":{"a":"x","a/b.sh":"y"}}""", "both a file and a folder")
+    }
+
+    @Test fun rejectsEnvNameCollisionsAndSharedJobIds() {
+        rejects("""{"alpdroid":1,"id":"x","fields":[{"id":"a-b"},{"id":"a_b"}]}""", "collides")
+        rejects("""{"alpdroid":1,"id":"x","buttons":[{"id":"j","script":"a.sh"}],"schedules":[{"id":"j","script":"a.sh"}],"files":{"a.sh":"x"}}""", "Duplicate button/schedule")
+    }
+
+    @Test fun rejectsBadTypesAndLengths() {
+        rejects("""{"alpdroid":1,"id":"x","title":5}""", "must be text")
+        rejects("""{"alpdroid":1,"id":"x","title":"${"t".repeat(121)}"}""", "too long")
+        rejects("""{"alpdroid":1,"id":"x","buttons":[{"id":"b","script":"a.sh","background":"yes"}],"files":{"a.sh":"x"}}""", "true or false")
+        rejects("""{"alpdroid":1,"id":"x","schedules":[{"id":"b","script":"a.sh","everyMinutes":0}],"files":{"a.sh":"x"}}""", "1 to 10080")
+        rejects("""{"alpdroid":1,"id":"x","fields":[{"id":"a","default":{"k":1}}]}""", "default")
+    }
 }

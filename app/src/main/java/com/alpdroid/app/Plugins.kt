@@ -21,7 +21,6 @@ object Plugins {
     data class Plugin(val id: String, val title: String, val description: String, val fields: List<Field>, val buttons: List<Button>, val schedules: List<Schedule>, val dir: File)
 
     private val ID_RE = Regex("^[a-z0-9_-]{1,40}$")
-    private val SAFE_SCRIPT = Regex("^[A-Za-z0-9_./-]{1,80}$")
 
     fun dir(context: Context) = File(AlpineRootfs.rootDir(context), "root/.alpdroid/plugins")
 
@@ -52,7 +51,7 @@ object Plugins {
             (0 until minOf(a.length(), 30)).mapNotNull { i ->
                 val b = a.optJSONObject(i) ?: return@mapNotNull null
                 val script = b.optString("script")
-                if (!ID_RE.matches(b.optString("id")) || !SAFE_SCRIPT.matches(script) || script.contains("..") || script.startsWith("/") || script.startsWith("logs/")) return@mapNotNull null
+                if (!ID_RE.matches(b.optString("id")) || !PluginPackage.isSafePath(script)) return@mapNotNull null
                 Button(b.optString("id"), b.optString("label", b.optString("id")).take(80), script, b.optBoolean("background", false))
             }
         }
@@ -60,7 +59,7 @@ object Plugins {
             (0 until minOf(a.length(), 20)).mapNotNull { i ->
                 val sc = a.optJSONObject(i) ?: return@mapNotNull null
                 val script = sc.optString("script")
-                if (!ID_RE.matches(sc.optString("id")) || !SAFE_SCRIPT.matches(script) || script.contains("..") || script.startsWith("/") || script.startsWith("logs/")) return@mapNotNull null
+                if (!ID_RE.matches(sc.optString("id")) || !PluginPackage.isSafePath(script)) return@mapNotNull null
                 Schedule(sc.optString("id"), sc.optString("label", sc.optString("id")).take(80), script, sc.optInt("everyMinutes", 60).coerceIn(1, 10080))
             }
         }
@@ -133,19 +132,40 @@ object Plugins {
         }
     }
 
+    /** Everything in a plugin folder that can run or be read by a script and therefore has to be reviewed and
+     *  hashed: all files except the top-level saved state (state.json, state.json.tmp) and the top-level logs/
+     *  folder. Symbolic links are never followed — a link could point at app-private files or loop forever —
+     *  and their presence makes the plugin unapprovable ([hasLinks]). */
+    private class Payload(val files: List<File>, val hasLinks: Boolean)
+
+    private fun payload(p: Plugin): Payload {
+        val files = ArrayList<File>()
+        var links = false
+        fun walk(dir: File, top: Boolean) {
+            val children = dir.listFiles() ?: return
+            for (c in children.sortedBy { it.name }) {
+                if (top && (c.name == "logs" || c.name == "state.json" || c.name == "state.json.tmp")) continue
+                if (java.nio.file.Files.isSymbolicLink(c.toPath())) { links = true; continue }
+                if (c.isDirectory) { if (files.size < 2000) walk(c, false) } else if (c.isFile) files += c
+            }
+        }
+        walk(p.dir, true)
+        return Payload(files.sortedBy { it.path }, links)
+    }
+
+    private const val SYMLINK_FINGERPRINT = "unapprovable:symbolic-link"
+
     @Synchronized
     private fun fingerprintCached(p: Plugin): String {
+        val payload = payload(p)
+        if (payload.hasLinks) return SYMLINK_FINGERPRINT
         var mtime = 0L
-        p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }.forEach {
-            if (it.isFile && !it.name.startsWith("state.json")) mtime = maxOf(mtime, it.lastModified())
-        }
+        payload.files.forEach { mtime = maxOf(mtime, it.lastModified()) }
         fpCache[p.id]?.let { (cachedMtime, hash) ->
             if (cachedMtime == mtime && hash.isNotEmpty()) return hash
         }
         val md = MessageDigest.getInstance("SHA-256")
-        p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }.filter { it.isFile && !it.name.startsWith("state.json") }.sortedBy { it.path }.forEach {
-            md.update(it.relativeTo(p.dir).path.toByteArray()); hashFile(md, it)
-        }
+        payload.files.forEach { md.update(it.relativeTo(p.dir).path.toByteArray()); hashFile(md, it) }
         val hash = md.digest().joinToString("") { "%02x".format(it) }
         if (fpCache.size > 64) fpCache.clear()
         fpCache[p.id] = mtime to hash
@@ -163,9 +183,11 @@ object Plugins {
     }
 
     private fun fingerprintUncached(p: Plugin): String {
+        val payload = payload(p)
+        if (payload.hasLinks) return SYMLINK_FINGERPRINT
         val md = MessageDigest.getInstance("SHA-256")
         var mtime = 0L
-        p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }.filter { it.isFile && !it.name.startsWith("state.json") }.sortedBy { it.path }.forEach {
+        payload.files.forEach {
             mtime = maxOf(mtime, it.lastModified())
             md.update(it.relativeTo(p.dir).path.toByteArray()); hashFile(md, it)
         }
@@ -178,59 +200,106 @@ object Plugins {
         }
         return hash
     }
-    // Uncached: approval must bind exactly what was reviewed — the mtime cache could
-    // otherwise approve content changed after the review text was built.
-    fun approve(c: Context, p: Plugin) = prefs(c).edit().putString("approved_${p.id}", fingerprintUncached(p)).apply()
 
-    /** Everything the user is being asked to allow: the manifest, every script a button OR a schedule
-     *  runs, and any other file in the plugin (a script can source or call them). Capped only at a size
-     *  no legitimate plugin reaches, and says so when it is. */
-    fun reviewText(p: Plugin): String {
+    /** Approves exactly what was reviewed: [expected] is the fingerprint [review] returned when the dialog was
+     *  built. If the files changed while the dialog was open (or the plugin holds symbolic links) nothing is
+     *  approved and false is returned. */
+    fun approve(c: Context, p: Plugin, expected: String): Boolean {
+        val fresh = fingerprintUncached(p)
+        if (fresh == SYMLINK_FINGERPRINT || fresh != expected) return false
+        prefs(c).edit().putString("approved_${p.id}", fresh).apply()
+        return true
+    }
+
+    /** What the user is asked to allow: [text] (manifest and every file), the [fingerprint] of exactly that
+     *  content, and whether it is [complete]. An incomplete review (a file too large or cut off, unreadable, or
+     *  symbolic links present) must not be approvable — the user could not have seen it all. */
+    class Review(val text: String, val fingerprint: String, val complete: Boolean)
+
+    fun review(p: Plugin): Review {
+        val payload = payload(p)
+        val fingerprint = fingerprintUncached(p)
         val cap = 30_000
-        val files = p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }
-            .filter { it.isFile && !it.name.startsWith("state.json") }.sortedBy { it.path }.toList()
         val sb = StringBuilder()
+        var complete = true
+        if (payload.hasLinks) {
+            complete = false
+            sb.append("This plugin contains symbolic links, which are not allowed — it can't be approved.\n\n")
+        }
         var shown = 0
-        for (f in files) {
+        for (f in payload.files) {
+            val rel = f.relativeTo(p.dir).path
             // Length check before reading: a huge file must not be pulled into memory just to
             // display a capped preview of it.
             if (f.length() > 1_000_000) {
-                sb.append("── ${f.relativeTo(p.dir).path} ──\n(over 1MB — inspect the folder before allowing)\n\n")
+                complete = false
+                sb.append("── $rel ──\n(over 1MB — too large to review, so this plugin can't be approved)\n\n")
                 continue
             }
-            val text = runCatching { f.readText() }.getOrDefault("(unreadable)")
-            sb.append("── ${f.relativeTo(p.dir).path} ──\n")
+            val text = runCatching { f.readText() }.getOrNull()
+            sb.append("── $rel ──\n")
+            if (text == null) { complete = false; sb.append("(unreadable)\n\n"); continue }
             val room = cap - shown
-            if (room <= 0) { sb.append("(not shown: over the size limit — inspect the folder before allowing)\n\n"); continue }
+            if (room <= 0) { complete = false; sb.append("(not shown: over the size limit)\n\n"); continue }
             sb.append(text.take(room)).append('\n')
-            if (text.length > room) sb.append("(cut off — ${text.length - room} more characters)\n")
+            if (text.length > room) { complete = false; sb.append("(cut off — ${text.length - room} more characters)\n") }
             sb.append('\n')
             shown += minOf(text.length, room)
         }
-        return sb.toString().trim()
+        if (!complete) sb.append("This plugin is too large to review in full, so it can't be approved from here.")
+        return Review(sb.toString().trim(), fingerprint, complete)
     }
 
-    fun delete(p: Plugin): Boolean = p.dir.deleteRecursively()
+    /** Removes the plugin and its approval; a plain recursive delete would follow a guest-planted symlink out of
+     *  the folder, so it never follows links. */
+    fun delete(c: Context, p: Plugin): Boolean {
+        prefs(c).edit().remove("approved_${p.id}").apply()
+        synchronized(this) { fpCache.remove(p.id) }
+        return p.dir.deleteRecursivelyNoFollow()
+    }
 
     fun exists(context: Context, id: String) = File(dir(context), id).isDirectory
 
     /** Writes a validated .ad package into ~/.alpdroid/plugins/<id>/. An existing plugin of the same id
-     *  is replaced, but its saved field values (state.json) and logs are kept. The approval fingerprint
-     *  covers the new files, so the plugin shows "needs review" until the user taps Allow — importing
-     *  never runs anything. */
+     *  is replaced, but its saved field values (state.json, with every job switch cleared) and logs are kept.
+     *  The new plugin is built in a staging folder and swapped in only after every file was written, so a failure
+     *  half-way never destroys the old one. The approval fingerprint covers the new files, so the plugin shows
+     *  "needs review" until the user taps Allow — importing never runs anything. */
     fun install(context: Context, parsed: PluginPackage.Parsed): File {
-        val d = File(dir(context), parsed.id).apply { mkdirs() }
-        d.listFiles()?.forEach { if (it.name != "state.json" && it.name != "logs") it.deleteRecursively() }
-        val root = d.canonicalPath + File.separator
-        for ((name, content) in parsed.files) {
-            val f = File(d, name)
-            // Belt and braces on top of PluginPackage's name checks: never write outside the plugin folder.
-            if (!f.canonicalPath.startsWith(root)) throw IllegalArgumentException("unsafe path: $name")
-            f.parentFile?.mkdirs()
-            f.writeText(content)
-            if (name.endsWith(".sh")) f.setExecutable(true, false)
+        val pluginsDir = dir(context).apply { mkdirs() }
+        val d = File(pluginsDir, parsed.id)
+        val staging = File(pluginsDir, "${parsed.id}.new")
+        staging.deleteRecursivelyNoFollow()
+        staging.mkdirs()
+        try {
+            val root = staging.canonicalPath + File.separator
+            for ((name, content) in parsed.files) {
+                val f = File(staging, name)
+                // Belt and braces on top of PluginPackage's name checks: never write outside the plugin folder.
+                if (!f.canonicalPath.startsWith(root)) throw IllegalArgumentException("unsafe path: $name")
+                f.parentFile?.mkdirs()
+                f.writeText(content)
+                if (name.endsWith(".sh")) f.setExecutable(true, false)
+            }
+            File(staging, "plugin.json").writeText(parsed.manifest.toString(2))
+            // Carry over what is the user's, not the code: saved values (job switches off — a new script must
+            // never start unattended on an old "on") and logs.
+            val oldState = File(d, "state.json")
+            if (oldState.isFile && !java.nio.file.Files.isSymbolicLink(oldState.toPath()) && oldState.length() <= 256 * 1024) {
+                val values = runCatching { JSONObject(oldState.readText()) }.getOrNull()
+                if (values != null) {
+                    values.keys().asSequence().toList().filter { it.startsWith("__on_") }.forEach { values.remove(it) }
+                    File(staging, "state.json").writeText(values.toString())
+                }
+            }
+            val oldLogs = File(d, "logs")
+            if (oldLogs.isDirectory && !java.nio.file.Files.isSymbolicLink(oldLogs.toPath())) oldLogs.renameTo(File(staging, "logs"))
+            d.deleteRecursivelyNoFollow()
+            if (!staging.renameTo(d)) throw IllegalStateException("couldn't move the new plugin into place")
+        } catch (e: Exception) {
+            staging.deleteRecursivelyNoFollow()
+            throw e
         }
-        File(d, "plugin.json").writeText(parsed.manifest.toString(2))
         return d
     }
 
@@ -239,13 +308,14 @@ object Plugins {
     fun exportText(p: Plugin): String {
         val manifest = JSONObject(File(p.dir, "plugin.json").readText()).put("id", p.id)
         val files = LinkedHashMap<String, String>()
-        p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }
-            .filter { it.isFile && it.name != "plugin.json" && !it.name.startsWith("state.json") }.sortedBy { it.path }.forEach {
-                val rel = it.relativeTo(p.dir).path
-                if (!PluginPackage.isSafePath(rel)) throw IllegalStateException("can't bundle \"$rel\"")
-                if (it.length() > 256 * 1024) throw IllegalStateException("\"$rel\" is too large to bundle")
-                files[rel] = it.readText()
-            }
+        val payload = payload(p)
+        if (payload.hasLinks) throw IllegalStateException("the plugin contains symbolic links")
+        payload.files.filter { it.relativeTo(p.dir).path != "plugin.json" }.forEach {
+            val rel = it.relativeTo(p.dir).path
+            if (!PluginPackage.isSafePath(rel)) throw IllegalStateException("can't bundle \"$rel\"")
+            if (it.length() > 256 * 1024) throw IllegalStateException("\"$rel\" is too large to bundle")
+            files[rel] = it.readText()
+        }
         return PluginPackage.export(manifest.toString(), files)
     }
 

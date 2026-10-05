@@ -2,38 +2,113 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/anamorsyai/alpdroid/blob/main/docs/alpdroid-plugin.schema.json",
   "title": "AlpDroid plugin file (.ad)",
-  "description": "A single UTF-8 JSON document bundling an AlpDroid plugin: its manifest (fields, buttons, scheduled jobs) and the shell scripts they run. Import it from Settings → Plugins → Import plugin file (.ad). Nothing runs until you have reviewed the scripts and tapped Allow.",
+  "description": "A single UTF-8 JSON document bundling an AlpDroid plugin: its manifest (fields, buttons, scheduled jobs) and the shell scripts they run. Import it from Settings \u2192 Plugins \u2192 Import plugin file (.ad). Nothing runs until you have reviewed the scripts and tapped Allow.",
   "type": "object",
-  "required": ["alpdroid", "id"],
+  "required": [
+    "alpdroid",
+    "id"
+  ],
   "additionalProperties": true,
   "$defs": {
-    "id": { "type": "string", "pattern": "^[a-z0-9_-]{1,40}$" },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9_-]{1,40}$"
+    },
     "path": {
       "type": "string",
-      "description": "Relative file name inside the plugin folder; no '..', no leading '/', not plugin.json, state.json* or logs/.",
-      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_./-]{0,79}$"
+      "description": "Relative file name inside the plugin folder: no '.' or '..' segment, no empty or trailing segment, not plugin.json or logs/, and no segment starting with state.json. A file name must not also be a folder of another entry.",
+      "pattern": "^(?!plugin\\.json$)(?!logs(/|$))(?!.*(^|/)state\\.json)(?!.*\\.\\.)(?!.*//)(?!.*/$)(?!(.*/)?\\.(/|$))[A-Za-z0-9_][A-Za-z0-9_./-]{0,79}$"
     }
   },
   "properties": {
-    "alpdroid": { "const": 1, "description": "Format version of this file." },
-    "id": { "$ref": "#/$defs/id", "description": "Plugin id; becomes the folder ~/.alpdroid/plugins/<id>/ inside Alpine. Importing an existing id replaces its scripts and keeps its saved values." },
-    "title": { "type": "string", "maxLength": 120 },
-    "description": { "type": "string", "maxLength": 1000 },
-    "version": { "type": "string", "maxLength": 40, "description": "Free-form, informational." },
-    "author": { "type": "string", "maxLength": 120, "description": "Free-form, informational." },
+    "alpdroid": {
+      "const": 1,
+      "description": "Format version of this file."
+    },
+    "id": {
+      "$ref": "#/$defs/id",
+      "description": "Plugin id; becomes the folder ~/.alpdroid/plugins/<id>/ inside Alpine. Importing an existing id replaces its scripts and keeps its saved values."
+    },
+    "title": {
+      "type": "string",
+      "maxLength": 120
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 1000
+    },
+    "version": {
+      "type": "string",
+      "maxLength": 40,
+      "description": "Free-form, informational."
+    },
+    "author": {
+      "type": "string",
+      "maxLength": 120,
+      "description": "Free-form, informational."
+    },
     "fields": {
       "type": "array",
       "maxItems": 30,
       "description": "Inputs shown on the plugin's panel. Their values reach scripts as FIELD_<ID> environment variables (id upper-cased, '-' becomes '_'; toggles are 1/0).",
       "items": {
         "type": "object",
-        "required": ["id"],
+        "required": [
+          "id"
+        ],
         "properties": {
-          "id": { "$ref": "#/$defs/id" },
-          "type": { "enum": ["text", "number", "toggle", "select"], "default": "text" },
-          "label": { "type": "string", "maxLength": 80 },
-          "default": {},
-          "options": { "type": "array", "items": { "type": "string", "maxLength": 200 }, "maxItems": 30, "description": "Required (non-empty) for type \"select\"." }
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "type": {
+            "enum": [
+              "text",
+              "number",
+              "toggle",
+              "select"
+            ],
+            "default": "text"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "default": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "maxItems": 30,
+            "description": "Required (non-empty) for type \"select\"."
+          }
+        },
+        "if": {
+          "properties": {
+            "type": {
+              "const": "select"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "required": [
+            "options"
+          ],
+          "properties": {
+            "options": {
+              "minItems": 1
+            }
+          }
         }
       }
     },
@@ -42,12 +117,27 @@
       "maxItems": 30,
       "items": {
         "type": "object",
-        "required": ["id", "script"],
+        "required": [
+          "id",
+          "script"
+        ],
         "properties": {
-          "id": { "$ref": "#/$defs/id" },
-          "label": { "type": "string", "maxLength": 80 },
-          "script": { "$ref": "#/$defs/path", "description": "Must be a key of \"files\"." },
-          "background": { "type": "boolean", "default": false, "description": "Keep the script running (a watcher/server) with a start/stop switch." }
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "script": {
+            "$ref": "#/$defs/path",
+            "description": "Must be a key of \"files\"."
+          },
+          "background": {
+            "type": "boolean",
+            "default": false,
+            "description": "Keep the script running (a watcher/server) with a start/stop switch."
+          }
         }
       }
     },
@@ -56,12 +146,28 @@
       "maxItems": 20,
       "items": {
         "type": "object",
-        "required": ["id", "script"],
+        "required": [
+          "id",
+          "script"
+        ],
         "properties": {
-          "id": { "$ref": "#/$defs/id" },
-          "label": { "type": "string", "maxLength": 80 },
-          "script": { "$ref": "#/$defs/path", "description": "Must be a key of \"files\"." },
-          "everyMinutes": { "type": "integer", "minimum": 1, "maximum": 10080, "default": 60 }
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "script": {
+            "$ref": "#/$defs/path",
+            "description": "Must be a key of \"files\"."
+          },
+          "everyMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10080,
+            "default": 60
+          }
         }
       }
     },
@@ -69,8 +175,13 @@
       "type": "object",
       "maxProperties": 64,
       "description": "Every file of the plugin as path -> UTF-8 text (max 256 KB each, 1 MB together). Every button/schedule script must appear here.",
-      "propertyNames": { "$ref": "#/$defs/path" },
-      "additionalProperties": { "type": "string", "maxLength": 262144 }
+      "propertyNames": {
+        "$ref": "#/$defs/path"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 262144
+      }
     }
   }
 }

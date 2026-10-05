@@ -138,10 +138,13 @@ class MainActivity : Activity() {
         // from Recents, Back, rotation) clears suspicion — only a death with no lifecycle
         // at all reports. Deliberate exits zero the stamp.
         val lastAlive = settingsStore.lastAliveMs
+        lastAliveAtStart = lastAlive
         val cleanGone = settingsStore.destroyWasClean
         settingsStore.destroyWasClean = false
         settingsStore.lastAliveMs = System.currentTimeMillis()
-        if (lastAlive != 0L && !cleanGone && System.currentTimeMillis() - lastAlive > 90_000L) {
+        // Android 11+ reports the real reason (ExitReport) — only older versions fall back to this guess,
+        // so the two dialogs never stack.
+        if (Build.VERSION.SDK_INT < 30 && lastAlive != 0L && !cleanGone && System.currentTimeMillis() - lastAlive > 90_000L) {
             mainHandler.post { showSystemKillNotice() }
         }
         mainHandler.postDelayed({ if (!isFinishing && !isDestroyed) maybeAutoBackup() }, 30_000)
@@ -280,6 +283,7 @@ class MainActivity : Activity() {
         // handles it, so this only fires for the "already running" case.
         if (intent.action == AlpineWidgetProvider.ACTION_NEW_SESSION && tabs.isNotEmpty() && gridKnown) {
             addTab()
+            consumeWidgetAction() // handled: a later recreation must not add another tab
         }
     }
 
@@ -303,19 +307,24 @@ class MainActivity : Activity() {
     }
 
     private var exitReportChecked = false
+    /** The heartbeat stamp found at start: 0 after a deliberate exit, so a later system kill of the idle
+     *  cached process isn't reported as sessions lost. */
+    private var lastAliveAtStart = 0L
 
     /** Once per process start: if Android killed the previous AlpDroid process (everything in it died), say why. */
     private fun maybeShowExitReport() {
         if (exitReportChecked) return
         exitReportChecked = true
         (application as AlpineTermApp).backgroundExecutor.execute {
-            val message = ExitReport.checkOnStart(this) ?: return@execute
+            val message = ExitReport.checkOnStart(this)
+            if (message == null || lastAliveAtStart == 0L) return@execute
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
                     .setTitle("AlpDroid was stopped by Android")
                     .setMessage(message)
                     .setPositiveButton("OK", null)
+                    .setNegativeButton("Battery settings") { _, _ -> openBatteryExemption() }
                     .show()
             }
         }
@@ -361,6 +370,7 @@ class MainActivity : Activity() {
         // (back from installer, browser, Settings) used to cover the screen uninvited.
         if (intent.action == AlpineWidgetProvider.ACTION_NEW_SESSION) {
             (getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)?.showSoftInput(terminalView, 0)
+            consumeWidgetAction() // once per widget tap, not on every later resume
         }
     }
 
@@ -404,6 +414,10 @@ class MainActivity : Activity() {
     /** The previous process died to a system kill (not a crash, not an exit): explain and
      *  point at the battery exemption, which is the actual fix. Sessions can't survive it —
      *  proot and every shell were children of the dead process. */
+    /** The widget's "new session" request has been served: drop it from the Intent so a later Activity
+     *  recreation or resume doesn't repeat it (an extra tab, the keyboard popping up again). */
+    private fun consumeWidgetAction() { setIntent(Intent(intent).setAction(null)) }
+
     private fun showSystemKillNotice() {
         if (isFinishing || isDestroyed) return
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
@@ -870,15 +884,18 @@ class MainActivity : Activity() {
         // switches below update themselves), since a fixed pin and dynamic balancing would fight.
         var balanceSwitch: MaterialSwitch? = null
         var efficiencySwitch: MaterialSwitch? = null
+        var syncing = false // programmatic updates of the other switch must not run its listener
         balanceSwitch = MaterialSwitch(this).apply {
             text = "Balance load across cores"
             setTextColor(0xFFD4D4D4.toInt())
-            isChecked = settingsStore.smartBalancing
+            // After an upgrade both stored values can be true (the fixed pin wins in ResourceManager): show what is in effect.
+            isChecked = settingsStore.smartBalancing && !settingsStore.efficiencyCores
             setOnCheckedChangeListener { _, checked ->
+                if (syncing) return@setOnCheckedChangeListener
                 settingsStore.smartBalancing = checked
                 if (checked && settingsStore.efficiencyCores) {
                     settingsStore.efficiencyCores = false
-                    efficiencySwitch?.isChecked = false
+                    syncing = true; efficiencySwitch?.isChecked = false; syncing = false
                 }
             }
         }
@@ -933,10 +950,11 @@ class MainActivity : Activity() {
             setTextColor(0xFFD4D4D4.toInt())
             isChecked = settingsStore.efficiencyCores
             setOnCheckedChangeListener { _, checked ->
+                if (syncing) return@setOnCheckedChangeListener
                 settingsStore.efficiencyCores = checked
                 if (checked && settingsStore.smartBalancing) {
                     settingsStore.smartBalancing = false
-                    balanceSwitch?.isChecked = false
+                    syncing = true; balanceSwitch?.isChecked = false; syncing = false
                 }
                 val msg = when {
                     checked && CpuTopology.readEfficiencyMask() == null -> "This phone doesn't expose its core layout — no effect"
@@ -1690,6 +1708,7 @@ class MainActivity : Activity() {
                 PluginPackage.parse(String(bytes, Charsets.UTF_8))
             }
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 result.onFailure { e ->
                     com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
                         .setTitle("Can't import this plugin")
@@ -1730,7 +1749,11 @@ class MainActivity : Activity() {
     }
 
     private fun exportPluginTo(uri: Uri) {
-        val plugin = pendingPluginExport ?: return
+        val plugin = pendingPluginExport
+        if (plugin == null) {
+            android.widget.Toast.makeText(this, "Export was interrupted — tap Export as .ad again", android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
         pendingPluginExport = null
         (application as AlpineTermApp).backgroundExecutor.execute {
             val ok = runCatching {
@@ -1781,10 +1804,29 @@ class MainActivity : Activity() {
             panel.addView(pillButton().apply { text = "Delete"; setOnClickListener {
                 com.google.android.material.dialog.MaterialAlertDialogBuilder(this@MainActivity)
                     .setTitle("Delete plugin \"${p.title}\"?").setMessage("Removes its folder, scripts and saved values.")
-                    .setPositiveButton("Delete") { _, _ -> Plugins.delete(p); fillPlugins(panel) }
+                    .setPositiveButton("Delete") { _, _ -> Plugins.delete(this@MainActivity, p); fillPlugins(panel) }
                     .setNegativeButton("Cancel", null).show()
             } })
         }
+    }
+
+    /** Shows exactly what would run and approves exactly that: the fingerprint is taken when the text is built and
+     *  checked again at the tap, and a plugin too large (or holding symbolic links) to review in full gets no Allow
+     *  button at all. */
+    private fun showPluginApproval(plugin: Plugins.Plugin, title: String, intro: String, positive: String, onApproved: () -> Unit) {
+        if (isFinishing || isDestroyed) return
+        val review = Plugins.review(plugin)
+        val builder = com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle(title)
+            .setMessage(intro + "\n\n" + review.text)
+            .setNegativeButton(if (review.complete) "Cancel" else "Close", null)
+        if (review.complete) {
+            builder.setPositiveButton(positive) { _, _ ->
+                if (Plugins.approve(this, plugin, review.fingerprint)) onApproved()
+                else android.widget.Toast.makeText(this, "The plugin changed while you were reviewing it — open it again and re-read it", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+        builder.show()
     }
 
     private fun showPlugin(panel: LinearLayout, plugin: Plugins.Plugin) {
@@ -1869,11 +1911,11 @@ class MainActivity : Activity() {
         plain.forEach { b ->
             panel.addView(pillButton().apply { text = b.label; setOnClickListener {
                 if (Plugins.isApproved(this@MainActivity, plugin)) runButton(b)
-                else com.google.android.material.dialog.MaterialAlertDialogBuilder(this@MainActivity)
-                    .setTitle("Allow \"${plugin.title}\" to run?")
-                    .setMessage("These scripts will run inside Alpine with access to everything a terminal there can reach (files, network, and the app's control API if agent access is on). Review them:\n\n" + Plugins.reviewText(plugin))
-                    .setPositiveButton("Allow & run") { _, _ -> Plugins.approve(this@MainActivity, plugin); runButton(b) }
-                    .setNegativeButton("Cancel", null).show()
+                else showPluginApproval(
+                    plugin, "Allow \"${plugin.title}\" to run?",
+                    "These scripts will run inside Alpine with access to everything a terminal there can reach (files, network, and the app's control API if agent access is on). Review them:",
+                    "Allow & run",
+                ) { runButton(b) }
             } })
         }
         val jobs = (application as AlpineTermApp).pluginJobs
@@ -1897,11 +1939,11 @@ class MainActivity : Activity() {
                         }
                         if (on && !Plugins.isApproved(this@MainActivity, plugin)) {
                             btn.isChecked = false
-                            com.google.android.material.dialog.MaterialAlertDialogBuilder(this@MainActivity)
-                                .setTitle("Allow \"${plugin.title}\" to run in the background?")
-                                .setMessage("These scripts will run unattended inside Alpine, repeatedly, with access to everything a terminal there can reach. Review them:\n\n" + Plugins.reviewText(plugin))
-                                .setPositiveButton("Allow & enable") { _, _ -> Plugins.approve(this@MainActivity, plugin); apply(true); btn.isChecked = true }
-                                .setNegativeButton("Cancel", null).show()
+                            showPluginApproval(
+                                plugin, "Allow \"${plugin.title}\" to run in the background?",
+                                "These scripts will run unattended inside Alpine, repeatedly, with access to everything a terminal there can reach. Review them:",
+                                "Allow & enable",
+                            ) { apply(true); btn.isChecked = true }
                         } else apply(on)
                     }
                 })
@@ -1947,6 +1989,8 @@ class MainActivity : Activity() {
             val latch = java.util.concurrent.CountDownLatch(1)
             val answer = java.util.concurrent.atomic.AtomicBoolean(false)
             runOnUiThread {
+                // No Activity to ask on: a dialog on a destroyed one throws; answer "deny" at once.
+                if (isFinishing || isDestroyed) { latch.countDown(); return@runOnUiThread }
                 com.google.android.material.dialog.MaterialAlertDialogBuilder(this@MainActivity)
                     .setTitle("An agent wants to change a setting")
                     .setMessage(message)
@@ -1996,12 +2040,17 @@ class MainActivity : Activity() {
 
         override fun addShortcut(label: String, cmd: String): String {
             if (label.isBlank() || cmd.isBlank() || label.length > 40 || cmd.length > 500) return "need a label (<=40 chars) and cmd (<=500 chars)"
-            return onMain { settingsStore.customSnippets = settingsStore.customSnippets + (label to cmd); "ok" }
+            // Same shape as the Settings screen stores: the command followed by Enter, and the key row rebuilt.
+            return onMain {
+                settingsStore.customSnippets = settingsStore.customSnippets + (label to (if (cmd.endsWith("\n")) cmd else "$cmd\n"))
+                buildExtraKeysRow(extraKeysRow)
+                "ok"
+            }
         }
 
         override fun newTab(label: String?): String { runOnUiThread { addTab(label) }; return "starting" }
         override fun selectTab(id: Int): Boolean = onMain { tabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let { switchToTab(it); true } ?: false }
-        override fun closeTab(id: Int): Boolean = onMain { tabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let { closeTab(it); true } ?: false }
+        override fun closeTab(id: Int): Boolean = onMain { tabs.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let { this@MainActivity.closeTab(it); true } ?: false }
 
         override fun clipboardGet(): String = onMain {
             (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).primaryClip?.getItemAt(0)?.coerceToText(this@MainActivity)?.toString() ?: ""
@@ -2160,6 +2209,7 @@ class MainActivity : Activity() {
         Thread {
             val code = GitHubAuth.requestDeviceCode(clientId)
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 if (code == null) { android.widget.Toast.makeText(this, "Couldn't reach GitHub — check the Client ID (Device Flow must be enabled) and network.", android.widget.Toast.LENGTH_LONG).show(); return@runOnUiThread }
                 // One tap: the browser opens straight to GitHub's authorize page with the code already
                 // filled in (it's also copied, in case GitHub doesn't pre-fill it), showing whichever
@@ -3196,8 +3246,14 @@ class MainActivity : Activity() {
      *  the process alive) but its notification never shows on API 33+, so there's no visible
      *  sign the keep-alive is actually active. Asked for right when it's first actually needed
      *  (the first session starting), not upfront at launch. */
+    private var notificationPermissionAsked = false
+
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        // Once per Activity: the result callback calls updateKeepAliveService(), which asks again — after a
+        // denial (or "don't ask again", which answers instantly) that was an endless request loop.
+        if (notificationPermissionAsked) return
+        notificationPermissionAsked = true
         val permission = android.Manifest.permission.POST_NOTIFICATIONS
         if (ContextCompat.checkSelfPermission(this, permission) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(permission), NOTIFICATION_PERMISSION_REQUEST_CODE)
@@ -3302,7 +3358,7 @@ class MainActivity : Activity() {
                 // onNewIntent()'s singleTop path) used to be silently ignored — only onNewIntent()
                 // ever checked for ACTION_NEW_SESSION, so "already running in the background,
                 // Activity recreated" was the one case a widget tap did nothing at all.
-                if (intent.action == AlpineWidgetProvider.ACTION_NEW_SESSION) addTab()
+                if (intent.action == AlpineWidgetProvider.ACTION_NEW_SESSION) { addTab(); consumeWidgetAction() }
             } else {
                 maybeOfferSessionResume() // first tab(s), once the view actually knows how big it is
             }
@@ -3429,7 +3485,7 @@ class MainActivity : Activity() {
                     // arch, proot missing), not for "the network hiccuped." Stopping here and
                     // making the user explicitly retry is what guarantees a session only ever
                     // starts once Alpine is actually installed and verified.
-                    !rootfsReady -> showSetupFailure(initialLabel, onStarted, onFailed)
+                    !rootfsReady -> showSetupFailure(initialLabel, onStarted, onFailed, directCommand)
                     !wasReadyBefore && !StorageAccess.isGranted(this) -> showReadyGate(id, initialLabel, onStarted, onFailed, directCommand)
                     else -> startSessionNow(id, initialLabel, onStarted, onFailed, directCommand)
                 }
@@ -3447,7 +3503,7 @@ class MainActivity : Activity() {
     /** Alpine's download/extraction failed (network loss, interrupted transfer, unsupported CPU
      *  arch, etc.) — stop and make the user explicitly retry rather than ever silently starting a
      *  degraded system-shell session instead of the Alpine one they asked for. */
-    private fun showSetupFailure(initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null) {
+    private fun showSetupFailure(initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null, directCommand: String? = null) {
         // This addTab() attempt's flow ends right here (never reaches startSessionNow(), which is
         // the only other place this decrements) — Retry below calls addTab() fresh, with its own
         // new increment/decrement pair, so this one must close out now or it'd leak upward by one
@@ -3457,7 +3513,7 @@ class MainActivity : Activity() {
         setupStatus.text = "Alpine setup failed: $reason\n\nCheck your internet connection and try again."
         setupProgress.visibility = View.GONE
         retryButton.visibility = View.VISIBLE
-        retryButton.setOnClickListener { addTab(initialLabel, onStarted, onFailed) }
+        retryButton.setOnClickListener { addTab(initialLabel, onStarted, onFailed, directCommand) }
         onFailed?.invoke()
     }
 
@@ -3586,6 +3642,9 @@ class MainActivity : Activity() {
             tab.onExit = { onTabExited(tab) }
             tab.emulator.onBell = { onTerminalBell(tab.id) }
         }
+        // A session that ended while no Activity was attached reported its end to nobody (callbacks were
+        // null) — it would sit here as a dead tab. Tear those down now.
+        tabs.toList().filter { !it.session.isAlive() }.forEach { onTabExited(it) }
     }
 
     /** A tab's shell exited (typed "exit"/Ctrl-D, or crashed) — drop it and switch to a
@@ -3620,7 +3679,10 @@ class MainActivity : Activity() {
             deliberateExit = true
             // Re-checked: a new tab started in the 400ms window (widget, bridge, fast tap)
             // used to be killed along with the exit it replaced.
-            mainHandler.postDelayed({ if (tabs.isEmpty() && pendingSessionStarts == 0) finish() }, 400)
+            mainHandler.postDelayed({
+                if (tabs.isEmpty() && pendingSessionStarts == 0) finish()
+                else deliberateExit = false // a new tab took over: this was not the end after all
+            }, 400)
             return
         }
         persistTabLabels()
@@ -3753,7 +3815,14 @@ class MainActivity : Activity() {
      *  anywhere would wrongly get treated as that modifier's target instead of a plain keystroke,
      *  exactly what sendControlAware() exists to prevent for every other extra key. */
     private fun runShortcutCommand(cmd: String) {
-        tabs.getOrNull(activeTabIndex)?.let { runShortcutCommand(it.session, cmd) }
+        val tab = tabs.getOrNull(activeTabIndex) ?: return
+        if (tab.isServer) {
+            // A server tab execs the server directly — there is no shell to type into, so the text would be
+            // fed to the server's tty and silently do nothing.
+            android.widget.Toast.makeText(this, "This tab is running a server — switch to (or open) a normal tab for commands", android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        runShortcutCommand(tab.session, cmd)
     }
 
     private fun runShortcutCommand(session: PtySession, cmd: String) {
@@ -3775,7 +3844,9 @@ class MainActivity : Activity() {
             if (!sent) {
                 sent = true
                 tab.onOutput = prev
-                runShortcutCommand(tab.session, cmd)
+                // This lambda runs on the pty-reader thread, and runShortcutCommand() resets the CTRL/ALT
+                // buttons (views): hop to the UI thread, otherwise it threw and the command was never typed.
+                mainHandler.post { runShortcutCommand(tab.session, cmd) }
             }
         }
     }

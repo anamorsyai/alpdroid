@@ -55,8 +55,8 @@ object AlpineBackup {
     }
 
     /** Live secrets that are regenerated at every session start — never copied into a backup that sits
-     *  in shared storage: the agent-API token and the LAN opencode-web password. */
-    private val NEVER_BACKED_UP = setOf("etc/alpdroid/bridge", "root/.opencode-web.env")
+     *  in shared storage: the agent-API token, the LAN opencode-web password and the SSH server's root password. */
+    private val NEVER_BACKED_UP = setOf("etc/alpdroid/bridge", "root/.opencode-web.env", "etc/alpdroid/ssh_password")
 
     private fun addTree(writer: UstarWriter, base: File, file: File, count: IntArray, onEntry: (Int) -> Unit, isCancelled: () -> Boolean) {
         // Cooperative cancel, checked every 256 entries (not every file — a volatile read

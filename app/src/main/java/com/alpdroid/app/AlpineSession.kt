@@ -20,6 +20,8 @@ import java.io.File
  */
 object AlpineSession {
     private const val TAG = "AlpDroid/Session"
+    /** Folder name of the guest root under the app's files dir (see AlpineRootfs). */
+    private const val ROOTFS_DIR_NAME = "alpine-rootfs"
 
     /** Guards writeResolvConf()/writeApkHostsIPv4Only() below — both read-modify-write files
      *  shared by every session in the same rootfs (etc/resolv.conf, etc/hosts), and since package
@@ -385,8 +387,19 @@ ctl.!default { type null }
     }
 
     private fun writeIfDifferent(file: File, text: String): Boolean {
-        if (file.isFile && runCatching { file.readText() }.getOrNull() == text) return false
+        // The guest controls this filesystem. A target, or any folder between it and the rootfs top, replaced by a
+        // symlink would make the app (which runs on the host and resolves absolute targets there) overwrite
+        // whatever the link points at — including its own private files. Refuse in that case; a link at the target
+        // itself is simply removed (deleting a link never touches its target).
+        if (java.nio.file.Files.isSymbolicLink(file.toPath())) file.delete()
+        var ancestor = file.parentFile
+        var depth = 0
+        while (ancestor != null && ancestor.name != ROOTFS_DIR_NAME && depth++ < 8) {
+            if (java.nio.file.Files.isSymbolicLink(ancestor.toPath())) return false
+            ancestor = ancestor.parentFile
+        }
         file.parentFile?.mkdirs()
+        if (file.isFile && runCatching { file.readText() }.getOrNull() == text) return false
         file.writeText(text)
         return true
     }
@@ -505,7 +518,7 @@ CONF=/etc/alpdroid/bridge
 [ "${"$"}1" = about ] && { cat /etc/alpdroid/about.md 2>/dev/null || echo "alpctl: no about note yet (open a new tab)"; exit 0; }
 [ -r "${"$"}CONF" ] || { echo "alpctl: agent access is off (enable it in AlpDroid → Settings → Agent access)" >&2; exit 2; }
 . "${"$"}CONF"
-esc() { printf '%s' "${"$"}1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' | awk '{printf "%s%s", (NR>1?"\\n":""), ${"$"}0}'; }
+esc() { printf '%s' "${"$"}1" | tr -d '\000-\010\013\014\016-\037' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' | awk '{printf "%s%s", (NR>1?"\\n":""), ${"$"}0}'; }
 call() { case "${"$"}1" in *'"error":'*) printf '%s\n' "${"$"}1" >&2; return 1;; esac; printf '%s\n' "${"$"}1"; }
 get()  { R=${"$"}(wget -qO- --header "Authorization: Bearer ${"$"}TOKEN" "${"$"}URL${"$"}1" 2>/dev/null) || { echo "alpctl: no answer — is Agent access on, and is the app still running?" >&2; return 1; }; call "${"$"}R"; }
 post() { R=${"$"}(wget -qO- --header "Authorization: Bearer ${"$"}TOKEN" --header "Content-Type: application/json" --post-data "${"$"}2" "${"$"}URL${"$"}1" 2>/dev/null) || { echo "alpctl: no answer — is Agent access on, and is the app still running?" >&2; return 1; }; call "${"$"}R"; }

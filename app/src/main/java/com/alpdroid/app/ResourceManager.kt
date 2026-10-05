@@ -77,10 +77,16 @@ class ResourceManager(private val app: AlpineTermApp) {
             return false
         }
         val input = LoadBalancer.Input(isActive, appVisible, mode == ResourcePolicy.Mode.COOL, cpu)
-        when (LoadBalancer.step(state, input)) {
-            LoadBalancer.Placement.EFFICIENCY -> tab.session.setCpuAffinity(efficiencyMask)
-            LoadBalancer.Placement.ALL -> tab.session.setCpuAffinity(null)
-            null -> {}
+        val before = state.placement
+        val change = LoadBalancer.step(state, input)
+        if (change != null) {
+            val delivered = when (change) {
+                LoadBalancer.Placement.EFFICIENCY -> tab.session.setCpuAffinity(efficiencyMask)
+                LoadBalancer.Placement.ALL -> tab.session.setCpuAffinity(null)
+            }
+            // The control channel may not be open yet (or the write failed): the balancer already committed
+            // the change, so undo it — the next tick then tries again instead of assuming it took effect.
+            if (!delivered) state.placement = before
         }
         return state.placement == LoadBalancer.Placement.EFFICIENCY
     }

@@ -41,9 +41,14 @@ object PluginPackage {
 
     private fun fail(message: String): Nothing = throw PluginFormatException(message)
 
-    fun isSafePath(path: String): Boolean =
-        PATH_RE.matches(path) && !path.contains("..") && !path.contains("//") && !path.endsWith("/") &&
-            path != "plugin.json" && !path.startsWith("state.json") && path != "logs" && !path.startsWith("logs/")
+    /** A relative file name inside the plugin folder. Every path segment is checked: no "." or ".." segment, and
+     *  no segment starting with "state.json" at ANY depth (the approval hash and the review skip the top-level
+     *  state file only, so a same-named file in a subfolder would be code that is run but never shown). */
+    fun isSafePath(path: String): Boolean {
+        if (!PATH_RE.matches(path) || path.contains("//") || path.endsWith("/")) return false
+        if (path == "plugin.json" || path == "logs" || path.startsWith("logs/")) return false
+        return path.split('/').none { it == "." || it == ".." || it.startsWith("state.json") }
+    }
 
     fun parse(text: String): Parsed {
         if (text.length > MAX_FILE_BYTES) fail("File is too large for a plugin (over ${MAX_FILE_BYTES / 1000} KB)")
@@ -65,6 +70,15 @@ object PluginPackage {
             files[name] = content
         }
         if (total > MAX_TOTAL) fail("Files are too large together (max ${MAX_TOTAL / 1024} KB)")
+        // A file cannot also be a folder: "a" together with "a/b" would fail half-way through writing.
+        for (name in files.keys) {
+            if (files.keys.any { it.startsWith("$name/") }) fail("\"$name\" is both a file and a folder")
+        }
+
+        text(j, "title", 120, "plugin")
+        text(j, "description", 1000, "plugin")
+        text(j, "version", 40, "plugin")
+        text(j, "author", 120, "plugin")
 
         val fields = j.optJSONArray("fields") ?: JSONArray()
         if (fields.length() > 30) fail("Too many fields (max 30)")
@@ -74,9 +88,22 @@ object PluginPackage {
             val fid = f.optString("id")
             if (!ID_RE.matches(fid)) fail("fields[$i].id must be 1-40 characters of a-z, 0-9, _ or -")
             if (!seen.add("f:$fid")) fail("Duplicate field id \"$fid\"")
+            // Scripts see the id as FIELD_<ID> (upper-cased, '-' -> '_'): "a-b" and "a_b" would silently overwrite each other.
+            if (!seen.add("env:" + fid.uppercase().replace('-', '_'))) fail("Field id \"$fid\" collides with another field's environment variable name")
             val type = f.optString("type", "text")
             if (type !in FIELD_TYPES) fail("fields[$i].type must be one of ${FIELD_TYPES.joinToString()}")
-            if (type == "select" && (f.optJSONArray("options")?.length() ?: 0) == 0) fail("fields[$i] is a select but has no \"options\"")
+            text(f, "label", 80, "fields[$i]")
+            val def = f.opt("default")
+            if (def is JSONObject || def is JSONArray) fail("fields[$i].default must be a text, number or true/false value")
+            val opts = f.optJSONArray("options")
+            if (opts != null) {
+                if (opts.length() > 30) fail("fields[$i].options has too many entries (max 30)")
+                for (k in 0 until opts.length()) {
+                    val o = opts.opt(k)
+                    if (o !is String || o.length > 200) fail("fields[$i].options[$k] must be text of at most 200 characters")
+                }
+            }
+            if (type == "select" && (opts?.length() ?: 0) == 0) fail("fields[$i] is a select but has no \"options\"")
         }
         checkJobs(j.optJSONArray("buttons") ?: JSONArray(), "buttons", 30, files, seen)
         checkJobs(j.optJSONArray("schedules") ?: JSONArray(), "schedules", 20, files, seen)
@@ -88,13 +115,27 @@ object PluginPackage {
         return Parsed(id, manifest, files)
     }
 
+    private fun text(o: JSONObject, key: String, max: Int, what: String) {
+        if (!o.has(key)) return
+        val v = o.opt(key)
+        if (v !is String) fail("$what.$key must be text")
+        if (v.length > max) fail("$what.$key is too long (max $max characters)")
+    }
+
     private fun checkJobs(arr: JSONArray, what: String, max: Int, files: Map<String, String>, seen: MutableSet<String>) {
         if (arr.length() > max) fail("Too many $what (max $max)")
         for (i in 0 until arr.length()) {
             val b = arr.optJSONObject(i) ?: fail("$what[$i] must be an object")
             val bid = b.optString("id")
             if (!ID_RE.matches(bid)) fail("$what[$i].id must be 1-40 characters of a-z, 0-9, _ or -")
-            if (!seen.add("$what:$bid")) fail("Duplicate $what id \"$bid\"")
+            // Buttons and schedules share one job namespace (switch, enabled flag, log file are keyed by the id).
+            if (!seen.add("job:$bid")) fail("Duplicate button/schedule id \"$bid\"")
+            text(b, "label", 80, "$what[$i]")
+            if (b.has("background") && b.opt("background") !is Boolean) fail("$what[$i].background must be true or false")
+            if (b.has("everyMinutes")) {
+                val m = b.opt("everyMinutes")
+                if (m !is Int || m < 1 || m > 10080) fail("$what[$i].everyMinutes must be a whole number from 1 to 10080")
+            }
             val script = b.optString("script")
             if (!isSafePath(script)) fail("$what[$i].script is not an allowed file name: \"$script\"")
             if (script !in files) fail("$what[$i].script \"$script\" is missing from \"files\"")

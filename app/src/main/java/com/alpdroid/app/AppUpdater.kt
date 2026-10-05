@@ -114,7 +114,7 @@ object AppUpdater {
                 connectTimeout = 15_000
                 readTimeout = 30_000
                 instanceFollowRedirects = false
-                if (url.contains("api.github.com") && !token.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $token")
+                if (runCatching { URL(url).host == "api.github.com" }.getOrDefault(false) && !token.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $token")
                 setRequestProperty("Accept", accept)
             }
             val code = c.responseCode

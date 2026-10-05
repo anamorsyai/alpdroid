@@ -13,7 +13,9 @@ data class SshProfile(val name: String, val host: String, val port: String, val 
         fun q(s: String) = "'" + s.replace("'", "'\\''") + "'"
         val portArg = port.toIntOrNull()?.takeIf { it in 1..65535 && it != 22 }?.let { "-p $it " } ?: ""
         val userHost = if (user.isNotBlank()) "${q(user)}@${q(host)}" else q(host)
-        return "ssh $portArg$userHost\n"
+        // "--" ends the options: a host or user starting with "-" must never be read as an ssh option
+        // (for example -oProxyCommand=...).
+        return "ssh $portArg-- $userHost\n"
     }
 }
 

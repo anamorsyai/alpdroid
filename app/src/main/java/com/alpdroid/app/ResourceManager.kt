@@ -54,6 +54,7 @@ class ResourceManager(private val app: AlpineTermApp) {
 
     private val samples = HashMap<Int, Sample>()
     private val balancerStates = HashMap<Int, LoadBalancer.State>()
+    private var wasBalancing = false
     /** Low-power cores of this phone (hex mask), looked up once; null when they can't be identified. */
     private val efficiencyMask: String? by lazy { CpuTopology.readEfficiencyMask() }
 
@@ -161,6 +162,12 @@ class ResourceManager(private val app: AlpineTermApp) {
         }
 
         val balancing = balancingActive()
+        if (balancing && !wasBalancing) {
+            // Just switched on: tabs opened while the fixed efficiency-cores pin was on are still
+            // restricted — hand them every core back; the balancer takes over from here.
+            tabs.forEach { it.session.setCpuAffinity(null) }
+        }
+        wasBalancing = balancing
         val now = System.currentTimeMillis()
         val result = ArrayList<TabUsage>()
         val liveIds = HashSet<Int>()

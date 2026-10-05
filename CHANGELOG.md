@@ -12,6 +12,9 @@
   published schema (`docs/alpdroid-plugin.schema.json`). Settings → Plugins → *Import plugin file (.ad)* validates
   strictly and installs it (replacing an existing id while keeping its saved values); *Export as .ad* bundles an
   installed plugin. Importing never runs anything: you still review the scripts and tap Allow.
+- "Balance load across cores" and "Run sessions on efficiency cores" now exclude each other: turning one on turns
+  the other off (the switch updates itself), and tabs opened under the fixed pin get every core back when
+  balancing is switched on.
 
 ## 1.7.52 — efficiency cores on more phones
 

@@ -846,17 +846,26 @@ class MainActivity : Activity() {
                 setPadding(0, dp(4), 0, dp(8))
             },
         )
-        panel.addView(
-            MaterialSwitch(this).apply {
-                text = "Balance load across cores"
-                setTextColor(0xFFD4D4D4.toInt())
-                isChecked = settingsStore.smartBalancing
-                setOnCheckedChangeListener { _, checked -> settingsStore.smartBalancing = checked }
-            },
-        )
+        // The two core-placement modes exclude each other: turning one on turns the other off (the
+        // switches below update themselves), since a fixed pin and dynamic balancing would fight.
+        var balanceSwitch: MaterialSwitch? = null
+        var efficiencySwitch: MaterialSwitch? = null
+        balanceSwitch = MaterialSwitch(this).apply {
+            text = "Balance load across cores"
+            setTextColor(0xFFD4D4D4.toInt())
+            isChecked = settingsStore.smartBalancing
+            setOnCheckedChangeListener { _, checked ->
+                settingsStore.smartBalancing = checked
+                if (checked && settingsStore.efficiencyCores) {
+                    settingsStore.efficiencyCores = false
+                    efficiencySwitch?.isChecked = false
+                }
+            }
+        }
+        panel.addView(balanceSwitch!!)
         panel.addView(
             TextView(this).apply {
-                text = "A busy session in a background tab (or any busy session while the app is hidden) is parked on the phone's low-power cores, so the tab you're using and your other apps keep the fast ones; it moves back as soon as you return to it or it calms down. Only AlpDroid's own processes are touched, never other apps, and nothing is paused. Needs a phone whose low-power cores can be detected (the status above tells you when a session is parked)."
+                text = "A busy session in a background tab (or any busy session while the app is hidden) is parked on the phone's low-power cores, so the tab you're using and your other apps keep the fast ones; it moves back as soon as you return to it or it calms down. Only AlpDroid's own processes are touched, never other apps, and nothing is paused. Needs a phone whose low-power cores can be detected (the status above tells you when a session is parked). Turning this on turns \"Run sessions on efficiency cores\" off, and the other way round."
                 setTextColor(0xFF8B93A1.toInt())
                 textSize = 12f
                 setPadding(0, dp(4), 0, dp(8))
@@ -899,18 +908,25 @@ class MainActivity : Activity() {
             },
         )
 
-        panel.addView(
-            MaterialSwitch(this).apply {
-                text = "Run sessions on efficiency cores"
-                setTextColor(0xFFD4D4D4.toInt())
-                isChecked = settingsStore.efficiencyCores
-                setOnCheckedChangeListener { _, checked ->
-                    settingsStore.efficiencyCores = checked
-                    val msg = if (checked && CpuTopology.readEfficiencyMask() == null) "This phone doesn't expose its core layout — no effect" else "Applies to new tabs"
-                    android.widget.Toast.makeText(this@MainActivity, msg, android.widget.Toast.LENGTH_SHORT).show()
+        efficiencySwitch = MaterialSwitch(this).apply {
+            text = "Run sessions on efficiency cores"
+            setTextColor(0xFFD4D4D4.toInt())
+            isChecked = settingsStore.efficiencyCores
+            setOnCheckedChangeListener { _, checked ->
+                settingsStore.efficiencyCores = checked
+                if (checked && settingsStore.smartBalancing) {
+                    settingsStore.smartBalancing = false
+                    balanceSwitch?.isChecked = false
                 }
-            },
-        )
+                val msg = when {
+                    checked && CpuTopology.readEfficiencyMask() == null -> "This phone doesn't expose its core layout — no effect"
+                    checked -> "Applies to new tabs; load balancing is off while this is on"
+                    else -> "Applies to new tabs"
+                }
+                android.widget.Toast.makeText(this@MainActivity, msg, android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+        panel.addView(efficiencySwitch!!)
         panel.addView(
             TextView(this).apply {
                 text = "Pins new tabs to the phone's low-power cores. A program that keeps a core busy while idle (some CLIs do) then runs much cooler and drains less battery; heavy work such as builds is slower."

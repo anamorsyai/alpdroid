@@ -162,7 +162,12 @@ object AlpineSession {
             "COLUMNS" to cols.toString(),
             "LINES" to rows.toString(),
         )
-        return PtySession.start(bridge, context.cacheDir, rows, cols, argv, context.filesDir, env)
+        // Optional: let proot's seccomp filter trap only the syscalls it must, instead of single-stepping
+        // every syscall of every guest process (PROOT_NO_SECCOMP, below, forces the slow way). Much less
+        // CPU for syscall-heavy programs (node/bun CLIs); off by default because it can make some apk
+        // operations fail with EPERM — see Settings -> Sessions & Background.
+        val sessionEnv = if (SettingsStore(context).fastProotTracing) env - "PROOT_NO_SECCOMP" else env
+        return PtySession.start(bridge, context.cacheDir, rows, cols, argv, context.filesDir, sessionEnv)
             .also { it.cleanupDir = prootScratch }
     }
 

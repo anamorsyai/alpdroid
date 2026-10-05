@@ -850,6 +850,26 @@ class MainActivity : Activity() {
             },
         )
 
+        panel.addView(
+            MaterialSwitch(this).apply {
+                text = "Faster process tracing (experimental)"
+                setTextColor(0xFFD4D4D4.toInt())
+                isChecked = settingsStore.fastProotTracing
+                setOnCheckedChangeListener { _, checked ->
+                    settingsStore.fastProotTracing = checked
+                    android.widget.Toast.makeText(this@MainActivity, "Applies to new tabs", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            },
+        )
+        panel.addView(
+            TextView(this).apply {
+                text = "Makes programs like opencode, node and python use much less CPU (and run cooler) by letting proot trace only the syscalls it needs. If apk or another tool starts failing with \"Permission denied\" or EPERM in a new tab, turn this off."
+                setTextColor(0xFF8B93A1.toInt())
+                textSize = 12f
+                setPadding(0, dp(4), 0, dp(8))
+            },
+        )
+
         panel.addView(sectionLabel("Terminal memory"))
         panel.addView(
             pillButton().apply {

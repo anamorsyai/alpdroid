@@ -33,6 +33,9 @@ class ResourceManager(private val app: AlpineTermApp) {
     @Volatile private var thermalStatus = 0
     @Volatile private var usage: List<TabUsage> = emptyList()
     @Volatile private var appRssBytes = 0L
+    @Volatile private var renderLine = ""
+    private var lastRender: RenderStats.Snapshot? = null
+    private var lastRenderAtMs = 0L
 
     private val enabled: Boolean get() = runCatching { SettingsStore(app).resourceManagerEnabled }.getOrDefault(true)
 
@@ -72,8 +75,31 @@ class ResourceManager(private val app: AlpineTermApp) {
         }
     }
 
+    private fun updateRenderLine() {
+        val now = System.currentTimeMillis()
+        val cur = RenderStats.snapshot()
+        val prev = lastRender
+        if (prev != null && now - lastRenderAtMs >= 1000) {
+            val dt = (now - lastRenderAtMs) / 1000.0
+            val drawn = cur.drawn - prev.drawn
+            val skipped = cur.skipped - prev.skipped
+            renderLine = if (drawn + skipped == 0L) "Terminal: idle"
+            else "Terminal: %.0f frames/s, %.1f ms each, %d%% of repaints skipped (nothing changed)".format(
+                drawn / dt,
+                if (drawn > 0) (cur.drawNanos - prev.drawNanos) / 1e6 / drawn else 0.0,
+                if (drawn + skipped > 0) (skipped * 100 / (drawn + skipped)).toInt() else 0,
+            )
+            lastRender = cur
+            lastRenderAtMs = now
+        } else if (prev == null) {
+            lastRender = cur
+            lastRenderAtMs = now
+        }
+    }
+
     private fun tick() {
         recomputeMode()
+        updateRenderLine()
         appRssBytes = readText("/proc/self/statm")?.let { ResourcePolicy.parseStatmRssBytes(it) } ?: 0L
         val tabs = app.tabs.toList()
         if (tabs.isEmpty()) { usage = emptyList(); samples.clear(); detectors.clear(); return }
@@ -144,6 +170,7 @@ class ResourceManager(private val app: AlpineTermApp) {
         val sb = StringBuilder()
         sb.append("Mode: ").append(mode.label).append(" (terminal repaints up to ").append(1000 / frameIntervalMs).append("/s)\n")
         sb.append("App memory: ").append(appRssBytes / (1024 * 1024)).append(" MB")
+        if (renderLine.isNotEmpty()) sb.append("\n").append(renderLine)
         for (u in usage) {
             sb.append("\n").append(u.title).append(": CPU ").append(u.cpuPercent.toInt()).append("% · RAM ").append(u.rssBytes / (1024 * 1024)).append(" MB")
         }

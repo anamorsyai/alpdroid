@@ -22,6 +22,12 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_FONT_FAMILY, "monospace") ?: "monospace"
         set(value) = prefs.edit().putString(KEY_FONT_FAMILY, value).apply()
 
+    /** Experimental. proot's seccomp acceleration for new interactive sessions: much less CPU for
+     *  syscall-heavy programs, but some `apk` operations can fail with EPERM, so it is opt-in. */
+    var fastProotTracing: Boolean
+        get() = prefs.getBoolean(KEY_FAST_TRACING, false)
+        set(value) = prefs.edit().putBoolean(KEY_FAST_TRACING, value).apply()
+
     /** The smart resource manager (see ResourceManager): adapts repaint rate to heat/battery, trims
      *  memory under pressure, closes frozen sessions. On by default. */
     var resourceManagerEnabled: Boolean
@@ -192,6 +198,7 @@ class SettingsStore(context: Context) {
         val SCROLLBACK_OPTIONS = listOf(500, 1000, 2000, 5000)
         private const val KEY_SCROLLBACK = "scrollback_lines"
         private const val KEY_RESOURCE_MANAGER = "resource_manager_enabled"
+        private const val KEY_FAST_TRACING = "fast_proot_tracing"
         private const val KEY_SNIPPET_MIG_ALPHACODE = "snippet_mig_alphacode_monitor_v2"
         private const val KEY_THEME = "theme"
         private const val KEY_FONT_SIZE = "font_size_sp"

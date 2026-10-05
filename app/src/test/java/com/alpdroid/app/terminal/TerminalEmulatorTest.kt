@@ -154,4 +154,48 @@ class TerminalEmulatorTest {
         assertEquals(0, t.trimScrollback(100))
         assertEquals(4, t.rows)
     }
+
+    @Test fun contentHashIsStableForIdenticalContent() {
+        val a = TerminalEmulator(5, 20)
+        val b = TerminalEmulator(5, 20)
+        a.type("hello\u001B[31m world")
+        b.type("hello\u001B[31m world")
+        assertEquals(a.contentHash(), b.contentHash())
+        // Rewriting the same text in place leaves the frame identical.
+        val before = a.contentHash()
+        a.type("\u001B[0m\u001B[1;1Hhello\u001B[31m world")
+        assertEquals(before, a.contentHash())
+    }
+
+    @Test fun contentHashChangesWithAnythingVisible() {
+        val t = TerminalEmulator(5, 20)
+        t.type("abc")
+        val base = t.contentHash()
+        t.type("d")
+        val afterChar = t.contentHash()
+        assertNotEquals(base, afterChar)
+        t.type("\u001B[1;1H") // cursor only
+        assertNotEquals(afterChar, t.contentHash())
+        val atHome = t.contentHash()
+        t.type("\u001B[1m\u001B[1;1Ha") // same char, now bold
+        assertNotEquals(atHome, t.contentHash())
+        t.type("\u001B[?25l") // cursor hidden
+        val hidden = t.contentHash()
+        t.type("\u001B[?25h")
+        assertNotEquals(hidden, t.contentHash())
+    }
+
+    @Test fun contentHashSeesColourAndSize() {
+        val a = TerminalEmulator(5, 20); val b = TerminalEmulator(5, 20)
+        a.type("x"); b.type("\u001B[44mx")
+        assertNotEquals(a.contentHash(), b.contentHash())
+        val c = TerminalEmulator(5, 20); val d = TerminalEmulator(6, 20)
+        assertNotEquals(c.contentHash(), d.contentHash())
+    }
+
+    @Test fun snapshotCarriesTheHashItWasTakenWith() {
+        val t = TerminalEmulator(5, 20)
+        t.type("abc")
+        assertEquals(t.contentHash(), t.renderSnapshot().contentHash)
+    }
 }

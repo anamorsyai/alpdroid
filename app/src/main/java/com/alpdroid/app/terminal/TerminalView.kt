@@ -45,6 +45,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             // session and pins the whole view hierarchy in memory after a tab is replaced.
             if (field !== value) field?.onAltScreenChanged = null
             field = value
+            lastDrawnHash = 0L
             // Reacting to this immediately (not waiting for the next onDraw's own polling check)
             // is what closes the race described on scheduleResize(delayMs=0L)'s own call site
             // below — see onAltScreenChanged's doc comment on TerminalEmulator.
@@ -443,23 +444,34 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         if (!ptyOutputPending.compareAndSet(false, true)) return
         val work = Runnable {
             ptyOutputPending.set(false)
+            var mustRepaint = scrollOffset != 0
             scrollOffset = 0
             // Real terminals snap the cursor solid on activity rather than leaving it mid-blink.
             if (!cursorBlinkOn) {
                 cursorBlinkOn = true
+                mustRepaint = true
                 blinkHandler.removeCallbacks(blinkRunnable)
                 blinkHandler.postDelayed(blinkRunnable, 530)
             }
             lastOutputFrameMs = SystemClock.uptimeMillis()
             // Nothing to paint while the view isn't on screen (app backgrounded, another screen on
             // top): the emulator keeps the state, and the view repaints on its own when shown again.
-            if (isShown) invalidate()
+            if (isShown) {
+                // Skip the repaint when it would produce exactly the frame already on screen — full-screen
+                // programs rewrite identical content constantly.
+                val em = emulator
+                if (mustRepaint || em == null || em.contentHash() != lastDrawnHash) invalidate() else RenderStats.frameSkipped()
+            }
         }
         // Repaint rate under sustained output is capped (see frameIntervalProvider): a full-screen
         // program streaming updates used to repaint the whole grid on every vsync, which is most of
         // the heat of running one here. The first update after a pause is immediate, and a trailing
         // frame is always scheduled, so the final state of a burst is always drawn.
-        val wait = (lastOutputFrameMs + frameIntervalProvider() - SystemClock.uptimeMillis()).coerceAtLeast(0L)
+        // While the user is typing, output is the echo of their keys: show it at once. The cap only
+        // applies to sustained output with nobody typing.
+        val now = SystemClock.uptimeMillis()
+        val interval = if (now - lastInputMs < INTERACTIVE_WINDOW_MS) 0L else frameIntervalProvider()
+        val wait = (lastOutputFrameMs + interval - now).coerceAtLeast(0L)
         if (wait == 0L) post(work) else postDelayed(work, wait)
     }
 
@@ -467,6 +479,10 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
      *  the phone is hot or in battery saver). Touch scrolling and cursor blink are not affected. */
     var frameIntervalProvider: () -> Long = { 33L }
     private var lastOutputFrameMs = 0L
+    private var lastInputMs = 0L
+
+    /** [TerminalEmulator.contentHash] of the frame last painted; 0 forces the next output to repaint. */
+    private var lastDrawnHash = 0L
 
     /**
      * How much the soft keyboard currently covers, in pixels — set by MainActivity from the IME
@@ -507,6 +523,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
 
     override fun onDraw(canvas: Canvas) {
         val em = emulator ?: return
+        val drawStartNs = System.nanoTime()
         // Catches switching onto a tab that's already showing the alt screen (resetViewState()
         // forces lastInAltScreen back to false so this re-checks against the newly attached
         // emulator) — the one case TerminalEmulator.onAltScreenChanged can't see on its own, since
@@ -565,6 +582,8 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
 
         if (hasSelection) drawSelectionOverlay(canvas, snap)
         canvas.restore()
+        lastDrawnHash = snap.contentHash
+        RenderStats.frameDrawn(System.nanoTime() - drawStartNs)
     }
 
     /** Highlights every cell between the (possibly reversed) selection endpoints, drawn as a
@@ -908,6 +927,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
      *  reuse the old tab's match row indices against the new tab's unrelated scrollback the next
      *  time ▲/▼ is pressed without retyping the query. */
     fun resetViewState() {
+        lastDrawnHash = 0L
         scrollOffset = 0
         hasSelection = false
         selectionActive = false
@@ -1170,6 +1190,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
     }
 
     fun send(bytes: ByteArray) {
+        lastInputMs = SystemClock.uptimeMillis()
         scrollOffset = 0
         onInput?.invoke(bytes)
     }
@@ -1244,6 +1265,8 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         private const val NEAR_ENDPOINT_THRESHOLD = 3
         private const val MAX_PASTE_CHARS = 5_000_000
         private const val PASTE_HINT_CHARS = 200_000
+        /** After a keystroke, output repaints are not rate-capped for this long (it is the echo). */
+        private const val INTERACTIVE_WINDOW_MS = 400L
 
         /** How long applyGridSize() waits for the pixel size to stop changing before actually
          *  resizing the emulator and the PTY — covers a pinch gesture's continuous stream of calls

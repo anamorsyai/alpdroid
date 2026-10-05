@@ -148,7 +148,9 @@ Settings → Sessions & Background → Smart resource manager (on by default) ke
 - **Repaint rate**: a terminal repaints at most ~30 times a second under sustained output (full-screen programs such as opencode used to repaint on every screen refresh, which is most of the heat), ~20 in battery saver or low battery, ~10 when Android reports the phone is hot. Nothing is painted while the terminal isn't on screen.
 - **Memory**: when Android is short on memory, old scrollback of background tabs is trimmed first. Terminal history per tab is also configurable (Terminal memory).
 - **Frozen sessions**: a session whose helper process keeps a CPU core busy while everything in it is idle is closed, with a notification, instead of draining the battery.
-- **Usage**: the same screen shows each session's CPU and RAM and the app's memory (tap Refresh usage).
+- **Usage**: the same screen shows each session's CPU and RAM, the app's memory, and the terminal's frames per second, draw time and skipped repaints (tap Refresh usage).
+- **Typing stays instant**: for 0.4 s after a keystroke the repaint cap is lifted, and a repaint that would draw the same frame again is skipped.
+- **Faster process tracing (experimental, off by default)**: lets proot trace only the system calls it needs instead of every one. Programs like opencode, node and python then use much less CPU and run cooler. Applies to new tabs. If `apk` or another tool fails with "Permission denied"/EPERM in a new tab, turn it off.
 
 ## 17. Home-screen widget
 

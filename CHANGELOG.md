@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.7.48 — snappier typing, fewer repaints
+
+- Typing latency: the 1.7.47 repaint cap could delay the echo of a keystroke inside a busy full-screen
+  program by up to one frame interval. Now, for 400 ms after any keystroke, output repaints are not
+  capped at all (the cap only applies to sustained output with nobody typing).
+- Repaints that would draw exactly the frame already on screen are skipped. Programs such as opencode
+  rewrite identical content constantly; detection is by a 64-bit digest of the visible grid, cursor and
+  size (taken under the same lock as the render snapshot, so a missed update is impossible), ~14 us on
+  a desktop JVM for a 50x100 grid. Settings shows how many repaints were skipped.
+- Settings -> Sessions & Background -> Smart resource manager now also shows the terminal's frames
+  per second and draw time, so heat can be tied to a number on the real device.
+- New experimental "Faster process tracing" switch (off by default): new interactive tabs let proot use
+  its seccomp filter instead of single-stepping every syscall of every guest process. Much less CPU
+  for syscall-heavy programs (node/bun CLIs such as opencode); can make some `apk` operations fail with
+  EPERM, which is why the old behaviour stays the default. Plugin scripts and package search are
+  unaffected.
+- 4 more unit tests (content digest); 53 in total.
+
 ## 1.7.47 — runs cooler: smart resource manager
 
 - Terminal repaint is capped under sustained output (~30/s; ~20/s in battery saver or low battery;

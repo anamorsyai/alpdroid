@@ -17,6 +17,8 @@ import kotlin.math.min
  */
 /** Bytes fed to the emulator per lock acquisition (see TerminalEmulator.feed). */
 private const val FEED_SLICE = 4096
+private const val FNV_OFFSET = -3750763034362895579L // 0xcbf29ce484222325
+private const val FNV_PRIME = 1099511628211L          // 0x100000001b3
 
 data class Cell(
     var ch: Char = ' ',
@@ -653,6 +655,9 @@ class TerminalEmulator(
         val cursorRow: Int,
         val cursorCol: Int,
         val cursorVisible: Boolean,
+        /** [contentHash] of the grid at the moment of the snapshot (taken under the same lock), so a
+         *  repaint can tell later whether anything it would show has changed since. */
+        val contentHash: Long = 0L,
     )
 
     // NOTE: intentionally shallow — the row lists are copied but Cells are shared with the
@@ -679,7 +684,33 @@ class TerminalEmulator(
             cursorRow = cursorRow,
             cursorCol = cursorCol,
             cursorVisible = cursorVisible,
+            contentHash = contentHash(),
         )
+    }
+
+    /**
+     * 64-bit digest of everything the visible grid would paint: every cell's character and colours and
+     * bold/underline/reverse, the cursor, and the size. Equal digests mean a repaint would produce an
+     * identical frame — TUIs often rewrite the same content, and skipping those repaints is free
+     * heat saved. Content-based on purpose: hooking every place that mutates a cell would be easy to
+     * get subtly wrong (a missed hook is a stale screen), while this costs ~5k cells of arithmetic.
+     */
+    @Synchronized
+    fun contentHash(): Long {
+        var h = FNV_OFFSET
+        for (row in screen) {
+            for (c in row) {
+                var v = c.ch.code.toLong() or ((c.fg.toLong() and 0xFFFFFFFFL) shl 16)
+                if (c.bold) v = v xor (1L shl 52)
+                if (c.underline) v = v xor (1L shl 53)
+                if (c.reverse) v = v xor (1L shl 54)
+                h = (h xor v) * FNV_PRIME
+                h = (h xor (c.bg.toLong() and 0xFFFFFFFFL)) * FNV_PRIME
+            }
+        }
+        h = (h xor ((cursorRow.toLong() shl 20) or cursorCol.toLong() or (if (cursorVisible) 1L shl 40 else 0L))) * FNV_PRIME
+        h = (h xor ((rows.toLong() shl 16) or cols.toLong())) * FNV_PRIME
+        return h
     }
 
     // --- Byte-level parsing -------------------------------------------------------------

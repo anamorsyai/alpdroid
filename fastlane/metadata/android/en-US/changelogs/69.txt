@@ -1,0 +1,4 @@
+Typing in full-screen programs is instant again
+Skips repaints that would look identical
+Settings shows terminal frames per second and draw time
+Experimental faster process tracing option

@@ -22,6 +22,12 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_FONT_FAMILY, "monospace") ?: "monospace"
         set(value) = prefs.edit().putString(KEY_FONT_FAMILY, value).apply()
 
+    /** The smart resource manager (see ResourceManager): adapts repaint rate to heat/battery, trims
+     *  memory under pressure, closes frozen sessions. On by default. */
+    var resourceManagerEnabled: Boolean
+        get() = prefs.getBoolean(KEY_RESOURCE_MANAGER, true)
+        set(value) = prefs.edit().putBoolean(KEY_RESOURCE_MANAGER, value).apply()
+
     /** Terminal history kept per tab. Every cell is an object, so a tab's scrollback costs real
      *  memory (thousands of lines add up to megabytes); 1000 keeps it light by default. Applies
      *  to tabs opened after the change. */
@@ -185,6 +191,7 @@ class SettingsStore(context: Context) {
     companion object {
         val SCROLLBACK_OPTIONS = listOf(500, 1000, 2000, 5000)
         private const val KEY_SCROLLBACK = "scrollback_lines"
+        private const val KEY_RESOURCE_MANAGER = "resource_manager_enabled"
         private const val KEY_SNIPPET_MIG_ALPHACODE = "snippet_mig_alphacode_monitor_v2"
         private const val KEY_THEME = "theme"
         private const val KEY_FONT_SIZE = "font_size_sp"

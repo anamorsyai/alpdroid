@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.7.47 — runs cooler: smart resource manager
+
+- Terminal repaint is capped under sustained output (~30/s; ~20/s in battery saver or low battery;
+  ~10/s when Android reports the phone hot). Full-screen programs such as opencode used to repaint the
+  whole grid on every screen refresh — most of the heat of running them here. The first update after a
+  pause is still immediate and a trailing frame is always drawn. Nothing is painted while the terminal
+  is off screen.
+- Smart resource manager (Settings -> Sessions & Background, on by default): watches thermal state,
+  battery saver, battery level and memory pressure; trims scrollback of background tabs when Android
+  is short on memory; closes a session whose native bridge keeps a core busy while the whole session is
+  idle (the frozen-session signature) with a notification; shows each session's CPU and RAM.
+- `ResourcePolicy` holds the decisions (mode, /proc parsing, runaway detection) with 18 unit tests;
+  `TerminalEmulator.trimScrollback` is tested too (49 unit tests in total).
+
 ## 1.7.46 — frozen sessions and Ctrl+C that did nothing
 
 - Fixed a freeze in the native pty bridge (introduced with the paste fix in 1.7.35): if the program in

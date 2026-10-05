@@ -14,6 +14,15 @@ class AlpineTermApp : Application() {
             sweepStaleProotScratch()
         }
         pluginJobs.start()
+        resourceManager.start()
+    }
+
+    /** Adapts to heat, battery saver and memory pressure (see ResourceManager). */
+    val resourceManager = ResourceManager(this)
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        resourceManager.onTrimMemory(level)
     }
 
     /** Scheduled / keep-running plugin scripts (see PluginJobs). */

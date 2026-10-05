@@ -225,6 +225,18 @@ class TerminalEmulator(
     }
 
     /** Client-side only — clears the view without touching the shell process (the "Clear" context-menu action). */
+    /** Frees memory under pressure: drops the OLDEST scrollback rows until at most [keep] remain (the
+     *  visible screen is untouched). Returns how many rows were released. */
+    @Synchronized
+    fun trimScrollback(keep: Int): Int {
+        var removed = 0
+        val limit = keep.coerceAtLeast(0)
+        while (scrollback.size > limit) { scrollback.removeFirst(); removed++ }
+        if (pendingRestoreCount > scrollback.size) pendingRestoreCount = scrollback.size
+        if (removed > 0) generation++
+        return removed
+    }
+
     @Synchronized
     fun clearAll() {
         for (r in 0 until rows) screen[r] = blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG)

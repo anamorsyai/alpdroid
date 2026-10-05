@@ -1,0 +1,4 @@
+Smart resource manager: terminal repaints less when the phone is hot or in battery saver
+Runs cooler with full-screen programs like opencode
+Trims memory under pressure and closes frozen sessions
+Settings shows each session's CPU and RAM

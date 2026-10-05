@@ -441,7 +441,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
      *  [scrollOffset]/[cursorBlinkOn] or calling the UI-thread-only invalidate() from elsewhere. */
     fun onPtyOutput() {
         if (!ptyOutputPending.compareAndSet(false, true)) return
-        post {
+        val work = Runnable {
             ptyOutputPending.set(false)
             scrollOffset = 0
             // Real terminals snap the cursor solid on activity rather than leaving it mid-blink.
@@ -450,9 +450,23 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
                 blinkHandler.removeCallbacks(blinkRunnable)
                 blinkHandler.postDelayed(blinkRunnable, 530)
             }
-            invalidate()
+            lastOutputFrameMs = SystemClock.uptimeMillis()
+            // Nothing to paint while the view isn't on screen (app backgrounded, another screen on
+            // top): the emulator keeps the state, and the view repaints on its own when shown again.
+            if (isShown) invalidate()
         }
+        // Repaint rate under sustained output is capped (see frameIntervalProvider): a full-screen
+        // program streaming updates used to repaint the whole grid on every vsync, which is most of
+        // the heat of running one here. The first update after a pause is immediate, and a trailing
+        // frame is always scheduled, so the final state of a burst is always drawn.
+        val wait = (lastOutputFrameMs + frameIntervalProvider() - SystemClock.uptimeMillis()).coerceAtLeast(0L)
+        if (wait == 0L) post(work) else postDelayed(work, wait)
     }
+
+    /** Minimum time between output-driven repaints, supplied by the resource manager (it grows when
+     *  the phone is hot or in battery saver). Touch scrolling and cursor blink are not affected. */
+    var frameIntervalProvider: () -> Long = { 33L }
+    private var lastOutputFrameMs = 0L
 
     /**
      * How much the soft keyboard currently covers, in pixels — set by MainActivity from the IME

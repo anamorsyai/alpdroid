@@ -37,6 +37,7 @@ terminal built from scratch for touch.
 | **A terminal made for phones** | Multi-tab, own VT100/xterm emulator, truecolor, mouse support for TUIs, pinch-zoom, ligatures, an extra-keys row (ESC, TAB, CTRL, ALT, arrows, and your own shortcuts). |
 | **One-tap servers** | Start an **SSH server** to log in from your laptop, or the **opencode web** UI for your LAN — each with a generated password. |
 | **Built for coding agents** | One-tap installs for opencode, Claude Code and alphacode, keys to launch them, and `alpctl` — a token-guarded API so agents can use the app. |
+| **Cool and light** | A smart resource manager caps repaint rate (lower when the phone is hot or in battery saver), trims memory under pressure, and closes frozen sessions. |
 | **Stays alive in the background** | A foreground service, optional wake lock and Wi-Fi lock keep long builds and servers running with the screen off. |
 | **Your files, both sides** | Built-in file browser for Android and Alpine storage; `/sdcard` and USB/SD drives are visible inside Linux. |
 | **Safe by design** | No analytics, no ads. Tokens live in the Android Keystore. Plugins and agent powers need your approval. |

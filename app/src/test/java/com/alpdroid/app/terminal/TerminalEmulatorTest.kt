@@ -137,4 +137,21 @@ class TerminalEmulatorTest {
         while (i < bytes.size) { val n = minOf(7, bytes.size - i); b.feed(bytes.copyOfRange(i, i + n), n); i += n }
         assertEquals(a.fullText(), b.fullText())
     }
+
+    @Test fun trimScrollbackDropsOldestRowsOnly() {
+        val t = TerminalEmulator(4, 10, maxScrollback = 500)
+        repeat(100) { t.type("row $it\r\n") }
+        val before = t.scrollbackSize()
+        assertTrue(before > 50)
+        val newest = t.scrollbackRow(before - 1).map { it.ch }.joinToString("").trimEnd()
+
+        val removed = t.trimScrollback(20)
+        assertEquals(before - 20, removed)
+        assertEquals(20, t.scrollbackSize())
+        // The newest rows (the ones just above the screen) are the ones kept.
+        assertEquals(newest, t.scrollbackRow(19).map { it.ch }.joinToString("").trimEnd())
+        // Visible screen untouched; trimming further than what exists is harmless.
+        assertEquals(0, t.trimScrollback(100))
+        assertEquals(4, t.rows)
+    }
 }

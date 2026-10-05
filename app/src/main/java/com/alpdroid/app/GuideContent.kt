@@ -41,6 +41,7 @@ Add a button to the key row that types a command for you in one tap, for example
 
 • Keep sessions alive (Settings → Sessions & Background) is on by default. You'll see a notification saying how many sessions are running. Tap it to come back, or tap Exit to close everything.
 • The wake lock (on by default) also keeps the processor and Wi-Fi awake, so servers and long jobs keep running with the screen off. It uses more battery; turn it off in Settings if you don't need that.
+• Smart resource manager (on by default) slows terminal repainting when the phone is warm or in battery saver, trims old scrollback when memory is short, closes a frozen session that keeps the CPU busy, and shows each session's CPU and RAM. It's in the same screen.
 • If background processes still die on Android 12+, use "Copy adb fix for killed processes" in the same screen.
 
 If your phone still stops the app, look for battery or "background activity" settings for AlpDroid in Android and allow it to run in the background.""",

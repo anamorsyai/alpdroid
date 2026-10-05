@@ -106,6 +106,19 @@ class PtySession private constructor(
      *  handle Ctrl+C. The session then ends like any exited shell. */
     fun forceKill(): Boolean = sendControl("KILL")
 
+    /** OS pid of the native bridge, or -1 when it can't be determined (Process.pid() is API 33+; older
+     *  Android keeps it in a private field). Used by the resource manager to read /proc. */
+    val pid: Int by lazy {
+        runCatching { (Process::class.java.getMethod("pid").invoke(process) as Long).toInt() }
+            .getOrElse {
+                runCatching {
+                    val f = process.javaClass.getDeclaredField("pid")
+                    f.isAccessible = true
+                    f.getInt(process)
+                }.getOrDefault(-1)
+            }
+    }
+
     @Volatile
     private var controlOut: OutputStream? = null
 

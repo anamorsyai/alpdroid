@@ -141,6 +141,15 @@ Android stops background apps. Countermeasures (Settings → Sessions & Backgrou
 - On Android 12+ some devices additionally cap child processes ("phantom process killer"). If background processes still die, that limit can only be lifted from Developer options or `adb` (not from the app).
 - After a system kill, the app says so plainly on next launch (not a crash) with a battery-settings shortcut. Open sessions can't survive a kill — everything running stops.
 
+### Smart resource manager
+
+Settings → Sessions & Background → Smart resource manager (on by default) keeps AlpDroid cool and light:
+
+- **Repaint rate**: a terminal repaints at most ~30 times a second under sustained output (full-screen programs such as opencode used to repaint on every screen refresh, which is most of the heat), ~20 in battery saver or low battery, ~10 when Android reports the phone is hot. Nothing is painted while the terminal isn't on screen.
+- **Memory**: when Android is short on memory, old scrollback of background tabs is trimmed first. Terminal history per tab is also configurable (Terminal memory).
+- **Frozen sessions**: a session whose helper process keeps a CPU core busy while everything in it is idle is closed, with a notification, instead of draining the battery.
+- **Usage**: the same screen shows each session's CPU and RAM and the app's memory (tap Refresh usage).
+
 ## 17. Home-screen widget
 
 Add the AlpDroid widget → tap jumps straight into a new session.

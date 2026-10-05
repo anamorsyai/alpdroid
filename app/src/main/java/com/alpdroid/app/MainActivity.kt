@@ -183,6 +183,7 @@ class MainActivity : Activity() {
         terminalView = TerminalView(this, null)
         terminalContainer.addView(terminalView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         terminalView.onInput = { bytes -> writeToActiveSession(bytes) }
+        terminalView.frameIntervalProvider = { (application as AlpineTermApp).resourceManager.frameIntervalMs }
         terminalView.onPaste = { bytes, bracketed -> tabs.getOrNull(activeTabIndex)?.session?.pasteAsync(bytes, bracketed) }
         terminalView.onGridSize = { rows, cols -> onGridSize(rows, cols) }
         terminalView.onFontScaleChanged = { sp -> settingsStore.fontSizeSp = sp }
@@ -812,6 +813,40 @@ class MainActivity : Activity() {
                 setTextColor(0xFFD4D4D4.toInt())
                 isChecked = settingsStore.bellSoundEnabled
                 setOnCheckedChangeListener { _, checked -> settingsStore.bellSoundEnabled = checked }
+            },
+        )
+
+        panel.addView(sectionLabel("Smart resource manager"))
+        panel.addView(
+            MaterialSwitch(this).apply {
+                text = "Adapt to heat, battery and memory"
+                setTextColor(0xFFD4D4D4.toInt())
+                isChecked = settingsStore.resourceManagerEnabled
+                setOnCheckedChangeListener { _, checked -> settingsStore.resourceManagerEnabled = checked }
+            },
+        )
+        panel.addView(
+            TextView(this).apply {
+                text = "Slows terminal repainting when the phone is warm or in battery saver, trims old scrollback of background tabs when memory is short, and closes a frozen session that keeps a CPU core busy."
+                setTextColor(0xFF8B93A1.toInt())
+                textSize = 12f
+                setPadding(0, dp(4), 0, dp(8))
+            },
+        )
+        val resourceStatus = TextView(this).apply {
+            setTextColor(0xFFD4D4D4.toInt())
+            textSize = 13f
+            text = (application as AlpineTermApp).resourceManager.statusText()
+        }
+        panel.addView(resourceStatus)
+        panel.addView(
+            pillButton().apply {
+                text = "Refresh usage"
+                setOnClickListener {
+                    val rm = (application as AlpineTermApp).resourceManager
+                    rm.refreshNow()
+                    mainHandler.postDelayed({ resourceStatus.text = rm.statusText() }, 600)
+                }
             },
         )
 

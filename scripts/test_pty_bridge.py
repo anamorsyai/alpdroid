@@ -24,10 +24,10 @@ def build():
     subprocess.run(["cc", "-Wall", "-Wextra", "-O2", "-o", BIN, SRC], check=True)
 
 
-def start(cmd, name):
+def start(cmd, name, env=None):
     fifo = os.path.join(TMP, name + ".fifo")
     os.mkfifo(fifo)
-    p = subprocess.Popen([BIN, fifo, "24", "80", "--"] + cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    p = subprocess.Popen([BIN, fifo, "24", "80", "--"] + cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
     out = bytearray()
     threading.Thread(target=lambda: [out.extend(c) for c in iter(lambda: p.stdout.read1(65536), b"")], daemon=True).start()
     time.sleep(0.4)
@@ -107,6 +107,14 @@ def main():
     control(w, "30 100")
     wait(p, 4)
     check("resize and normal output still work", b"24 80" in bytes(out))
+
+    # ALPDROID_CPU_MASK pins the guest to the given cores and is not leaked into its environment.
+    env = dict(os.environ, ALPDROID_CPU_MASK="1")
+    p, _, out = start(["sh", "-c", "grep Cpus_allowed_list /proc/self/status; echo MASK=${ALPDROID_CPU_MASK-unset}; sleep 1"], "affinity", env)
+    wait(p, 4)
+    text = bytes(out).decode(errors="replace")
+    check("CPU mask pins the guest to cpu 0", "Cpus_allowed_list:\t0" in text, text)
+    check("CPU mask variable is not passed to the guest", "MASK=unset" in text, text)
 
     # Large input to a program that does read it (cat echoes it back): no deadlock.
     p, w, out = start(["cat"], "cat")

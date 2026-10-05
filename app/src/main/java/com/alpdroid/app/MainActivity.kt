@@ -870,6 +870,27 @@ class MainActivity : Activity() {
             },
         )
 
+        panel.addView(
+            MaterialSwitch(this).apply {
+                text = "Run sessions on efficiency cores"
+                setTextColor(0xFFD4D4D4.toInt())
+                isChecked = settingsStore.efficiencyCores
+                setOnCheckedChangeListener { _, checked ->
+                    settingsStore.efficiencyCores = checked
+                    val msg = if (checked && CpuTopology.readEfficiencyMask() == null) "This phone doesn't expose its core layout — no effect" else "Applies to new tabs"
+                    android.widget.Toast.makeText(this@MainActivity, msg, android.widget.Toast.LENGTH_SHORT).show()
+                }
+            },
+        )
+        panel.addView(
+            TextView(this).apply {
+                text = "Pins new tabs to the phone's low-power cores. A program that keeps a core busy while idle (some CLIs do) then runs much cooler and drains less battery; heavy work such as builds is slower."
+                setTextColor(0xFF8B93A1.toInt())
+                textSize = 12f
+                setPadding(0, dp(4), 0, dp(8))
+            },
+        )
+
         panel.addView(sectionLabel("Terminal memory"))
         panel.addView(
             pillButton().apply {

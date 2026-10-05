@@ -167,7 +167,10 @@ object AlpineSession {
         // every syscall of every guest process (PROOT_NO_SECCOMP, below, forces the slow way). Much less
         // CPU for syscall-heavy programs (node/bun CLIs); off by default because it can make some apk
         // operations fail with EPERM — see Settings -> Sessions & Background.
-        val sessionEnv = if (SettingsStore(context).fastProotTracing) env - "PROOT_NO_SECCOMP" else env
+        val settings = SettingsStore(context)
+        var sessionEnv = if (settings.fastProotTracing) env - "PROOT_NO_SECCOMP" else env
+        // Optional: run this session on the low-power cores (pty_bridge applies the mask before exec).
+        if (settings.efficiencyCores) CpuTopology.readEfficiencyMask()?.let { sessionEnv = sessionEnv + ("ALPDROID_CPU_MASK" to it) }
         return PtySession.start(bridge, context.cacheDir, rows, cols, argv, context.filesDir, sessionEnv)
             .also { it.cleanupDir = prootScratch }
     }

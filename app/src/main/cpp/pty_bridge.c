@@ -28,6 +28,7 @@
 #include <sys/ioctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
@@ -478,6 +479,16 @@ int main(int argc, char **argv) {
         // on to spawn has any business holding these open.
         close(self_pipe[0]);
         close(self_pipe[1]);
+        // Optional CPU affinity (hex mask in ALPDROID_CPU_MASK, set by the app's "efficiency cores"
+        // option): everything the session spawns inherits it, so a busy-looping CLI lands on the
+        // phone's low-power cores instead of heating a big one. Best-effort — a failure just leaves
+        // the default affinity; the variable is removed so the guest never sees it.
+        const char *cpu_mask_env = getenv("ALPDROID_CPU_MASK");
+        if (cpu_mask_env != NULL) {
+            unsigned long mask = strtoul(cpu_mask_env, NULL, 16);
+            if (mask != 0) syscall(__NR_sched_setaffinity, 0, sizeof(mask), &mask);
+            unsetenv("ALPDROID_CPU_MASK");
+        }
         execvp(cmd_argv[0], cmd_argv);
         _exit(127);
     }

@@ -28,6 +28,12 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_FAST_TRACING, false)
         set(value) = prefs.edit().putBoolean(KEY_FAST_TRACING, value).apply()
 
+    /** Pins new interactive sessions to the phone's low-power cores (see CpuTopology): a program that
+     *  spins a core while idle then runs much cooler, at the cost of peak speed. Off by default. */
+    var efficiencyCores: Boolean
+        get() = prefs.getBoolean(KEY_EFFICIENCY_CORES, false)
+        set(value) = prefs.edit().putBoolean(KEY_EFFICIENCY_CORES, value).apply()
+
     /** The smart resource manager (see ResourceManager): adapts repaint rate to heat/battery, trims
      *  memory under pressure, closes frozen sessions. On by default. */
     var resourceManagerEnabled: Boolean
@@ -199,6 +205,7 @@ class SettingsStore(context: Context) {
         private const val KEY_SCROLLBACK = "scrollback_lines"
         private const val KEY_RESOURCE_MANAGER = "resource_manager_enabled"
         private const val KEY_FAST_TRACING = "fast_proot_tracing"
+        private const val KEY_EFFICIENCY_CORES = "efficiency_cores"
         private const val KEY_SNIPPET_MIG_ALPHACODE = "snippet_mig_alphacode_monitor_v2"
         private const val KEY_THEME = "theme"
         private const val KEY_FONT_SIZE = "font_size_sp"

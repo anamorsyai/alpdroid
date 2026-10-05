@@ -876,6 +876,23 @@ class TerminalEmulator(
         // negative row/col and crash on the next screen[] access.
         fun p(i: Int, default: Int = 0) = params.getOrNull(i)?.takeIf { it != 0 }?.coerceIn(0, 9999) ?: default
 
+        // DEC-private sequences ("CSI ? ..."): only the ones implemented here. Everything else must be ignored —
+        // falling through to the plain handlers below treated `CSI ? u` (the kitty-keyboard query that Claude
+        // Code and other modern TUIs send at startup) as `CSI u` = "restore cursor", which threw the cursor to
+        // the saved position and garbled every relative redraw after it. (Not answered on purpose: replying
+        // would claim kitty-protocol support, and the keys would then be expected in an encoding we don't produce.)
+        if (private) {
+            when (final) {
+                'h' -> setMode(true, params, true)
+                'l' -> setMode(true, params, false)
+                'J' -> eraseInDisplay(p(0, 0)) // DECSED
+                'K' -> eraseInLine(p(0, 0))    // DECSEL
+                'n' -> if (p(0, 0) == 6) queueResponse("\u001B[?${cursorRow + 1};${min(cursorCol, cols - 1) + 1}R") // DECXCPR
+                else -> {}
+            }
+            return
+        }
+
         when (final) {
             'A' -> cursorRow = max(topMargin, cursorRow - max(1, p(0, 1)))
             'B' -> cursorRow = min(bottomMargin, cursorRow + max(1, p(0, 1)))

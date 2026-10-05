@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.7.59 — the real cause of Claude Code's garbled screen
+
+- Fixed: Claude Code (and other modern TUIs) send `CSI ? u` — a query for the kitty keyboard protocol — right at
+  startup. It was handled as the plain `CSI u` ("restore cursor"), which threw the cursor back to the saved position
+  (the top-left corner), so everything drawn with relative cursor moves afterwards landed on the wrong rows:
+  duplicated dialog lines, a cursor away from the prompt, typing that seemed to do nothing. Every `CSI ? …` sequence the
+  terminal doesn't implement is now ignored instead of falling through to its plain counterpart.
+- Verified by replaying a real Claude Code 2.1.289 session (startup, trust dialog, arrow keys, main prompt, typing,
+  backspace) through the emulator.
+
 ## 1.7.58 — Claude Code's screen no longer garbles
 
 - Fixed: full-screen terminal apps that redraw in place with the cursor-next-line / cursor-previous-line sequences

@@ -1,0 +1,1 @@
+Fix: Claude Code's screen no longer garbles (kitty keyboard query was moving the cursor)

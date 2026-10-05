@@ -336,4 +336,27 @@ class TerminalEmulatorTest {
         t.type("\u001B[10`Q")            // HPA: column 10
         assertEquals('Q', t.rowAt(1)[9].ch)
     }
+
+    @Test fun privateSequencesDoNotRunTheirPlainCounterparts() {
+        val t = TerminalEmulator(10, 40)
+        t.type("\u001B[3;5H")         // cursor to row 3, col 5
+        t.type("\u001B7")             // save it
+        t.type("\u001B[8;20H")        // somewhere else
+        // `CSI ? u` is the kitty-keyboard query modern TUIs (Claude Code) send at startup. It used to be handled as
+        // `CSI u` (restore cursor), which jumped the cursor back to the saved position.
+        t.type("\u001B[?u")
+        assertEquals(7, t.cursorRow)
+        assertEquals(19, t.cursorCol)
+        t.type("\u001B[?1s\u001B[?5l")  // other private forms must not act as plain `s` (save) either
+        t.type("\u001B8")
+        assertEquals(2, t.cursorRow)
+        assertEquals(4, t.cursorCol)
+    }
+
+    @Test fun kittyQueryIsNotAnswered() {
+        val replies = mutableListOf<String>()
+        val t = TerminalEmulator(5, 20, respond = { replies += it })
+        t.type("\u001B[?u\u001B[>0q")
+        assertEquals(emptyList<String>(), replies)   // answering would claim kitty-protocol support
+    }
 }

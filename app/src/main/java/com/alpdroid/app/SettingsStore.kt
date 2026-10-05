@@ -34,6 +34,13 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_EFFICIENCY_CORES, false)
         set(value) = prefs.edit().putBoolean(KEY_EFFICIENCY_CORES, value).apply()
 
+    /** Dynamic load balancing (see LoadBalancer): busy sessions nobody is looking at are parked on the
+     *  low-power cores so the foreground tab and other apps keep the big ones. On by default; it only
+     *  acts on phones where the low-power cores can be identified. */
+    var smartBalancing: Boolean
+        get() = prefs.getBoolean(KEY_SMART_BALANCING, true)
+        set(value) = prefs.edit().putBoolean(KEY_SMART_BALANCING, value).apply()
+
     /** The smart resource manager (see ResourceManager): adapts repaint rate to heat/battery, trims
      *  memory under pressure, closes frozen sessions. On by default. */
     var resourceManagerEnabled: Boolean
@@ -206,6 +213,7 @@ class SettingsStore(context: Context) {
         private const val KEY_RESOURCE_MANAGER = "resource_manager_enabled"
         private const val KEY_FAST_TRACING = "fast_proot_tracing"
         private const val KEY_EFFICIENCY_CORES = "efficiency_cores"
+        private const val KEY_SMART_BALANCING = "smart_balancing"
         private const val KEY_SNIPPET_MIG_ALPHACODE = "snippet_mig_alphacode_monitor_v2"
         private const val KEY_THEME = "theme"
         private const val KEY_FONT_SIZE = "font_size_sp"

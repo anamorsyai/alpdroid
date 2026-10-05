@@ -106,6 +106,10 @@ class PtySession private constructor(
      *  handle Ctrl+C. The session then ends like any exited shell. */
     fun forceKill(): Boolean = sendControl("KILL")
 
+    /** Restricts the whole guest process tree to the CPUs in [hexMask] (null = every CPU again).
+     *  Done by the bridge, per thread, so it also covers processes started later by inheritance. */
+    fun setCpuAffinity(hexMask: String?): Boolean = sendControl("AFF ${hexMask ?: "0"}")
+
     /** OS pid of the native bridge, or -1 when it can't be determined (Process.pid() is API 33+; older
      *  Android keeps it in a private field). Used by the resource manager to read /proc. */
     val pid: Int by lazy {

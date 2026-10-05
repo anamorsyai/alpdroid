@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.7.53 — smart load balancing, `.ad` plugin files
+
+- New: **Balance load across cores** (Settings → Sessions & Background, on by default). Every 15 s the resource
+  manager looks at each session's CPU use; a busy session in a background tab — or any busy session while the
+  app is hidden, or while the phone is hot — is parked on the low-power cores (the bridge re-pins the whole
+  process tree per thread), and moves back immediately when you return to its tab or after it calms down. It
+  only touches AlpDroid's own processes, never other apps, and does not change priorities, so nothing can be
+  starved or hung. The usage view shows "parked on efficiency cores".
+- New: **plugin files (`.ad`)**. A plugin can be one self-contained JSON file (manifest + scripts) with a
+  published schema (`docs/alpdroid-plugin.schema.json`). Settings → Plugins → *Import plugin file (.ad)* validates
+  strictly and installs it (replacing an existing id while keeping its saved values); *Export as .ad* bundles an
+  installed plugin. Importing never runs anything: you still review the scripts and tap Allow.
+
 ## 1.7.52 — efficiency cores on more phones
 
 - "Run sessions on efficiency cores" now also works on phones that hide per-core frequencies from apps: it

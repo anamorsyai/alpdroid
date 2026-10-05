@@ -1,0 +1,17 @@
+{
+  "alpdroid": 1,
+  "id": "hello-ad",
+  "title": "Hello (.ad example)",
+  "description": "A tiny plugin bundled in a single .ad file. Fields reach the script as FIELD_<ID> environment variables.",
+  "version": "1.0.0",
+  "fields": [
+    { "id": "name", "type": "text", "label": "Name", "default": "world" },
+    { "id": "loud", "type": "toggle", "label": "Shout", "default": false }
+  ],
+  "buttons": [
+    { "id": "greet", "label": "Greet", "script": "greet.sh" }
+  ],
+  "files": {
+    "greet.sh": "#!/bin/sh\nmsg=\"Hello, $FIELD_NAME!\"\n[ \"$FIELD_LOUD\" = 1 ] && msg=$(echo \"$msg\" | tr 'a-z' 'A-Z')\necho \"$msg\"\n"
+  }
+}

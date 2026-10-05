@@ -116,6 +116,14 @@ def main():
     check("CPU mask pins the guest to cpu 0", "Cpus_allowed_list:\t0" in text, text)
     check("CPU mask variable is not passed to the guest", "MASK=unset" in text, text)
 
+    # Runtime affinity: "AFF <mask>" re-pins the whole guest tree, "AFF 0" gives every CPU back.
+    p, w, out = start(["sh", "-c", "sleep 1.5; grep Cpus_allowed_list /proc/self/status; sleep 1"], "aff-live")
+    control(w, "AFF 1")
+    time.sleep(0.8)
+    control(w, "AFF 1")  # new children inherit from the re-pinned parent as well
+    wait(p, 6)
+    check("AFF restricts an already-running guest", "Cpus_allowed_list:\t0" in bytes(out).decode(errors="replace"), bytes(out).decode(errors="replace"))
+
     # Large input to a program that does read it (cat echoes it back): no deadlock.
     p, w, out = start(["cat"], "cat")
     data = b"y" * 100 + b"\n"

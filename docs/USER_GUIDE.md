@@ -120,6 +120,21 @@ Custom Settings screens with fields + buttons running your scripts.
 
 Format: folder with `plugin.json` + scripts; fields reach scripts as `FIELD_<ID>` env (toggles `1`/`0`); buttons can run in background; schedules included. Entries persist and are backed up.
 
+**Plugin files (`.ad`)** — a plugin can also be a single `.ad` file (AlpDroid plugin): one JSON document holding the manifest and every script, so it is easy to share. Import with Settings → Plugins → **Import plugin file (.ad)**; export an installed plugin with **Export as .ad**. Importing only copies files — you still review the scripts and tap Allow before anything runs. Re-importing the same `id` replaces the scripts and keeps your saved field values. Layout (full schema: [docs/alpdroid-plugin.schema.json](alpdroid-plugin.schema.json), example: [examples/hello.ad](../examples/hello.ad)):
+
+```json
+{
+  "alpdroid": 1,
+  "id": "hello",
+  "title": "Hello", "description": "…", "version": "1.0.0",
+  "fields":    [{ "id": "name", "type": "text", "label": "Name", "default": "world" }],
+  "buttons":   [{ "id": "greet", "label": "Greet", "script": "greet.sh" }],
+  "schedules": [{ "id": "tick", "script": "tick.sh", "everyMinutes": 5 }],
+  "files":     { "greet.sh": "#!/bin/sh\necho Hello $FIELD_NAME\n", "tick.sh": "date\n" }
+}
+```
+Rules: `id` is `a-z 0-9 _ -` (max 40); every `script` must be a key of `files`; file names are relative (no `..`, not `plugin.json`/`state.json`/`logs/`); up to 64 files, 256 KB each, 1 MB total.
+
 ## 14. Scheduled & background jobs
 
 Per plugin under Automation: switches, Run now, View log. Jobs run while the keep-alive notification shows; after reboot open the app once. Notification Exit pauses jobs until next open. Times are approximate.
@@ -152,6 +167,7 @@ Settings → Sessions & Background → Smart resource manager (on by default) ke
 - **Typing stays instant**: for 0.4 s after a keystroke the repaint cap is lifted, and a repaint that would draw the same frame again is skipped.
 - **Faster process tracing (experimental, off by default)**: lets proot trace only the system calls it needs instead of every one. Programs like opencode, node and python then use much less CPU and run cooler. Applies to new tabs. If `apk` or another tool fails with "Permission denied"/EPERM in a new tab, turn it off.
 - **Run sessions on efficiency cores (off by default)**: pins new tabs to the phone's low-power cores. A program that keeps a core busy while idle (some CLIs do) then runs much cooler and drains less battery; heavy work such as builds is slower. Applies to new tabs.
+- **Balance load across cores (on by default)**: a busy session in a background tab (or any busy session while the app is hidden) is parked on the phone's low-power cores, so the tab you are using and your other apps keep the fast ones; it moves back when you return to it or it calms down. Hot phone → even the active tab is parked. Only AlpDroid's own processes are touched, never other apps, and nothing is paused or re-prioritised. The status above says when a session is parked. Needs a phone whose low-power cores can be detected.
 
 ## 17. Home-screen widget
 

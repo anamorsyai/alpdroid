@@ -18,6 +18,7 @@
  * the data stream so a resize can never collide with terminal data (e.g. a literal Ctrl-A byte
  * in the output). Pass "-" to run without one (resize just won't work).
  */
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -154,6 +155,8 @@ static void signal_foreground(int master, int sig) {
     else if (g_child > 0) kill(-g_child, sig);
 }
 
+static void apply_affinity(unsigned long mask);
+
 static void service_control(int master) {
     if (g_control_fd < 0) return;
     // Only our own trusted Kotlin code writes here, always short well-formed lines, so this should
@@ -177,6 +180,10 @@ static void service_control(int master) {
         int rr = 0, cc = 0;
         if (strcmp(line, "INT") == 0) {
             signal_foreground(master, SIGINT);
+        } else if (strncmp(line, "AFF ", 4) == 0) {
+            // "AFF <hex cpu mask>"; 0 means "all CPUs".
+            unsigned long m = strtoul(line + 4, NULL, 16);
+            apply_affinity(m == 0 ? ~0UL : m);
         } else if (strcmp(line, "KILL") == 0) {
             if (g_child > 0) { kill(-g_child, SIGKILL); kill(g_child, SIGKILL); }
         } else if (sscanf(line, "%d %d", &rr, &cc) == 2 && rr > 0 && cc > 0) {
@@ -190,6 +197,64 @@ static void service_control(int master) {
     size_t remaining = g_ctl_len - (size_t) (line - g_ctlbuf);
     memmove(g_ctlbuf, line, remaining);
     g_ctl_len = remaining;
+}
+
+/** Restricts the guest's whole process tree (every thread of every descendant of `g_child`) to the CPUs in
+ *  `mask` — the app's load balancer uses this to park busy background sessions on the phone's low-power
+ *  cores and to give them all cores back. Affinity is reversible without privileges (unlike nice), and
+ *  touches only our own session's processes. Best-effort: unreadable /proc entries are skipped. */
+#define MAX_TRACKED_PIDS 16384
+static void apply_affinity(unsigned long mask) {
+    static int pids[MAX_TRACKED_PIDS], ppids[MAX_TRACKED_PIDS];
+    static char in_tree[MAX_TRACKED_PIDS];
+    if (g_child <= 0 || mask == 0) return;
+    int count = 0;
+    DIR *proc = opendir("/proc");
+    if (proc == NULL) return;
+    struct dirent *de;
+    while ((de = readdir(proc)) != NULL && count < MAX_TRACKED_PIDS) {
+        int pid = atoi(de->d_name);
+        if (pid <= 0) continue;
+        char path[64], line[512];
+        snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+        FILE *f = fopen(path, "r");
+        if (f == NULL) continue;
+        int ppid = -1;
+        if (fgets(line, sizeof(line), f) != NULL) {
+            // "pid (comm) S ppid ..." — comm may contain spaces/parens, so anchor on the last ')'.
+            char *rp = strrchr(line, ')');
+            char state;
+            if (rp != NULL) sscanf(rp + 1, " %c %d", &state, &ppid);
+        }
+        fclose(f);
+        pids[count] = pid;
+        ppids[count] = ppid;
+        in_tree[count] = (pid == (int) g_child);
+        count++;
+    }
+    closedir(proc);
+    for (int changed = 1, guard = 0; changed && guard < 64; guard++) {
+        changed = 0;
+        for (int i = 0; i < count; i++) {
+            if (in_tree[i]) continue;
+            for (int j = 0; j < count; j++) {
+                if (in_tree[j] && pids[j] == ppids[i]) { in_tree[i] = 1; changed = 1; break; }
+            }
+        }
+    }
+    for (int i = 0; i < count; i++) {
+        if (!in_tree[i]) continue;
+        char taskdir[64];
+        snprintf(taskdir, sizeof(taskdir), "/proc/%d/task", pids[i]);
+        DIR *tasks = opendir(taskdir);
+        if (tasks == NULL) continue;
+        struct dirent *te;
+        while ((te = readdir(tasks)) != NULL) {
+            int tid = atoi(te->d_name);
+            if (tid > 0) syscall(__NR_sched_setaffinity, tid, sizeof(mask), &mask);
+        }
+        closedir(tasks);
+    }
 }
 
 /** Writes all of buf to fd (blocking semantics). Returns 0 ok, -1 on a dead fd. */

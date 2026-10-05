@@ -212,6 +212,43 @@ object Plugins {
 
     fun delete(p: Plugin): Boolean = p.dir.deleteRecursively()
 
+    fun exists(context: Context, id: String) = File(dir(context), id).isDirectory
+
+    /** Writes a validated .ad package into ~/.alpdroid/plugins/<id>/. An existing plugin of the same id
+     *  is replaced, but its saved field values (state.json) and logs are kept. The approval fingerprint
+     *  covers the new files, so the plugin shows "needs review" until the user taps Allow — importing
+     *  never runs anything. */
+    fun install(context: Context, parsed: PluginPackage.Parsed): File {
+        val d = File(dir(context), parsed.id).apply { mkdirs() }
+        d.listFiles()?.forEach { if (it.name != "state.json" && it.name != "logs") it.deleteRecursively() }
+        val root = d.canonicalPath + File.separator
+        for ((name, content) in parsed.files) {
+            val f = File(d, name)
+            // Belt and braces on top of PluginPackage's name checks: never write outside the plugin folder.
+            if (!f.canonicalPath.startsWith(root)) throw IllegalArgumentException("unsafe path: $name")
+            f.parentFile?.mkdirs()
+            f.writeText(content)
+            if (name.endsWith(".sh")) f.setExecutable(true, false)
+        }
+        File(d, "plugin.json").writeText(parsed.manifest.toString(2))
+        return d
+    }
+
+    /** The plugin as a single .ad document (manifest + every text file it contains). Saved field values
+     *  and logs are not included. Throws if the plugin holds something that can't be bundled. */
+    fun exportText(p: Plugin): String {
+        val manifest = JSONObject(File(p.dir, "plugin.json").readText()).put("id", p.id)
+        val files = LinkedHashMap<String, String>()
+        p.dir.walkTopDown().onEnter { !(it.parentFile == p.dir && it.name == "logs") }
+            .filter { it.isFile && it.name != "plugin.json" && !it.name.startsWith("state.json") }.sortedBy { it.path }.forEach {
+                val rel = it.relativeTo(p.dir).path
+                if (!PluginPackage.isSafePath(rel)) throw IllegalStateException("can't bundle \"$rel\"")
+                if (it.length() > 256 * 1024) throw IllegalStateException("\"$rel\" is too large to bundle")
+                files[rel] = it.readText()
+            }
+        return PluginPackage.export(manifest.toString(), files)
+    }
+
     fun createSample(context: Context): Boolean = runCatching {
         val d = File(dir(context), "hello").apply { mkdirs() }
         File(d, "plugin.json").writeText(

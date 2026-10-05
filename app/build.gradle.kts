@@ -33,8 +33,8 @@ android {
         applicationId = "com.alpdroid.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 73
-        versionName = "1.7.52"
+        versionCode = 74
+        versionName = "1.7.53"
 
         ndk {
             // Keep in sync with fetch_proot.py's ANDROID_ABI_TO_TERMUX_ARCH — no point building
@@ -160,4 +160,6 @@ dependencies {
     implementation("androidx.core:core-splashscreen:1.0.1")
 
     testImplementation("junit:junit:4.13.2")
+    // Android's org.json is a stub in plain JVM unit tests; the real implementation lets PluginPackage be tested.
+    testImplementation("org.json:json:20240303")
 }

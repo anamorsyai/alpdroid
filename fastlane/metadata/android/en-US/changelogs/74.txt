@@ -1,0 +1,1 @@
+Smart load balancing across CPU cores; import and export plugins as single .ad files

@@ -202,6 +202,8 @@ alpctl — control the app from the terminal (needs Agent access on). Run `alpct
   alpctl plugin add ./my-plugin
 
 PLUGIN FILES
+Share a plugin as ONE file: Settings → Plugins → "Export as .ad" / "Import plugin file (.ad)". A .ad file is JSON with "alpdroid":1, "id", the manifest keys below, and "files":{"script.sh":"...text..."} (schema: docs/alpdroid-plugin.schema.json in the repo). Importing never runs anything; you review and Allow first.
+
 A plugin is a folder ~/.alpdroid/plugins/<name>/ with a plugin.json and scripts:
 {
   "title": "Deploy helper",

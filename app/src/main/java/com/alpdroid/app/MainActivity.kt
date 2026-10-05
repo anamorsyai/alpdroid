@@ -846,6 +846,22 @@ class MainActivity : Activity() {
                 setPadding(0, dp(4), 0, dp(8))
             },
         )
+        panel.addView(
+            MaterialSwitch(this).apply {
+                text = "Balance load across cores"
+                setTextColor(0xFFD4D4D4.toInt())
+                isChecked = settingsStore.smartBalancing
+                setOnCheckedChangeListener { _, checked -> settingsStore.smartBalancing = checked }
+            },
+        )
+        panel.addView(
+            TextView(this).apply {
+                text = "A busy session in a background tab (or any busy session while the app is hidden) is parked on the phone's low-power cores, so the tab you're using and your other apps keep the fast ones; it moves back as soon as you return to it or it calms down. Only AlpDroid's own processes are touched, never other apps, and nothing is paused. Needs a phone whose low-power cores can be detected (the status above tells you when a session is parked)."
+                setTextColor(0xFF8B93A1.toInt())
+                textSize = 12f
+                setPadding(0, dp(4), 0, dp(8))
+            },
+        )
         val resourceStatus = TextView(this).apply {
             setTextColor(0xFFD4D4D4.toInt())
             textSize = 13f
@@ -1626,6 +1642,89 @@ class MainActivity : Activity() {
 
     private fun buildPluginsCategory(panel: LinearLayout) { fillPlugins(panel) }
 
+    private var pluginsPanelRef: LinearLayout? = null
+    private var pendingPluginExport: Plugins.Plugin? = null
+
+    private fun pickPluginFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*" // ".ad" has no registered MIME type, so no narrower filter would show it
+        }
+        runCatching { startActivityForResult(intent, PLUGIN_IMPORT_REQUEST_CODE) }
+            .onFailure { android.widget.Toast.makeText(this, "No file picker found", android.widget.Toast.LENGTH_LONG).show() }
+    }
+
+    private fun importPluginFrom(uri: Uri) {
+        (application as AlpineTermApp).backgroundExecutor.execute {
+            val result = runCatching {
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readNBytesCompat(PluginPackage.MAX_FILE_BYTES + 1) } ?: throw PluginPackage.PluginFormatException("Couldn't read the file")
+                PluginPackage.parse(String(bytes, Charsets.UTF_8))
+            }
+            runOnUiThread {
+                result.onFailure { e ->
+                    com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                        .setTitle("Can't import this plugin")
+                        .setMessage((e as? PluginPackage.PluginFormatException)?.message ?: "Couldn't read the file")
+                        .setPositiveButton("OK", null).show()
+                }
+                result.onSuccess { parsed ->
+                    val title = parsed.manifest.optString("title", parsed.id)
+                    fun install() {
+                        runCatching { Plugins.install(this, parsed) }
+                            .onSuccess {
+                                android.widget.Toast.makeText(this, "Imported \"$title\" — open it and review the scripts before running", android.widget.Toast.LENGTH_LONG).show()
+                                pluginsPanelRef?.let { fillPlugins(it) }
+                            }
+                            .onFailure { android.widget.Toast.makeText(this, "Couldn't install the plugin", android.widget.Toast.LENGTH_LONG).show() }
+                    }
+                    if (Plugins.exists(this, parsed.id)) {
+                        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                            .setTitle("Replace \"$title\"?")
+                            .setMessage("A plugin with the id \"${parsed.id}\" is already installed. Its scripts will be replaced (your saved field values are kept) and it will need your approval again.")
+                            .setPositiveButton("Replace") { _, _ -> install() }
+                            .setNegativeButton("Cancel", null).show()
+                    } else install()
+                }
+            }
+        }
+    }
+
+    private fun exportPluginFile(p: Plugins.Plugin) {
+        pendingPluginExport = p
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/octet-stream"
+            putExtra(Intent.EXTRA_TITLE, "${p.id}.${PluginPackage.EXTENSION}")
+        }
+        runCatching { startActivityForResult(intent, PLUGIN_EXPORT_REQUEST_CODE) }
+            .onFailure { android.widget.Toast.makeText(this, "No file picker found", android.widget.Toast.LENGTH_LONG).show() }
+    }
+
+    private fun exportPluginTo(uri: Uri) {
+        val plugin = pendingPluginExport ?: return
+        pendingPluginExport = null
+        (application as AlpineTermApp).backgroundExecutor.execute {
+            val ok = runCatching {
+                val text = Plugins.exportText(plugin)
+                contentResolver.openOutputStream(uri, "wt")?.use { it.write(text.toByteArray(Charsets.UTF_8)) } ?: error("no stream")
+            }
+            runOnUiThread {
+                android.widget.Toast.makeText(this, if (ok.isSuccess) "Exported ${plugin.id}.${PluginPackage.EXTENSION}" else "Couldn't export: ${ok.exceptionOrNull()?.message ?: "error"}", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun java.io.InputStream.readNBytesCompat(max: Int): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(16 * 1024)
+        while (out.size() < max) {
+            val n = read(buf, 0, minOf(buf.size, max - out.size()))
+            if (n < 0) break
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
+    }
+
     private fun fillPlugins(panel: LinearLayout) {
         panel.removeAllViews()
         if (!AlpineRootfs.isReady(this)) { panel.addView(devNote("Open a terminal tab once first so Alpine is set up.")); return }
@@ -1633,7 +1732,9 @@ class MainActivity : Activity() {
         panel.addView(devNote("Custom panels built from a plugin.json plus scripts, kept inside Alpine so backups include them. You review scripts before anything runs."))
         panel.addView(guideLink("Plugins"))
         panel.addView(guideLink("Scheduled & background scripts", "Guide: scheduled & background scripts"))
+        pluginsPanelRef = panel
         panel.addView(pillButton().apply { text = "Rescan"; setOnClickListener { fillPlugins(panel) } })
+        panel.addView(pillButton().apply { text = "Import plugin file (.ad)"; setOnClickListener { pickPluginFile() } })
         panel.addView(pillButton().apply {
             text = "Create sample plugin"
             setOnClickListener {
@@ -1647,6 +1748,7 @@ class MainActivity : Activity() {
             panel.addView(devCard(p.title, chips = if (Plugins.isApproved(this, p)) listOf("approved" to 0xFF3ED0B8.toInt()) else listOf("needs review" to 0xFFE5A94B.toInt()),
                 lines = listOfNotNull(p.description.takeIf { it.isNotBlank() }?.let { "About" to it }, "Folder" to "~/.alpdroid/plugins/${p.id}", "Buttons" to (p.buttons.joinToString { it.label }.ifEmpty { "none" }))))
             panel.addView(pillButton().apply { text = "Open ${p.title}"; setOnClickListener { showPlugin(panel, p) } })
+            panel.addView(pillButton().apply { text = "Export as .ad"; setOnClickListener { exportPluginFile(p) } })
             panel.addView(pillButton().apply { text = "Delete"; setOnClickListener {
                 com.google.android.material.dialog.MaterialAlertDialogBuilder(this@MainActivity)
                     .setTitle("Delete plugin \"${p.title}\"?").setMessage("Removes its folder, scripts and saved values.")
@@ -4142,6 +4244,8 @@ class MainActivity : Activity() {
         when (requestCode) {
             BACKUP_CREATE_REQUEST_CODE -> doBackupToUri(uri)
             RESTORE_OPEN_REQUEST_CODE -> confirmRestoreUri(uri)
+            PLUGIN_IMPORT_REQUEST_CODE -> importPluginFrom(uri)
+            PLUGIN_EXPORT_REQUEST_CODE -> exportPluginTo(uri)
         }
     }
 
@@ -4590,6 +4694,8 @@ class MainActivity : Activity() {
         private const val LOCATION_PERMISSION_REQUEST_CODE = 1002
         private const val BACKUP_CREATE_REQUEST_CODE = 2001
         private const val RESTORE_OPEN_REQUEST_CODE = 2002
+        private const val PLUGIN_IMPORT_REQUEST_CODE = 2003
+        private const val PLUGIN_EXPORT_REQUEST_CODE = 2004
         private const val BELL_CHANNEL_ID = "alpineterm_bell"
         private const val BELL_MIN_INTERVAL_MS = 1500L
         private const val BELL_NOTIFICATION_BASE_ID = 2000

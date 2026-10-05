@@ -26,7 +26,7 @@ import java.util.concurrent.TimeUnit
  * Everything here is cheap: one pass over /proc every 15 seconds.
  */
 class ResourceManager(private val app: AlpineTermApp) {
-    data class TabUsage(val tabId: Int, val title: String, val cpuPercent: Double, val rssBytes: Long)
+    data class TabUsage(val tabId: Int, val title: String, val cpuPercent: Double, val rssBytes: Long, val parked: Boolean = false)
 
     @Volatile var mode: ResourcePolicy.Mode = ResourcePolicy.Mode.NORMAL
         private set
@@ -53,6 +53,36 @@ class ResourceManager(private val app: AlpineTermApp) {
     private class Sample(val bridgeJiffies: Long, val guestJiffies: Long, val atMs: Long)
 
     private val samples = HashMap<Int, Sample>()
+    private val balancerStates = HashMap<Int, LoadBalancer.State>()
+    /** Low-power cores of this phone (hex mask), looked up once; null when they can't be identified. */
+    private val efficiencyMask: String? by lazy { CpuTopology.readEfficiencyMask() }
+
+    /** Dynamic balancing needs an identifiable set of low-power cores, the user's switch on, and no
+     *  static "all tabs on efficiency cores" pin (which would fight it). */
+    private fun balancingActive(): Boolean = runCatching {
+        val s = SettingsStore(app)
+        enabled && s.smartBalancing && !s.efficiencyCores && efficiencyMask != null
+    }.getOrDefault(false)
+
+    /** One balancing step for [tab]; returns whether it is currently parked on the efficiency cores. */
+    private fun balance(tab: TerminalTab, isActive: Boolean, cpu: Double, active: Boolean): Boolean {
+        val state = balancerStates.getOrPut(tab.id) { LoadBalancer.State() }
+        if (!active) {
+            // Switched off (or not applicable): give any parked session its cores back, once.
+            if (state.placement == LoadBalancer.Placement.EFFICIENCY) {
+                tab.session.setCpuAffinity(null)
+                balancerStates.remove(tab.id)
+            }
+            return false
+        }
+        val input = LoadBalancer.Input(isActive, appVisible, mode == ResourcePolicy.Mode.COOL, cpu)
+        when (LoadBalancer.step(state, input)) {
+            LoadBalancer.Placement.EFFICIENCY -> tab.session.setCpuAffinity(efficiencyMask)
+            LoadBalancer.Placement.ALL -> tab.session.setCpuAffinity(null)
+            null -> {}
+        }
+        return state.placement == LoadBalancer.Placement.EFFICIENCY
+    }
     private val detectors = HashMap<Int, ResourcePolicy.RunawayDetector>()
     private val scheduler = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "alpdroid-resources").apply { isDaemon = true } }
 
@@ -130,6 +160,7 @@ class ResourceManager(private val app: AlpineTermApp) {
             jiffiesOf[pid] = stat.cpuJiffies
         }
 
+        val balancing = balancingActive()
         val now = System.currentTimeMillis()
         val result = ArrayList<TabUsage>()
         val liveIds = HashSet<Int>()
@@ -159,11 +190,13 @@ class ResourceManager(private val app: AlpineTermApp) {
                     tab.session.destroy()
                 }
             }
-            result += TabUsage(tab.id, tab.label ?: "Session ${index + 1}", cpu, rss)
+            val parked = balance(tab, index == app.activeTabIndex, cpu, balancing)
+            result += TabUsage(tab.id, tab.label ?: "Session ${index + 1}", cpu, rss, parked)
         }
         usage = result
         samples.keys.retainAll(liveIds)
         detectors.keys.retainAll(liveIds)
+        balancerStates.keys.retainAll(liveIds)
     }
 
     /** Called from [AlpineTermApp.onTrimMemory]: Android is short on memory — release what is cheapest
@@ -194,6 +227,7 @@ class ResourceManager(private val app: AlpineTermApp) {
         if (renderLine.isNotEmpty()) sb.append("\n").append(renderLine)
         for (u in usage) {
             sb.append("\n").append(u.title).append(": CPU ").append(u.cpuPercent.toInt()).append("% · RAM ").append(u.rssBytes / (1024 * 1024)).append(" MB")
+            if (u.parked) sb.append(" · parked on efficiency cores")
         }
         if (usage.isEmpty()) sb.append("\nNo sessions running.")
         return sb.toString()

@@ -325,6 +325,11 @@ class MainActivity : Activity() {
                     .setMessage(message)
                     .setPositiveButton("OK", null)
                     .setNegativeButton("Battery settings") { _, _ -> openBatteryExemption() }
+                    .setNeutralButton("Copy") { _, _ ->
+                        (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                            .setPrimaryClip(android.content.ClipData.newPlainText("AlpDroid exit report", message))
+                        android.widget.Toast.makeText(this, "Copied — paste it to whoever is helping", android.widget.Toast.LENGTH_SHORT).show()
+                    }
                     .show()
             }
         }
@@ -3352,6 +3357,13 @@ class MainActivity : Activity() {
                 // instead of asking to "resume": nothing was actually lost.
                 setupContainer.visibility = View.GONE
                 rebindTabOutputs()
+                if (tabs.isEmpty()) {
+                    // Every session had already ended while no screen was open (all dropped just now): this is a
+                    // fresh start, not a re-attach. (coerceIn(0, -1) on the empty list used to throw here — a crash.)
+                    setupContainer.visibility = View.VISIBLE
+                    maybeOfferSessionResume()
+                    return
+                }
                 switchToTab(activeTabIndex.coerceIn(0, tabs.size - 1))
                 // A widget tap that arrives as a normal launch Intent (the process was killed and
                 // this is a fresh Activity, not an already-running one reusing itself via
@@ -3619,7 +3631,14 @@ class MainActivity : Activity() {
             val code = if (tab.session.endedByUs) null else tab.session.exitCodeWithin(800)
             mainHandler.post {
                 if (code != null && code != 0 && tabs.contains(tab)) {
-                    val why = when (code) { 137 -> "killed (SIGKILL — Android stopped it, often the phantom-process limit or low memory)"; 143 -> "terminated (SIGTERM)"; else -> "exit code $code" }
+                    val processes = (application as AlpineTermApp).resourceManager.processCount
+                    val why = when (code) {
+                        137 -> "killed (SIGKILL — Android stopped it, often the phantom-process limit or low memory" +
+                            (if (processes > 0) "; about $processes of this app's processes were running, Android's limit is 32" else "") + ")"
+                        143 -> "terminated (SIGTERM)"
+                        125 -> "closed by AlpDroid's own cleanup (the terminal link ended while the program was still running)"
+                        else -> "exit code $code"
+                    }
                     android.widget.Toast.makeText(this, "Session ended: $why", android.widget.Toast.LENGTH_LONG).show()
                 }
                 tab.onExit?.invoke()
@@ -3636,15 +3655,26 @@ class MainActivity : Activity() {
      *  into the dead instance: it would update a tab list and views nobody can see, and — if it
      *  was the last tab — call finish() on an Activity that was never actually going to be shown
      *  again anyway, while the live, current Activity's UI just sits frozen on the exited tab. */
+    /** A session that ended while no Activity was attached reported its end to nobody (the callbacks were null), so
+     *  it would sit in [tabs] as a dead tab. Remove those quietly — no "last tab closes the app" logic here: the
+     *  caller decides what an empty list means (a fresh start). */
+    private fun dropDeadTabs() {
+        val dead = tabs.filter { !it.session.isAlive() }
+        if (dead.isEmpty()) return
+        val active = tabs.getOrNull(activeTabIndex)
+        dead.forEach { runCatching { it.session.destroy() }; tabs.remove(it) }
+        activeTabIndex = tabs.indexOf(active).takeIf { it >= 0 } ?: 0
+        persistTabLabels()
+        updateKeepAliveService()
+    }
+
     private fun rebindTabOutputs() {
         tabs.forEach { tab ->
             tab.onOutput = { if (tabs.getOrNull(activeTabIndex) === tab) terminalView.onPtyOutput() }
             tab.onExit = { onTabExited(tab) }
             tab.emulator.onBell = { onTerminalBell(tab.id) }
         }
-        // A session that ended while no Activity was attached reported its end to nobody (callbacks were
-        // null) — it would sit here as a dead tab. Tear those down now.
-        tabs.toList().filter { !it.session.isAlive() }.forEach { onTabExited(it) }
+        dropDeadTabs()
     }
 
     /** A tab's shell exited (typed "exit"/Ctrl-D, or crashed) — drop it and switch to a

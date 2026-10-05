@@ -109,6 +109,8 @@ static int self_pipe_write_fd = -1;
 // path reaps the child and this process exits promptly. destroyForcibly() on the Kotlin
 // side is the final fallback if even this wedges.
 static volatile sig_atomic_t term_requested = 0;
+/* Set when the bridge itself had to kill the guest because the relay ended while it was still running. */
+static volatile sig_atomic_t g_cleanup_killed = 0;
 // sig_atomic_t (not pid_t): read by sigterm_handler asynchronously — plain pid_t is
 // racy against the parent's post-fork assignment below.
 static volatile sig_atomic_t g_child = -1;
@@ -629,6 +631,8 @@ int main(int argc, char **argv) {
                 waited++;
             }
             if (waited >= 100) {
+                g_cleanup_killed = 1;
+                fprintf(stderr, "pty_bridge: relay ended while the guest was still running; killing it\n");
                 kill_tree();
                 int again = 0;
                 while (waitpid(child, &status, WNOHANG) != child && again < 100) { usleep(20000); again++; }
@@ -639,6 +643,8 @@ int main(int argc, char **argv) {
     if (control_fd >= 0) close(control_fd);
     close(self_pipe[0]);
     close(self_pipe[1]);
+    // 125: the bridge's own cleanup killed the guest (distinguishes it from a SIGKILL sent by Android).
+    if (g_cleanup_killed) return 125;
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     return 1;
 }

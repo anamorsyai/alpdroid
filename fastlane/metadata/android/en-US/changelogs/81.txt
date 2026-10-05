@@ -1,0 +1,1 @@
+Fix: crash when every session had ended in the background; crash details shown on next start

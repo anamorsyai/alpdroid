@@ -33,6 +33,10 @@ class ResourceManager(private val app: AlpineTermApp) {
     @Volatile private var thermalStatus = 0
     @Volatile private var usage: List<TabUsage> = emptyList()
     @Volatile private var appRssBytes = 0L
+    /** How many processes the sessions had at the last sample (bridges + everything under them). Android kills an
+     *  app's child processes above 32 ("phantom process" limit), so it is shown in the usage view. */
+    @Volatile var processCount = 0
+        private set
     @Volatile private var renderLine = ""
     private var lastRender: RenderStats.Snapshot? = null
     private var lastRenderAtMs = 0L
@@ -155,7 +159,7 @@ class ResourceManager(private val app: AlpineTermApp) {
         }
         appRssBytes = readText("/proc/self/statm")?.let { ResourcePolicy.parseStatmRssBytes(it) } ?: 0L
         val tabs = app.tabs.toList()
-        if (tabs.isEmpty()) { usage = emptyList(); samples.clear(); detectors.clear(); return }
+        if (tabs.isEmpty()) { usage = emptyList(); processCount = 0; samples.clear(); detectors.clear(); return }
 
         // One pass over /proc: ppid + cpu of every process we are allowed to see (our own uid).
         val parentOf = HashMap<Int, Int>()
@@ -207,6 +211,10 @@ class ResourceManager(private val app: AlpineTermApp) {
             result += TabUsage(tab.id, tab.label ?: "Session ${index + 1}", cpu, rss, parked)
         }
         usage = result
+        processCount = tabs.sumOf { tab ->
+            val bridge = tab.session.pid
+            if (bridge <= 0 || !parentOf.containsKey(bridge)) 0 else 1 + ResourcePolicy.descendants(bridge, parentOf).size
+        }
         samples.keys.retainAll(liveIds)
         detectors.keys.retainAll(liveIds)
         balancerStates.keys.retainAll(liveIds)
@@ -238,6 +246,10 @@ class ResourceManager(private val app: AlpineTermApp) {
         sb.append("Mode: ").append(mode.label).append(" (terminal repaints up to ").append(1000 / frameIntervalMs).append("/s)\n")
         sb.append("App memory: ").append(appRssBytes / (1024 * 1024)).append(" MB")
         if (renderLine.isNotEmpty()) sb.append("\n").append(renderLine)
+        if (processCount > 0) {
+            sb.append("\nProcesses: ").append(processCount)
+            if (processCount >= 26) sb.append(" — close to Android's limit of 32 for an app's child processes; above it Android kills them (see \"Copy adb fix\" above)")
+        }
         for (u in usage) {
             sb.append("\n").append(u.title).append(": CPU ").append(u.cpuPercent.toInt()).append("% · RAM ").append(u.rssBytes / (1024 * 1024)).append(" MB")
             if (u.parked) sb.append(" · parked on efficiency cores")

@@ -78,7 +78,11 @@ object ExitReport {
             val seen = prefs.getLong(KEY_LAST_TS, 0L)
             prefs.edit().putLong(KEY_LAST_TS, newest.timestamp).apply()
             if (newest.timestamp <= seen) return@runCatching null
-            describe(newest.reason, newest.importance, newest.rss, newest.description)
+            val text = describe(newest.reason, newest.importance, newest.rss, newest.description)
+            // A crash: attach the stack trace CrashLog saved (the system only says "crash").
+            val isCrash = newest.reason == REASON_CRASH || newest.reason == REASON_CRASH_NATIVE
+            val trace = if (isCrash) CrashLog.takeLast(context) else null
+            if (text != null && trace != null) "$text\n\n── Crash details ──\n$trace" else text
         }.getOrNull()
     }
 }

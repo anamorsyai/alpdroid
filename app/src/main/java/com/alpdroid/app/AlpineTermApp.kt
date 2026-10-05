@@ -6,6 +6,7 @@ import java.util.concurrent.Executors
 class AlpineTermApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        CrashLog.install(this)
         // Both are fire-and-forget maintenance: a notification-service IPC and a storage
         // enumeration + deletes that used to run synchronously here, stalling the first
         // frame on every cold start. Order-independent vs pluginJobs.start() below.

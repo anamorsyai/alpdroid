@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.7.60 — fixes a crash when every session had ended in the background
+
+- Fixed (crash, introduced in 1.7.57): if every session had ended while no screen was open (a server killed by Android
+  in the background, for instance) and you then reopened the app, removing the dead tabs left an empty list and
+  `coerceIn(0, -1)` threw — the app crashed on screen. Dead tabs are now dropped quietly and the app simply starts a
+  fresh session.
+- New: the app now saves the stack trace of any crash it suffers; the "AlpDroid was stopped by Android" dialog shows it
+  (with a Copy button), so a crash is no longer a mystery.
+- A session killed by AlpDroid's own cleanup (the terminal link ended while the program was still running) now says so
+  (exit code 125) instead of looking like an Android SIGKILL, and the SIGKILL message shows how many processes the
+  sessions had (Android kills an app's child processes above 32; the usage view shows the current number too).
+
 ## 1.7.59 — the real cause of Claude Code's garbled screen
 
 - Fixed: Claude Code (and other modern TUIs) send `CSI ? u` — a query for the kitty keyboard protocol — right at

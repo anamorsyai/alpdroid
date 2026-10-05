@@ -3178,7 +3178,10 @@ class MainActivity : Activity() {
     }
 
     private fun persistTabLabels() {
-        SessionPersistence.save(this, tabs.map { it.label })
+        // One-tap server tabs (SSH, opencode serve) are not remembered: their process does not survive a
+        // restart, and their name used to come back on an ordinary shell tab ("opencode serve" on a tab
+        // running plain opencode).
+        SessionPersistence.save(this, tabs.filterNot { it.isServer }.map { it.label })
         rebuildSessionsList()
     }
 

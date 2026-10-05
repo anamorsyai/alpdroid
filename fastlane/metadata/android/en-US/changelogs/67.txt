@@ -1,0 +1,4 @@
+Fixed sessions that froze and ignored Ctrl+C after the program exited
+Ctrl+C works even when the terminal stops accepting input
+Server tabs: press Ctrl+C twice to force-stop
+More robust terminal output reader

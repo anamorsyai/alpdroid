@@ -135,6 +135,62 @@ static void sigterm_handler(int sig) {
     wake_self_pipe();
 }
 
+// Control channel (named pipe from Kotlin). One line per message:
+//   "<rows> <cols>"  resize the pty
+//   "INT"            SIGINT to the pty's foreground process group
+//   "KILL"           SIGKILL to the whole guest process group
+// INT/KILL signal the processes directly instead of going through the pty, so they still work when
+// the pty's input queue is full and a ^C byte could never get in (a program in raw mode that
+// stopped reading — a wedged server). Serviced from the main loop AND while a write to the pty is
+// blocked, so an interrupt never waits behind input that cannot be delivered.
+static int g_control_fd = -1;
+static char g_ctlbuf[256];
+static size_t g_ctl_len = 0;
+
+static void signal_foreground(int master, int sig) {
+    pid_t pg = tcgetpgrp(master);
+    if (pg > 0) kill(-pg, sig);
+    else if (g_child > 0) kill(-g_child, sig);
+}
+
+static void service_control(int master) {
+    if (g_control_fd < 0) return;
+    // Only our own trusted Kotlin code writes here, always short well-formed lines, so this should
+    // never actually happen — but a message that filled the buffer with no newline in it would
+    // otherwise make the unsigned subtraction below underflow into an out-of-bounds read().
+    // Dropping the (garbage) buffered bytes is safe.
+    if (g_ctl_len >= sizeof(g_ctlbuf) - 1) g_ctl_len = 0;
+    ssize_t r = read(g_control_fd, g_ctlbuf + g_ctl_len, sizeof(g_ctlbuf) - g_ctl_len - 1);
+    if (r < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return;
+        g_control_fd = -1; // control side gone; resize/interrupt just stop working, not fatal
+        return;
+    }
+    if (r == 0) { g_control_fd = -1; return; }
+    g_ctl_len += (size_t) r;
+    g_ctlbuf[g_ctl_len] = '\0';
+    char *line = g_ctlbuf;
+    char *nl;
+    while ((nl = strchr(line, '\n')) != NULL) {
+        *nl = '\0';
+        int rr = 0, cc = 0;
+        if (strcmp(line, "INT") == 0) {
+            signal_foreground(master, SIGINT);
+        } else if (strcmp(line, "KILL") == 0) {
+            if (g_child > 0) { kill(-g_child, SIGKILL); kill(g_child, SIGKILL); }
+        } else if (sscanf(line, "%d %d", &rr, &cc) == 2 && rr > 0 && cc > 0) {
+            // Same clamp as argv parsing: set_winsize truncates to unsigned short.
+            if (rr > 1000) rr = 1000;
+            if (cc > 1000) cc = 1000;
+            set_winsize(master, rr, cc);
+        }
+        line = nl + 1;
+    }
+    size_t remaining = g_ctl_len - (size_t) (line - g_ctlbuf);
+    memmove(g_ctlbuf, line, remaining);
+    g_ctl_len = remaining;
+}
+
 /** Writes all of buf to fd (blocking semantics). Returns 0 ok, -1 on a dead fd. */
 static int write_all_stdout(const char *buf, ssize_t len) {
     ssize_t off = 0;
@@ -172,13 +228,30 @@ static int write_master_all(int master, const char *data, ssize_t len) {
         if (w > 0) { off += w; continue; }
         if (w < 0 && errno == EINTR) continue;
         if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            struct pollfd pfd;
-            pfd.fd = master;
-            pfd.events = POLLIN | POLLOUT;
-            if (poll(&pfd, 1, -1) < 0 && errno != EINTR) return -1;
-            if (pfd.revents & POLLIN) {
+            struct pollfd pfd[2];
+            int np = 1;
+            pfd[0].fd = master;
+            pfd[0].events = POLLIN | POLLOUT;
+            pfd[0].revents = 0;
+            if (g_control_fd >= 0) {
+                pfd[1].fd = g_control_fd;
+                pfd[1].events = POLLIN;
+                pfd[1].revents = 0;
+                np = 2;
+            }
+            if (poll(pfd, (nfds_t) np, -1) < 0 && errno != EINTR) return -1;
+            if (np == 2 && (pfd[1].revents & (POLLIN | POLLHUP | POLLERR))) service_control(master);
+            if (pfd[0].revents & (POLLERR | POLLNVAL)) return -1;
+            if (pfd[0].revents & POLLIN) {
                 if (pump_master(master, tmp, sizeof(tmp)) < 0) return -1;
             }
+            // Slave side closed (the guest exited or hung up the pty) and nothing is left to read:
+            // the input can never be delivered. Without this, a pending write loops forever —
+            // poll() reports POLLHUP at once and write() answers EAGAIN, not EIO — burning a core
+            // and never getting back to the main loop (stdin, SIGCHLD, control messages), which
+            // is exactly a session that looks frozen and ignores Ctrl+C.
+            if ((pfd[0].revents & POLLHUP) && !(pfd[0].revents & POLLIN)) return -1;
+            if (child_exited || term_requested) return -1;
             continue;
         }
         return -1; // EIO etc.: the slave side is gone
@@ -193,12 +266,10 @@ static int write_master_all(int master, const char *data, ssize_t len) {
  *  error, stdin/control both going away with nothing else left to do) — the caller still owns
  *  reaping `child` itself in those cases, same as before this function took on the SIGCHLD path
  *  at all. */
-static int relay_loop(int master, int control_fd, pid_t child, int self_pipe_read_fd, int *out_status) {
+static int relay_loop(int master, pid_t child, int self_pipe_read_fd, int *out_status) {
     struct pollfd fds[4];
     int stdin_open = 1;
     char buf[4096];
-    char ctlbuf[256];
-    size_t ctl_len = 0;
 
     for (;;) {
         int n = 0;
@@ -212,8 +283,8 @@ static int relay_loop(int master, int control_fd, pid_t child, int self_pipe_rea
             stdin_idx = n++;
         }
         int control_idx = -1;
-        if (control_fd >= 0) {
-            fds[n].fd = control_fd;
+        if (g_control_fd >= 0) {
+            fds[n].fd = g_control_fd;
             fds[n].events = POLLIN;
             control_idx = n++;
         }
@@ -276,42 +347,7 @@ static int relay_loop(int master, int control_fd, pid_t child, int self_pipe_rea
             }
         }
 
-        if (control_idx >= 0 && (fds[control_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
-            if (ctl_len >= sizeof(ctlbuf) - 1) {
-                // Only our own trusted Kotlin code ever writes here, always a short well-formed
-                // "<rows> <cols>\n" line, so this should never actually happen — but ctl_len and
-                // sizeof() are both unsigned, and without this guard a control message that
-                // somehow filled the buffer with no newline in it would make the subtraction
-                // below underflow to a huge count, turning the next read() into an out-of-bounds
-                // write past the end of ctlbuf. Dropping the (already-garbage) buffered bytes is
-                // safe: a resize is just a hint, never something losing one instance breaks.
-                ctl_len = 0;
-            }
-            ssize_t r = read(control_fd, ctlbuf + ctl_len, sizeof(ctlbuf) - ctl_len - 1);
-            if (r <= 0) {
-                control_fd = -1; // control side gone; resize just stops working, not fatal
-            } else {
-                ctl_len += (size_t) r;
-                ctlbuf[ctl_len] = '\0';
-                char *line = ctlbuf;
-                char *nl;
-                while ((nl = strchr(line, '\n')) != NULL) {
-                    *nl = '\0';
-                    int rr = 0, cc = 0;
-                    if (sscanf(line, "%d %d", &rr, &cc) == 2 && rr > 0 && cc > 0) {
-                        // Same clamp as argv parsing: set_winsize truncates to
-                        // unsigned short, so huge values would wrap.
-                        if (rr > 1000) rr = 1000;
-                        if (cc > 1000) cc = 1000;
-                        set_winsize(master, rr, cc);
-                    }
-                    line = nl + 1;
-                }
-                size_t remaining = ctl_len - (size_t) (line - ctlbuf);
-                memmove(ctlbuf, line, remaining);
-                ctl_len = remaining;
-            }
-        }
+        if (control_idx >= 0 && (fds[control_idx].revents & (POLLIN | POLLHUP | POLLERR))) service_control(master);
     }
     return 0;
 }
@@ -362,6 +398,7 @@ int main(int argc, char **argv) {
     set_winsize(master, rows, cols);
 
     int control_fd = open_control_fifo(control_path);
+    g_control_fd = control_fd;
 
     // Installed before fork() specifically so there's no window where the child could exit (an
     // exec failure, a command that's already missing) and deliver SIGCHLD before this process is
@@ -453,7 +490,7 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
     g_child = child; // visible to sigterm_handler: pgid == pid (child did setsid())
     int status = 0;
-    int reaped_in_loop = relay_loop(master, control_fd, child, self_pipe[0], &status);
+    int reaped_in_loop = relay_loop(master, child, self_pipe[0], &status);
     if (!reaped_in_loop) {
         // relay_loop ended some other way (master's own EOF, most commonly still — that still
         // happens immediately in the overwhelmingly common case of a program that doesn't spawn

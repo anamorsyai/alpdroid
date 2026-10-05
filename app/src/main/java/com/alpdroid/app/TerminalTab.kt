@@ -32,4 +32,12 @@ class TerminalTab(
      *  recreated the Activity would update the dead instance's tab list and views instead of the
      *  live one's. */
     @Volatile var onExit: (() -> Unit)? = null
+
+    /** Started by a one-tap "server" button (SSH, opencode web) rather than as an interactive shell:
+     *  Ctrl+C is how the user stops it, and pressing it twice quickly force-stops a server that
+     *  ignores or cannot handle the first one. */
+    @Volatile var isServer = false
+
+    /** Uptime of the last lone Ctrl+C sent to a server tab (0 = none), for the double-press check. */
+    @Volatile var lastCtrlCMs = 0L
 }

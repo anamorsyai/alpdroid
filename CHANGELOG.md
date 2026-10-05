@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.7.46 — frozen sessions and Ctrl+C that did nothing
+
+- Fixed a freeze in the native pty bridge (introduced with the paste fix in 1.7.35): if the program in
+  a tab exited or hung up the terminal while input was still waiting to be delivered, the bridge
+  spun at 100% CPU forever and never looked at anything else again — no output, no Ctrl+C, no tab
+  close. It now stops delivering to a closed terminal and follows the program's exit.
+- Ctrl+C no longer depends on the terminal accepting input: if the byte could not be written within
+  0.6 s (a wedged server, a program that stopped reading its input), the bridge sends SIGINT directly
+  to the foreground process group over its control channel. New `KILL` control message too.
+- Server tabs (SSH server, opencode web): pressing Ctrl+C twice within 2.5 s force-stops the server
+  and closes the tab, for a server that hung or ignores the first one.
+- The terminal output reader now survives a failure on a single chunk (and `Error`s such as
+  out-of-memory) instead of dying — a dead reader fills the bridge's pipe and freezes the session.
+- `scripts/test_pty_bridge.py`: integration tests for the bridge (stuck input, guest killed
+  mid-input, INT/KILL, resize, large paste), run in CI.
+
 ## 1.7.45 — claude key: private socket directory
 
 - The extra-keys `claude` key now makes `/root/.claude/run` private (mode 0700) before launching

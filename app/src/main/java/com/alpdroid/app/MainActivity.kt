@@ -3254,6 +3254,7 @@ class MainActivity : Activity() {
                         respond = { text -> writeToSession(started.session, text) },
                     )
                     val tab = TerminalTab(id, started.session, emulator, started.backendLabel, initialLabel)
+                    tab.isServer = directCommand != null
                     if (!tab.backendLabel.startsWith("Alpine")) {
                         val banner = "[AlpDroid] backend: ${tab.backendLabel}\r\n".toByteArray(Charsets.UTF_8)
                         emulator.feed(banner, banner.size)
@@ -3301,12 +3302,20 @@ class MainActivity : Activity() {
                 while (true) {
                     val n = try { tab.session.stdout.read(buf) } catch (e: IOException) { -1 }
                     if (n <= 0) break
-                    tab.emulator.feed(buf, n)
-                    // Not a direct `terminalView.onPtyOutput()` closure: this thread outlives any one
-                    // MainActivity instance, so it goes through the tab's own callback instead, kept
-                    // pointed at whichever Activity (and TerminalView) currently exists — see
-                    // TerminalTab.onOutput and rebindTabOutputs().
-                    tab.onOutput?.invoke()
+                    // Throwable, not just Exception, and per chunk: if this thread died on one bad chunk
+                    // (an emulator bug, an OutOfMemoryError) nothing would read the pty any more, the
+                    // bridge's stdout pipe would fill, the bridge would block, and the whole session —
+                    // keystrokes and Ctrl+C included — would freeze for good. Keep draining instead.
+                    try {
+                        tab.emulator.feed(buf, n)
+                        // Not a direct `terminalView.onPtyOutput()` closure: this thread outlives any one
+                        // MainActivity instance, so it goes through the tab's own callback instead, kept
+                        // pointed at whichever Activity (and TerminalView) currently exists — see
+                        // TerminalTab.onOutput and rebindTabOutputs().
+                        tab.onOutput?.invoke()
+                    } catch (t: Throwable) {
+                        Log.e("AlpDroid/Reader", "pty-reader-${tab.id}: dropped a chunk after ${t.javaClass.simpleName}", t)
+                    }
                 }
             } catch (e: Exception) {
                 Log.e("AlpDroid/Reader", "pty-reader-${tab.id} crashed; closing tab instead of hanging it", e)
@@ -3457,7 +3466,22 @@ class MainActivity : Activity() {
     }
 
     private fun writeToActiveSession(bytes: ByteArray) {
-        tabs.getOrNull(activeTabIndex)?.let { writeToSession(it.session, bytes) }
+        val tab = tabs.getOrNull(activeTabIndex) ?: return
+        if (tab.isServer && bytes.size == 1 && bytes[0] == 0x03.toByte()) {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (tab.lastCtrlCMs != 0L && now - tab.lastCtrlCMs <= 2500L) {
+                // Second Ctrl+C in a row on a server tab: it did not stop (hung, ignoring SIGINT,
+                // or stuck shutting down) — kill the whole process group, with the usual tab
+                // teardown as the fallback.
+                tab.lastCtrlCMs = 0L
+                android.widget.Toast.makeText(this, "Force-stopping the server…", android.widget.Toast.LENGTH_SHORT).show()
+                tab.session.forceKill()
+                mainHandler.postDelayed({ tab.session.destroy() }, 1500)
+                return
+            }
+            tab.lastCtrlCMs = now
+        }
+        writeToSession(tab.session, bytes)
     }
 
     /** For every one-tap shortcut that injects a whole command (package installs, "Update package

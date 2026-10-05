@@ -66,13 +66,45 @@ class PtySession private constructor(
 
     fun writeAsync(bytes: ByteArray) {
         // A lone ETX is the user's interrupt: it must not wait behind (or be dropped with) a stuck paste.
-        if (bytes.size == 1 && bytes[0] == 0x03.toByte()) cancelPendingWrites()
+        val isInterrupt = bytes.size == 1 && bytes[0] == 0x03.toByte()
+        val delivered = if (isInterrupt) java.util.concurrent.atomic.AtomicBoolean(false) else null
+        if (isInterrupt) {
+            cancelPendingWrites()
+            startInterruptWatchdog(delivered!!)
+        }
         // Guard: execute() after destroy()'s shutdownNow() throws RejectedExecutionException
         // synchronously — a late IME keystroke racing tab close must be dropped, not crash.
         runCatching { if (!writeExecutor.isShutdown) writeExecutor.execute {
             runCatching { stdin.write(bytes); stdin.flush() }
+            delivered?.set(true)
         } }
     }
+
+    /** If the ^C byte has not even been written to the bridge shortly after, input is stuck (the pty
+     *  refuses it: a raw-mode program that stopped reading, a wedged server). Ask the bridge to send
+     *  SIGINT straight to the foreground process group over the control channel instead — that path
+     *  doesn't go through the pty, so it can't be blocked by input that will never be consumed. A
+     *  normal ^C is delivered in microseconds, so this never double-interrupts a healthy session. */
+    private fun startInterruptWatchdog(delivered: java.util.concurrent.atomic.AtomicBoolean) {
+        Thread({
+            try { Thread.sleep(INTERRUPT_FALLBACK_MS) } catch (_: InterruptedException) { return@Thread }
+            if (!delivered.get() && !destroyed) interrupt()
+        }, "pty-int-watchdog").apply { isDaemon = true; start() }
+    }
+
+    private val controlLock = Any()
+
+    private fun sendControl(line: String): Boolean {
+        val out = controlOut ?: return false
+        return runCatching { synchronized(controlLock) { out.write("$line\n".toByteArray()); out.flush() } }.isSuccess
+    }
+
+    /** SIGINT to the guest's foreground process group, bypassing the pty (see [startInterruptWatchdog]). */
+    fun interrupt(): Boolean = sendControl("INT")
+
+    /** SIGKILL to the whole guest process group, bypassing the pty. For a server that ignores or can't
+     *  handle Ctrl+C. The session then ends like any exited shell. */
+    fun forceKill(): Boolean = sendControl("KILL")
 
     @Volatile
     private var controlOut: OutputStream? = null
@@ -125,7 +157,7 @@ class PtySession private constructor(
             // above false forever (pendingRows/Cols never re-equal lastRows/Cols), so the loop
             // never actually waited again and just retried the same doomed write as fast as the
             // CPU could spin, forever, until destroy() finally caught up.
-            runCatching { out.write("$rows $cols\n".toByteArray()); out.flush() }
+            sendControl("$rows $cols")
             lastRows = rows
             lastCols = cols
         }
@@ -244,6 +276,7 @@ class PtySession private constructor(
 
     companion object {
         private const val TAG = "AlpDroid/Pty"
+        private const val INTERRUPT_FALLBACK_MS = 600L
 
         fun start(
             bridgeBinary: File,

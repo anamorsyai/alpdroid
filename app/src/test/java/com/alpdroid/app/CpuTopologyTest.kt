@@ -19,4 +19,18 @@ class CpuTopologyTest {
     @Test fun offlineCoresAreIgnored() {
         assertEquals("c", CpuTopology.efficiencyMask(listOf(-1, -1, 1500000, 1500000, 2500000)))
     }
+
+    @Test fun partsFromCpuinfoIdentifyLittleCores() {
+        val info = (0..7).joinToString("\n\n") { cpu ->
+            "processor\t: $cpu\nBogoMIPS\t: 26.00\nCPU implementer\t: 0x41\nCPU part\t: " + (if (cpu < 4) "0xd05" else "0xd0b")
+        }
+        val parts = CpuTopology.parseCpuParts(info)
+        assertEquals(listOf(0xd05, 0xd05, 0xd05, 0xd05, 0xd0b, 0xd0b, 0xd0b, 0xd0b), parts)
+        assertEquals("f", CpuTopology.efficiencyMaskFromParts(parts))
+    }
+    @Test fun partsAllLittleOrAllBigGiveNull() {
+        assertNull(CpuTopology.efficiencyMaskFromParts(listOf(0xd03, 0xd03, 0xd03, 0xd03)))
+        assertNull(CpuTopology.efficiencyMaskFromParts(listOf(0xd0b, 0xd0b)))
+        assertNull(CpuTopology.efficiencyMaskFromParts(emptyList()))
+    }
 }

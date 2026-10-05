@@ -1,0 +1,1 @@
+Efficiency-cores option now detects low-power cores on more phones

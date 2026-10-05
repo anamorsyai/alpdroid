@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.52 — efficiency cores on more phones
+
+- "Run sessions on efficiency cores" now also works on phones that hide per-core frequencies from apps: it
+  falls back to the kernel's core capacity values and then to the core types listed in `/proc/cpuinfo`
+  (Cortex-A55/A53/A510 and similar are recognised as low-power cores).
+
 ## 1.7.51 — terminal fixes, cooler idle, efficiency-cores option
 
 - Fixed: pressing Home used to cut every tab's history to 500/100 lines (the memory trimmer treated

@@ -986,7 +986,7 @@ class MainActivity : Activity() {
         )
         val popularPackages = setOf(
             "Node.js + npm", "Python", "git + curl", "opencode (v1)", "opencode (v2)",
-            "alphacode (musl)", "Claude Code CLI", "Claude hunting rig", "nano", "vim", "tmux", "nmap",
+            "alphacode (musl)", "Claude Code CLI", "nano", "vim", "tmux", "nmap",
         )
 
         panel.addView(
@@ -1218,13 +1218,6 @@ class MainActivity : Activity() {
                 // busybox wget fetches it — no apk add in the chain: apk index
                 // fetches fail on some networks and the && then skipped the
                 // install entirely (v1.7.31 bug). wget is always present here.
-                // Claude hunting rig: the installer lives in the PUBLIC sanitized repo
-                // (rig-portable — no keys), piped straight into sh, same one-liner shape
-                // as alphacode. Every push to its main branch installs automatically.
-                // Go is installed first: it rebuilds the aarch64 shim seamlessly on any
-                // arch without a second code path. Keys come from the user's own
-                // /etc/conf.d/anthropic-shim (kept/asked-for by the installer, never here).
-                "Claude hunting rig" to "apk add --no-cache go >/dev/null 2>&1; wget -qO- --header=\"Accept: application/vnd.github.raw\" https://api.github.com/repos/anamorsyai/rig-portable/contents/scripts/install-rig.sh | sh\n",
                 "alphacode (musl)" to "wget -qO- --header=\"Accept: application/vnd.github.raw\" https://api.github.com/repos/anamorsyai/alphacode/contents/scripts/install-musl.sh | sh\n",
                 "opencode (v1)" to "${apkAddRetry("curl libstdc++")}; if command -v curl >/dev/null 2>&1; then curl -fsSL https://opencode.ai/install | sh; else echo 'curl missing: apk could not install it — run Update package index and retry'; fi; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
                 "opencode (v2)" to "${apkAddRetry("bash curl libstdc++ gcompat")}; if command -v curl >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then curl -fsSL https://opencode.ai/v2/install | bash; else echo 'bash/curl missing: apk could not install them — run Update package index and retry'; fi; export PATH=\"\$PATH:/root/.opencode/bin\"\n",
@@ -1233,7 +1226,7 @@ class MainActivity : Activity() {
         )
         panel.addView(
             TextView(this).apply {
-                text = "opencode installs to /root/.opencode/bin (commands `opencode` and `opencode2`), which is added to PATH automatically. alphacode installs a fully static musl binary to /root/.local/bin with a symlink in /usr/local/bin. Claude hunting rig restores the full ~/.claude setup (skills/commands/agents), builds its own arm64 shim proxy (go), and starts it on 127.0.0.1:9086 for the claude CLI."
+                text = "opencode installs to /root/.opencode/bin (commands `opencode` and `opencode2`), which is added to PATH automatically. alphacode installs a fully static musl binary to /root/.local/bin with a symlink in /usr/local/bin."
                 setTextColor(0xFF8B93A1.toInt())
                 textSize = 11f
                 setPadding(0, 0, 0, dp(6))

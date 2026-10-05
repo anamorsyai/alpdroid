@@ -5,6 +5,7 @@
 - The key row no longer has built-in "alphacode" and "claude" buttons: they are ordinary custom shortcuts now
   (Settings → Display → Custom shortcuts), so you can edit or delete them. Existing installs keep both buttons
   once, as shortcuts. The `claude` shortcut no longer restarts the old local proxy first (that shim is gone).
+- Removed the "Claude hunting rig" Quick-install button (it built and started the local shim proxy, which is no longer needed).
 
 ## 1.7.56 — say why a session ended
 

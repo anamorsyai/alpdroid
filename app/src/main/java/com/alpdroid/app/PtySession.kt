@@ -277,6 +277,15 @@ class PtySession private constructor(
         return ResourcePolicy.descendants(root, parentOf).filter { it != android.os.Process.myPid() }
     }
 
+    /** True once [destroy] was called — i.e. the session was ended on purpose by the app or the user. */
+    val endedByUs: Boolean get() = destroyed
+
+    /** The bridge's exit status (the shell's exit code, or 128+signal when it was killed — 137 is SIGKILL),
+     *  waiting up to [timeoutMs] for the process to finish; null if it is still running. */
+    fun exitCodeWithin(timeoutMs: Long): Int? = runCatching {
+        if (process.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)) process.exitValue() else null
+    }.getOrNull()
+
     fun destroy() {
         // Snapshot before the SIGTERM: once the shell dies its children are reparented to init and a
         // daemon that detached from the process group (a server that setsid()s) could no longer be found

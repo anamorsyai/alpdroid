@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.56 — say why a session ended
+
+- When a tab's session ends by itself with a non-zero status, a message now says why (for example "killed
+  (SIGKILL — Android stopped it, often the phantom-process limit or low memory)"), so a server that disappears
+  while the app is in the background no longer leaves no trace.
+
 ## 1.7.55 — a server tab can always be stopped and closed
 
 - Fixed: an `opencode serve` (or any server) tab could refuse to stop after the web page disconnected: Ctrl+C,

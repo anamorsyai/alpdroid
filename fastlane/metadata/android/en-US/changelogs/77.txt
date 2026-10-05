@@ -1,0 +1,1 @@
+A message now says why a session ended (for example killed by Android)

@@ -3544,7 +3544,17 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 Log.e("AlpDroid/Reader", "pty-reader-${tab.id} crashed; closing tab instead of hanging it", e)
             }
-            mainHandler.post { tab.onExit?.invoke() }
+            // Why did it end? A session that ends by itself with a non-zero status was killed from outside
+            // (137 = SIGKILL: Android's phantom-process killer or the low-memory killer; 143 = SIGTERM) —
+            // say so, otherwise a server that "just died in the background" leaves no trace at all.
+            val code = if (tab.session.endedByUs) null else tab.session.exitCodeWithin(800)
+            mainHandler.post {
+                if (code != null && code != 0 && tabs.contains(tab)) {
+                    val why = when (code) { 137 -> "killed (SIGKILL — Android stopped it, often the phantom-process limit or low memory)"; 143 -> "terminated (SIGTERM)"; else -> "exit code $code" }
+                    android.widget.Toast.makeText(this, "Session ended: $why", android.widget.Toast.LENGTH_LONG).show()
+                }
+                tab.onExit?.invoke()
+            }
         }, "pty-reader-${tab.id}").apply { isDaemon = true }.start()
     }
 

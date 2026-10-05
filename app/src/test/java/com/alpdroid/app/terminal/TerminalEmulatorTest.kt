@@ -298,4 +298,13 @@ class TerminalEmulatorTest {
         t.type("\r\nxy\r\nz")
         assertEquals("abcdefgh\nxy", t.textInRange(0, 0, 2, 4))
     }
+
+    @Test fun tailTextCanJoinSoftWrappedLines() {
+        val t = TerminalEmulator(4, 10)
+        t.type("server password abcdefghijklmnop\r\nnext")   // wraps across rows
+        assertTrue(t.tailText(10).contains("server pas\nsword"))   // default: rows separated
+        val joined = t.tailText(10, joinWrapped = true)
+        assertTrue(joined, joined.contains("server password abcdefghijklmnop"))
+        assertTrue(joined, joined.endsWith("next"))
+    }
 }

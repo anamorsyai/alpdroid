@@ -268,13 +268,19 @@ class TerminalEmulator(
      * reader thread.
      */
     @Synchronized
-    fun tailText(maxLines: Int): String {
+    fun tailText(maxLines: Int, joinWrapped: Boolean = false): String {
         val take = maxLines.coerceIn(1, 5000)
         val total = scrollback.size + rows
         val from = (total - take).coerceAtLeast(0)
         return buildString {
             for (i in from until total) {
                 val row = if (i < scrollback.size) scrollback.elementAt(i) else screen[i - scrollback.size]
+                // A soft-wrapped row continues on the next one: with [joinWrapped] it is glued on as it is
+                // (no padding trimmed, no newline), so a long line comes back as the single line it was.
+                if (joinWrapped && row.isNotEmpty() && row.last().wrapped && i < total - 1) {
+                    append(rowText(row))
+                    continue
+                }
                 append(rowText(row).trimEnd())
                 if (i < total - 1) append('\n')
             }

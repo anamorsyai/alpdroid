@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.54 — opencode server button: browser + password again
+
+- Fixed: the one-tap "opencode serve" button sometimes no longer opened the browser and copied the password.
+  The app only looked for the server's `server password …` line for 40 s; on a slow start (low-power cores,
+  a busy phone, first run) the line came later and the dialog never appeared. It now watches for up to
+  3 minutes (every 2 s), stops when the server exits, tolerates a differently punctuated line, and reads
+  the line even if the terminal soft-wrapped it.
+
 ## 1.7.53 — smart load balancing, `.ad` plugin files
 
 - New: **Balance load across cores** (Settings → Sessions & Background, on by default). Every 15 s the resource

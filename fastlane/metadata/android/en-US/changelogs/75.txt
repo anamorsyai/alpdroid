@@ -1,0 +1,1 @@
+Fix: opencode serve button waits longer for the password and opens the browser reliably

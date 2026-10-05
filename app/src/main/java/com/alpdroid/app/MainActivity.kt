@@ -2221,7 +2221,7 @@ class MainActivity : Activity() {
             addTab(
                 "opencode serve",
                 onStarted = {
-                    tabs.getOrNull(activeTabIndex)?.let { catchServePassword(it, 5) }
+                    tabs.getOrNull(activeTabIndex)?.let { catchServePassword(it, 90) }
                 },
                 directCommand = "[ -f /lib/libgcompat.so.0 ] && export LD_PRELOAD=/lib/libgcompat.so.0; " +
                     "BIN=\$(command -v opencode || command -v opencode2); " +
@@ -2365,15 +2365,21 @@ class MainActivity : Activity() {
     /** Watches a just-started serve tab for its printed `server password X` line, then
      *  hands the URL + password to the user (serve always generates one; there is no
      *  passwordless mode). Retries a few times — bun under proot can take a while. */
+    private val servePasswordRe = Regex("(?i)server password\\s*[:=]?\\s*(\\S+)")
+
     private fun catchServePassword(tab: TerminalTab, attemptsLeft: Int) {
         if (attemptsLeft <= 0) return
+        // Polled every 2 s for up to ~3 minutes (was 5 x 8 s): on a slow start — low-power cores, a busy
+        // phone, first-run bun under proot — the password line can appear well after 40 s, and the
+        // dialog (browser + copied password) was then silently never shown.
         mainHandler.postDelayed({
             if (isFinishing || isDestroyed) return@postDelayed
             if (!tabs.contains(tab)) return@postDelayed // tab closed meanwhile
-            val hit = Regex("server password (\\S+)").find(tab.emulator.tailText(60))
+            if (!tab.session.isAlive()) return@postDelayed // the server exited (error shown in the tab)
+            val hit = servePasswordRe.find(tab.emulator.tailText(300, joinWrapped = true))
             if (hit != null) showServeReadyDialog(tab, hit.groupValues[1])
             else catchServePassword(tab, attemptsLeft - 1)
-        }, 8000)
+        }, 2000)
     }
 
     private fun showServeReadyDialog(tab: TerminalTab, password: String) {

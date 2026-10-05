@@ -302,8 +302,28 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private var exitReportChecked = false
+
+    /** Once per process start: if Android killed the previous AlpDroid process (everything in it died), say why. */
+    private fun maybeShowExitReport() {
+        if (exitReportChecked) return
+        exitReportChecked = true
+        (application as AlpineTermApp).backgroundExecutor.execute {
+            val message = ExitReport.checkOnStart(this) ?: return@execute
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                    .setTitle("AlpDroid was stopped by Android")
+                    .setMessage(message)
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+        }
+    }
+
     override fun onStart() {
         super.onStart()
+        maybeShowExitReport()
         (application as AlpineTermApp).resourceManager.appVisible = true
     }
 

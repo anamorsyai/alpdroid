@@ -2,6 +2,10 @@
 
 ## 1.7.56 — say why a session ended
 
+- New: when Android killed the previous AlpDroid process (you come back to the splash screen and an empty tab, and
+  every session is gone), a dialog now explains why — low memory, a kill signal from the phone maker's battery
+  manager, excessive background usage, a crash — whether the keep-alive service was holding the app at the time,
+  how much memory it used, and what to change. (Android 11+ only: it reads the system's process-exit history.)
 - When a tab's session ends by itself with a non-zero status, a message now says why (for example "killed
   (SIGKILL — Android stopped it, often the phantom-process limit or low memory)"), so a server that disappears
   while the app is in the background no longer leaves no trace.

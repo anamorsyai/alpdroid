@@ -620,7 +620,7 @@ echo "password=${"$"}T"
                 // stock Alpine PATH includes — added here for every new shell (Alpine's own /etc/profile
                 // resets PATH, which is why the process environment alone isn't enough).
                 "case \":\$PATH:\" in *:/root/.opencode/bin:*) ;; *) PATH=\"\$PATH:/root/.opencode/bin\" ;; esac\nexport PATH\n" +
-                    "PS1='\\[\u001B[1;32m\\]\\u@alpineterm\\[\u001B[0m\\]:\\[\u001B[1;34m\\]\\w\\[\u001B[0m\\]\\$ '\n" +
+                    "PS1='\\[\u001B[1;32m\\]\\u@alpdroid\\[\u001B[0m\\]:\\[\u001B[1;34m\\]\\w\\[\u001B[0m\\]\\$ '\n" +
                     "export PS1\n",
             )
             // Guarantees the drop-in above (and everything else under /etc/profile.d/) actually

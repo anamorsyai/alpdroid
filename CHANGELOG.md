@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.7.61 — a killed session now tells you who killed it
+
+- Changed: when Android kills a session (SIGKILL, "Session ended: killed …"), the message now shows how many
+  processes the sessions had (now and the highest since they started), how much memory was free, and the most likely
+  cause with what to do about it: over ~28 processes means Android's 32-process limit for an app's child processes
+  (Android 14+: Developer options → "Disable child process restrictions", no computer needed), very little free memory
+  means low memory, anything else means the phone's battery manager.
+- This release only explains the kill; it does not change what Android does. If sessions keep dying, the message now
+  says which of the three it is.
+
 ## 1.7.60 — fixes a crash when every session had ended in the background
 
 - Fixed (crash, introduced in 1.7.57): if every session had ended while no screen was open (a server killed by Android

@@ -1,0 +1,1 @@
+Change: a session killed by Android now shows the process count, free memory and the likely cause

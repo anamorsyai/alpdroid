@@ -3631,10 +3631,9 @@ class MainActivity : Activity() {
             val code = if (tab.session.endedByUs) null else tab.session.exitCodeWithin(800)
             mainHandler.post {
                 if (code != null && code != 0 && tabs.contains(tab)) {
-                    val processes = (application as AlpineTermApp).resourceManager.processCount
+                    val rm = (application as AlpineTermApp).resourceManager
                     val why = when (code) {
-                        137 -> "killed (SIGKILL — Android stopped it, often the phantom-process limit or low memory" +
-                            (if (processes > 0) "; about $processes of this app's processes were running, Android's limit is 32" else "") + ")"
+                        137 -> ResourcePolicy.explainKill(rm.processCount, rm.peakProcessCount, rm.memAvailableMb())
                         143 -> "terminated (SIGTERM)"
                         125 -> "closed by AlpDroid's own cleanup (the terminal link ended while the program was still running)"
                         else -> "exit code $code"

@@ -86,4 +86,16 @@ class ResourcePolicyTest {
         assertFalse(d.update(90.0, 1.0))
         assertTrue(d.update(90.0, 1.0))
     }
+
+    @Test fun parsesMemAvailable() {
+        assertEquals(1024L, ResourcePolicy.parseMemAvailableMb("MemTotal:  8000000 kB\nMemAvailable:    1048576 kB\n"))
+        assertEquals(-1L, ResourcePolicy.parseMemAvailableMb("MemTotal: 1 kB\n"))
+    }
+
+    @Test fun killExplanationNamesTheLikelyKiller() {
+        assertTrue(ResourcePolicy.explainKill(12, 33, 2000).contains("child-process limit"))
+        assertTrue(ResourcePolicy.explainKill(5, 6, 150).contains("low memory"))
+        assertTrue(ResourcePolicy.explainKill(5, 6, 2000).contains("battery manager"))
+        assertTrue(ResourcePolicy.explainKill(0, 0, -1).startsWith("killed (SIGKILL)"))
+    }
 }

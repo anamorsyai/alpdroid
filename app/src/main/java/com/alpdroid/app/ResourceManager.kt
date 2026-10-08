@@ -37,6 +37,13 @@ class ResourceManager(private val app: AlpineTermApp) {
      *  app's child processes above 32 ("phantom process" limit), so it is shown in the usage view. */
     @Volatile var processCount = 0
         private set
+    /** Highest [processCount] seen since the sessions started — a kill is usually reported after the burst of
+     *  processes that caused it is already gone, so the last sample alone would hide it. */
+    @Volatile var peakProcessCount = 0
+        private set
+
+    /** Free memory right now in MB, or -1 when unreadable. */
+    fun memAvailableMb(): Long = readText("/proc/meminfo")?.let { ResourcePolicy.parseMemAvailableMb(it) } ?: -1L
     @Volatile private var renderLine = ""
     private var lastRender: RenderStats.Snapshot? = null
     private var lastRenderAtMs = 0L
@@ -159,7 +166,7 @@ class ResourceManager(private val app: AlpineTermApp) {
         }
         appRssBytes = readText("/proc/self/statm")?.let { ResourcePolicy.parseStatmRssBytes(it) } ?: 0L
         val tabs = app.tabs.toList()
-        if (tabs.isEmpty()) { usage = emptyList(); processCount = 0; samples.clear(); detectors.clear(); return }
+        if (tabs.isEmpty()) { usage = emptyList(); processCount = 0; peakProcessCount = 0; samples.clear(); detectors.clear(); return }
 
         // One pass over /proc: ppid + cpu of every process we are allowed to see (our own uid).
         val parentOf = HashMap<Int, Int>()
@@ -215,6 +222,7 @@ class ResourceManager(private val app: AlpineTermApp) {
             val bridge = tab.session.pid
             if (bridge <= 0 || !parentOf.containsKey(bridge)) 0 else 1 + ResourcePolicy.descendants(bridge, parentOf).size
         }
+        if (processCount > peakProcessCount) peakProcessCount = processCount
         samples.keys.retainAll(liveIds)
         detectors.keys.retainAll(liveIds)
         balancerStates.keys.retainAll(liveIds)

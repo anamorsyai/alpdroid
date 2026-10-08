@@ -53,6 +53,32 @@ object ResourcePolicy {
         return pages * pageSize
     }
 
+    /** MemAvailable from /proc/meminfo in MB, or -1 when it is not there. */
+    fun parseMemAvailableMb(meminfo: String): Long {
+        val kb = meminfo.lineSequence().firstOrNull { it.startsWith("MemAvailable:") }
+            ?.split(Regex("\\s+"))?.getOrNull(1)?.toLongOrNull() ?: return -1L
+        return kb / 1024
+    }
+
+    /**
+     * What to tell the user when a session died of SIGKILL (137) while the app itself lived on — the
+     * numbers decide which of the two usual killers it was: more than ~28 processes at the last sample
+     * (or at its peak) means Android's child-process limit (32), very little free memory means the
+     * low-memory killer, neither means the phone's own battery manager.
+     */
+    fun explainKill(processes: Int, peakProcesses: Int, memAvailableMb: Long): String {
+        val facts = buildString {
+            if (peakProcesses > 0) append("; processes: ").append(processes).append(" now, ").append(peakProcesses).append(" at most (Android's limit is 32)")
+            if (memAvailableMb >= 0) append("; free memory ").append(memAvailableMb).append(" MB")
+        }
+        val likely = when {
+            maxOf(processes, peakProcesses) >= 28 -> " — most likely the child-process limit: turn on Developer options → \"Disable child process restrictions\" (Android 14+) or use the adb fix in Settings"
+            memAvailableMb in 0..400 -> " — most likely low memory: close other apps or run fewer programs at once"
+            else -> " — Android stopped it (often the phone's battery manager: allow background activity for AlpDroid)"
+        }
+        return "killed (SIGKILL$facts)$likely"
+    }
+
     /** All descendants of [root] (excluding it) given a pid -> ppid map. */
     fun descendants(root: Int, parentOf: Map<Int, Int>): Set<Int> {
         val children = HashMap<Int, MutableList<Int>>()

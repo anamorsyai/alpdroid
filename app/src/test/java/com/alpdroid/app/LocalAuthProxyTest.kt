@@ -90,4 +90,38 @@ class LocalAuthProxyTest {
         assertTrue(out, out.contains("Connection: Upgrade") && out.contains("Authorization: $login") && out.endsWith("BODY"))
         assertFalse(out.contains("Connection: close"))
     }
+
+    @Test fun aRequestMarkedCrossSiteByTheBrowserGetsNoLogin() {
+        val proxy = LocalAuthProxy(4096, 4097, false, "opencode", "secret")
+        fun auth(vararg extra: String): Boolean {
+            val head = ("GET /api/session HTTP/1.1\r\nHost: 127.0.0.1:4096\r\n" + extra.joinToString("") { "$it\r\n" } + "\r\n").toByteArray()
+            return String(proxy.rewriteHead(head, 4096), Charsets.ISO_8859_1).contains("Authorization: ")
+        }
+        assertTrue(auth())                                  // no hint from the client: same-origin by Host/Origin
+        assertTrue(auth("Sec-Fetch-Site: same-origin"))
+        assertTrue(auth("Sec-Fetch-Site: none"))            // typed in the address bar / opened from the app
+        assertFalse(auth("Sec-Fetch-Site: cross-site"))     // an <img> or navigation from another website
+        assertFalse(auth("Sec-Fetch-Site: same-site"))
+    }
+
+    @Test fun aClientThatSendsNothingIsDroppedAndTheProxyKeepsServing() {
+        val heads = LinkedBlockingQueue<List<String>>()
+        val p = startProxy(upstream(heads).localPort)
+        // Hold one connection open without a request head: it must not stop a normal request being served.
+        Socket("127.0.0.1", p.boundPort).use { _ ->
+            val answer = request(p.boundPort, "Host: 127.0.0.1:${p.boundPort}")
+            assertTrue(answer, answer.startsWith("HTTP/1.1 200"))
+        }
+    }
+
+    @Test fun stoppingTheProxyClosesItsOpenConnections() {
+        val heads = LinkedBlockingQueue<List<String>>()
+        val p = startProxy(upstream(heads).localPort)
+        val idle = Socket("127.0.0.1", p.boundPort).apply { soTimeout = 3000 }
+        Thread.sleep(200)
+        p.stop()
+        // The proxy closed its side: reading ends (EOF) instead of waiting for a request that will never come.
+        assertEquals(-1, idle.getInputStream().read())
+        idle.close()
+    }
 }

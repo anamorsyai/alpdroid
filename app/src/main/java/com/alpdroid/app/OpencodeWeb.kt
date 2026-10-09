@@ -14,7 +14,7 @@ import java.util.Base64
  *    of a new generated one read back off the screen each time;
  *  - the choice between "this phone only" (127.0.0.1) and "other devices on the Wi-Fi" (0.0.0.0);
  *  - a restart loop: if Android or a crash kills the server it comes back by itself, with a growing pause so a
- *    server that cannot start does not spin; Ctrl+C (or Stop) ends the loop too.
+ *    server that cannot start does not spin; Stop (or Ctrl+C when run by hand) ends the loop too.
  */
 object OpencodeWeb {
     const val PORT = 4096
@@ -29,15 +29,18 @@ object OpencodeWeb {
 
     /** Starts the proxy on [PORT] in front of the server that will listen on [INTERNAL_PORT]; throws if the port is taken. */
     @Synchronized
-    fun startProxy(lan: Boolean, password: String) {
+    fun startProxy(lan: Boolean, password: String): LocalAuthProxy {
         stopProxy()
         val p = LocalAuthProxy(PORT, INTERNAL_PORT, bindAll = lan, user = USER, password = password)
         p.start()
         proxy = p
+        return p
     }
 
+    /** Stops the proxy — only if it is still [only] when given, so an old server's exit cannot stop a newer one's. */
     @Synchronized
-    fun stopProxy() {
+    fun stopProxy(only: LocalAuthProxy? = null) {
+        if (only != null && proxy !== only) { only.stop(); return }
         proxy?.stop()
         proxy = null
     }

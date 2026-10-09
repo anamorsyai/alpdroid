@@ -89,4 +89,7 @@ class AlpineTermApp : Application() {
      *  "yes, a replacement really is still coming." See MainActivity.addTab()/startSessionNow()/
      *  showSetupFailure()/onTabExited(). */
     var pendingSessionStarts = 0
+
+    /** The opencode web server's "start when AlpDroid opens" is tried once per app process, not once per Activity. */
+    @Volatile var opencodeAutoStartDone = false
 }

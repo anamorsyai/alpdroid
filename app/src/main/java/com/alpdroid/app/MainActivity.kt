@@ -1420,6 +1420,8 @@ class MainActivity : Activity() {
                                 // the process die, and wiping the rootfs right away risks racing
                                 // one that's still exiting and still touching files underneath it.
                                 closingSessions.forEach { it.session.awaitExit(2000) }
+                                // Servers running from this rootfs (opencode web, sshd) must be gone before it is wiped.
+                                OpencodeWeb.stopProxy(); app.services.stopAll(); app.services.awaitAllStopped(4000)
                                 runCatching { AlpineRootfs.wipeForReinstall(this@MainActivity) }
                                 mainHandler.post {
                                     pendingSessionStarts--
@@ -2379,6 +2381,18 @@ class MainActivity : Activity() {
 
     private val services get() = (application as AlpineTermApp).services
 
+    /** Puts a secret (a password, a sign-in link) on the clipboard marked sensitive, so Android 13+ keeps it out of
+     *  the clipboard preview and history. */
+    private fun copySecret(label: String, text: String) {
+        val clip = android.content.ClipData.newPlainText(label, text)
+        if (Build.VERSION.SDK_INT >= 33) {
+            clip.description.extras = android.os.PersistableBundle().apply {
+                putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true)
+            }
+        }
+        (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(clip)
+    }
+
     /** What this Activity registered with [BackgroundServices.onChanged]; removed again in onDestroy. */
     private var servicesListener: (() -> Unit)? = null
 
@@ -2411,20 +2425,24 @@ class MainActivity : Activity() {
 
     private fun startOpencodeWeb(auto: Boolean) {
         if (opencodeRunning()) return
-        drawerLayout.closeDrawer(GravityCompat.END)
+        if (!auto) drawerLayout.closeDrawer(GravityCompat.END)
         val lan = settingsStore.opencodeWebLan
         val password = settingsStore.opencodeWebPassword
         // "No login on this phone": a small proxy owns port 4096 and the real server listens privately on 4097.
-        val noLogin = settingsStore.opencodeWebNoLogin && runCatching { OpencodeWeb.startProxy(lan, password) }
-            .onFailure { android.widget.Toast.makeText(this, "Could not start the login-free front door (port ${OpencodeWeb.PORT} busy?) — using the normal login", android.widget.Toast.LENGTH_LONG).show() }
-            .isSuccess
+        var proxy: LocalAuthProxy? = null
+        if (settingsStore.opencodeWebNoLogin) {
+            proxy = runCatching { OpencodeWeb.startProxy(lan, password) }
+                .onFailure { android.widget.Toast.makeText(this, "Could not start the login-free front door (port ${OpencodeWeb.PORT} busy?) — using the normal login", android.widget.Toast.LENGTH_LONG).show() }
+                .getOrNull()
+        }
+        val noLogin = proxy != null
         val serverPort = if (noLogin) OpencodeWeb.INTERNAL_PORT else OpencodeWeb.PORT
         services.start(
             OpencodeWeb.SERVICE_ID, "opencode web",
             OpencodeWeb.command(serverPort, lan && !noLogin, password),
-            onExit = { OpencodeWeb.stopProxy() },
+            onExit = { OpencodeWeb.stopProxy(proxy) },
             onFailed = { why ->
-                OpencodeWeb.stopProxy()
+                OpencodeWeb.stopProxy(proxy)
                 mainHandler.post { android.widget.Toast.makeText(this, "opencode web: $why", android.widget.Toast.LENGTH_LONG).show() }
             },
         )
@@ -2543,7 +2561,7 @@ class MainActivity : Activity() {
         if (attemptsLeft <= 0) return
         mainHandler.postDelayed({
             if (isFinishing || isDestroyed) return@postDelayed
-            if (!services.isRunning(SSH_SERVICE_ID)) return@postDelayed // ended or failed to start
+            if (!services.isRunning(SSH_SERVICE_ID)) { reportServiceStopped("SSH server", SSH_SERVICE_ID); return@postDelayed }
             val hit = Regex("ssh password (\\S+)").find(services.tail(SSH_SERVICE_ID, 2000))
             if (hit != null) showSshReadyDialog(hit.groupValues[1]) else awaitSshPassword(attemptsLeft - 1)
         }, 5000)
@@ -2554,7 +2572,7 @@ class MainActivity : Activity() {
         val ips = NetworkInfo.localIpv4Addresses()
         val first = ips.firstOrNull()?.let { "ssh -p $SSH_SERVER_PORT root@$it" } ?: "ssh -p $SSH_SERVER_PORT root@<phone>"
         val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
-        cm.setPrimaryClip(android.content.ClipData.newPlainText("ssh password", password))
+        copySecret("ssh password", password)
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setTitle("SSH server running")
             .setMessage("Password copied. From a laptop on this Wi-Fi:\n\n" +
@@ -2579,8 +2597,8 @@ class MainActivity : Activity() {
     private fun awaitOpencodeReady(lan: Boolean, noLogin: Boolean, serverPort: Int, password: String, auto: Boolean, attemptsLeft: Int) {
         mainHandler.postDelayed({
             if (isFinishing || isDestroyed) return@postDelayed
-            // Ended, or never started (the failure was already reported): nothing to wait for.
-            if (!opencodeRunning()) return@postDelayed
+            // It ended before it answered (not installed, crashed on start): say why, from what it printed.
+            if (!opencodeRunning()) { reportServiceStopped("opencode web", OpencodeWeb.SERVICE_ID); return@postDelayed }
             val printed = servePasswordRe.find(services.tail(OpencodeWeb.SERVICE_ID, 2000))?.groupValues?.get(1)
             Thread({
                 val open = OpencodeWeb.portOpen(serverPort)
@@ -2591,10 +2609,18 @@ class MainActivity : Activity() {
                         accepted -> showServeReadyDialog(printed ?: password, lan, noLogin, auto)
                         attemptsLeft <= 0 && open -> showServeReadyDialog(password, lan, noLogin, auto, warn = true)
                         attemptsLeft > 0 -> awaitOpencodeReady(lan, noLogin, serverPort, password, auto, attemptsLeft - 1)
+                        else -> android.widget.Toast.makeText(this, "opencode web did not answer in time — see Settings → Network & SSH → Log", android.widget.Toast.LENGTH_LONG).show()
                     }
                 }
             }, "oc-ready").start()
         }, 1500)
+    }
+
+    /** A service ended on its own while the user was waiting for it: show the last thing it printed. */
+    private fun reportServiceStopped(label: String, id: String) {
+        val why = services.lastOutput(id).trim().lines().lastOrNull { it.isNotBlank() } ?: return // stopped by the user: it was cleared
+        if (services.get(id)?.stopping == true) return
+        android.widget.Toast.makeText(this, "$label stopped: $why", android.widget.Toast.LENGTH_LONG).show()
     }
 
     private fun showServeReadyDialog(password: String, lan: Boolean, noLogin: Boolean, auto: Boolean, warn: Boolean = false) {
@@ -2605,7 +2631,7 @@ class MainActivity : Activity() {
             return
         }
         val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
-        cm.setPrimaryClip(android.content.ClipData.newPlainText("opencode password", password))
+        copySecret("opencode password", password)
         // Straight into the page on this phone — no password to type or paste.
         openOpencodeInBrowser()
         val ips = NetworkInfo.localIpv4Addresses()
@@ -2619,7 +2645,7 @@ class MainActivity : Activity() {
                 if (!lan || host == null) {
                     android.widget.Toast.makeText(this, if (!lan) "Other devices are not allowed (see Settings → Network)" else "No network address found", android.widget.Toast.LENGTH_LONG).show()
                 } else {
-                    cm.setPrimaryClip(android.content.ClipData.newPlainText("opencode link", OpencodeWeb.loginUrl(host, OpencodeWeb.PORT, password)))
+                    copySecret("opencode link", OpencodeWeb.loginUrl(host, OpencodeWeb.PORT, password))
                     android.widget.Toast.makeText(this, "Link copied — it signs the other device in", android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
@@ -3000,9 +3026,9 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Periodic auto-check: 10s after start, on every resume, and every 2h while running —
+     * Periodic auto-check: 10s after start, on every resume, and every 15 min while the app is on screen —
      * an update pops whenever it appears, no restart needed. Throttled to one check per
-     * 6h; only dialogs when something newer actually exists.
+     * 15 min; only dialogs when something newer actually exists.
      */
     private val updateCheckIntervalMs = 15L * 60 * 1000
     // Short on purpose: one tiny API call, and it makes updates pop within minutes —
@@ -3019,7 +3045,9 @@ class MainActivity : Activity() {
                 // Heartbeat for the system-kill detector (covers foreground kills; onPause
                 // only stamps when leaving).
                 settingsStore.lastAliveMs = System.currentTimeMillis()
-                maybeAutoUpdateCheck()
+                // Only while the app is on screen: in the background (servers, agents) every check was a wake-up and a
+                // network round trip nobody was there to see; onResume checks again as soon as the user is back.
+                if ((application as AlpineTermApp).resourceManager.appVisible) maybeAutoUpdateCheck()
                 mainHandler.postDelayed(this, updateCheckIntervalMs)
             }
         }
@@ -3729,8 +3757,8 @@ class MainActivity : Activity() {
                     switchToTab(tabs.size - 1)
                     updateKeepAliveService()
                     onStarted?.invoke()
-                    if (!opencodeAutoStartDone && directCommand == null) {
-                        opencodeAutoStartDone = true
+                    if (!(application as AlpineTermApp).opencodeAutoStartDone && directCommand == null) {
+                        (application as AlpineTermApp).opencodeAutoStartDone = true
                         if (settingsStore.opencodeWebAutoStart) startOpencodeWeb(auto = true)
                     }
                 }.onFailure { e ->
@@ -3748,9 +3776,6 @@ class MainActivity : Activity() {
             }
         }
     }
-
-    /** The auto-start of the opencode web server is tried once per app process, after the first normal tab is up. */
-    private var opencodeAutoStartDone = false
 
     private fun startReaderThread(tab: TerminalTab) {
         Thread({
@@ -4521,7 +4546,8 @@ class MainActivity : Activity() {
         // task removal, the system reclaiming a backgrounded Activity's memory — leaves tabs
         // running for the next onCreate to re-attach to via rebindTabOutputs()/switchToTab().
         if (deliberateExit) {
-            if (!(application as AlpineTermApp).pluginJobs.hasActive()) stopService(Intent(this, TerminalKeepAliveService::class.java))
+            val appState = application as AlpineTermApp
+            if (!appState.pluginJobs.hasActive() && !appState.services.hasActive()) stopService(Intent(this, TerminalKeepAliveService::class.java))
             tabs.forEach { it.session.destroy() }
         }
     }
@@ -4785,6 +4811,8 @@ class MainActivity : Activity() {
                     // touching files underneath it. Bounded (2s/session) so one stuck process
                     // can't hang a restore forever.
                     closingSessions.forEach { it.session.awaitExit(2000) }
+                    // Servers running from this rootfs (opencode web, sshd) must be gone before it is replaced.
+                    OpencodeWeb.stopProxy(); app.services.stopAll(); app.services.awaitAllStopped(4000)
                     // No upfront clearReadyMarker(): restore() extracts into a staging sibling
                     // and only swaps it over the live tree on full success — a failed restore
                     // leaves the current install (and its marker) untouched, so clearing first
@@ -4886,6 +4914,7 @@ class MainActivity : Activity() {
         OperationNotifications.progress(this, notifId, "Restoring $displayName", "Starting…")
         app.backupRestoreExecutor.execute {
             closingSessions.forEach { it.session.awaitExit(2000) }
+            OpencodeWeb.stopProxy(); app.services.stopAll(); app.services.awaitAllStopped(4000)
             // Same as doRestore(): no upfront clear — a failed stream restore leaves the live
             // tree and its marker intact.
             var lastUpdateMs = 0L

@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.7.66 — audit fixes: background servers, the login-free front door, secrets
+
+Found by a full review of the app (security, bugs, performance). Most of the bugs came with 1.7.65's move of the servers
+to the background.
+
+- Fixed: **Reinstall Alpine and both Restore paths now stop the background servers first.** Before, opencode web / sshd
+  kept running from a rootfs that was being deleted or swapped, kept their ports, and stayed in the list.
+- Fixed: typing `exit` in the last tab removed the foreground notification and wake lock while a server was still
+  running. The notification also read "0 sessions running"; it now says "Running in the background • 1 server".
+- Fixed: when a server could not start (opencode not installed, `apk add openssh` failing) the Start button did
+  nothing visible. You now get a message with the last thing it printed, and "did not answer in time" after 3 minutes.
+- Fixed: Stop pressed while a server was still starting was ignored and the server then ran anyway.
+- Fixed: stopping and starting opencode web quickly could leave the new server without its front door (the old
+  server's exit stopped the new proxy).
+- Fixed: "Start opencode web when AlpDroid opens" ran again whenever the screen was recreated (rotating, returning
+  to the app), restarting a server you had stopped; it is now once per app run, and does not close the Settings drawer.
+- Fixed: a real reason is shown when a service cannot start, instead of always "Alpine is not ready".
+- Security: the login-free front door no longer signs in requests that the browser marks cross-site
+  (`Sec-Fetch-Site`) — a web page could previously send authenticated GETs without an Origin header. It also drops
+  clients that connect and send nothing (10 s), allows at most 128 connections, closes its connections when stopped,
+  and only contacts the server once a request has arrived.
+- Security: the SSH password, the opencode password and the sign-in link are copied as sensitive (hidden from the
+  clipboard preview and history on Android 13+).
+- Changed: the periodic update check only runs while the app is on screen (it ran every 15 minutes in the background,
+  waking the phone and the network for nothing). It still checks as soon as you come back.
+- Cleaned up: wording that still described the servers as tabs.
+
 ## 1.7.65 — servers run in the background, not in tabs
 
 - Changed: the opencode web server and the SSH server no longer open a tab. They run as background services — no tab

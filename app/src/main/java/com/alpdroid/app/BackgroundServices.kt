@@ -33,6 +33,10 @@ class BackgroundServices(private val app: AlpineTermApp) {
 
     private val running = ConcurrentHashMap<String, Service>()
     private val starting = ConcurrentHashMap.newKeySet<String>()
+    /** Services whose Stop was pressed while they were still being spawned: they are killed as soon as they exist. */
+    private val cancelled = ConcurrentHashMap.newKeySet<String>()
+    /** The last output of each service that has ended — why it stopped (a missing program, a failed install). */
+    private val lastOutput = ConcurrentHashMap<String, String>()
     private val pool = Executors.newCachedThreadPool { r -> Thread(r, "bg-service").apply { isDaemon = true } }
 
     /** Called (on any thread) whenever a service starts or ends; the UI uses it to redraw its list. */
@@ -45,6 +49,9 @@ class BackgroundServices(private val app: AlpineTermApp) {
     fun list(): List<Service> = running.values.sortedBy { it.startedAt }
 
     fun get(id: String): Service? = running[id]
+
+    /** The final lines a service printed before it ended, or "" if it never ran / is still running. */
+    fun lastOutput(id: String): String = lastOutput[id].orEmpty()
 
     /** The last [chars] characters the service printed (ANSI colours removed), or "" when it is not running. */
     fun tail(id: String, chars: Int = 4000): String = running[id]?.tail(chars).orEmpty()
@@ -63,11 +70,18 @@ class BackgroundServices(private val app: AlpineTermApp) {
     ) {
         if (running.containsKey(id)) return
         if (!starting.add(id)) return // already starting
+        cancelled.remove(id)
+        lastOutput.remove(id)
         pool.execute {
             val session = try {
                 // fast = proot's seccomp tracing: a service runs for hours, so the cost per syscall matters most here.
                 AlpineSession.startScript(app, command, mapOf("LANG" to "C.UTF-8", "LC_ALL" to "C.UTF-8"), fast = true)
-            } catch (t: Throwable) { null }
+            } catch (t: Throwable) {
+                starting.remove(id)
+                onFailed?.invoke("could not start (${t.message ?: t.javaClass.simpleName})")
+                changed()
+                return@execute
+            }
             if (session == null) {
                 starting.remove(id)
                 onFailed?.invoke("Alpine is not ready yet — open a tab first")
@@ -77,12 +91,17 @@ class BackgroundServices(private val app: AlpineTermApp) {
             val svc = Service(id, label, session)
             running[id] = svc
             starting.remove(id)
+            // Stop was pressed while it was being spawned: end it right away instead of letting it run.
+            if (cancelled.remove(id)) svc.stopping = true
             changed()
+            if (svc.stopping) runCatching { session.destroy() }
             drain(svc)
             // The program ended (Stop, crash, killed): tidy up exactly once.
             runCatching { session.destroy() }
-            running.remove(id, svc)
+            lastOutput[id] = svc.tail(1500)
+            // Gone from `running` only after its own cleanup ran, so a quick Start again cannot overlap it.
             runCatching { onExit?.invoke() }
+            running.remove(id, svc)
             changed()
         }
     }
@@ -102,13 +121,24 @@ class BackgroundServices(private val app: AlpineTermApp) {
 
     /** Stops service [id]: [PtySession.destroy] ends its whole process tree (and forces it after a short grace period). */
     fun stop(id: String) {
-        val svc = running[id] ?: return
+        val svc = running[id]
+        if (svc == null) {
+            if (starting.contains(id)) cancelled.add(id) // not spawned yet: killed the moment it is
+            return
+        }
         svc.stopping = true
         runCatching { svc.session.destroy() }
     }
 
     fun stopAll() {
-        running.keys.toList().forEach { stop(it) }
+        (running.keys + starting).toList().forEach { stop(it) }
+    }
+
+    /** Blocks (call off the UI thread) until nothing is running or [timeoutMs] passes; true when everything ended. */
+    fun awaitAllStopped(timeoutMs: Long): Boolean {
+        val end = System.currentTimeMillis() + timeoutMs
+        while (hasActive() && System.currentTimeMillis() < end) Thread.sleep(50)
+        return !hasActive()
     }
 
     private fun changed() {

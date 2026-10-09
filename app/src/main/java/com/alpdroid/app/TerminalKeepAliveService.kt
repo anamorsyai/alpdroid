@@ -146,7 +146,9 @@ class TerminalKeepAliveService : Service() {
         )
         val tabCount = (application as AlpineTermApp).tabs.size
         val jobs = (application as AlpineTermApp).pluginJobs.enabledCount
-        val title = (if (tabCount == 1) "1 session running" else "$tabCount sessions running") +
+        val servers = (application as AlpineTermApp).services.list().size
+        val title = (if (tabCount == 1) "1 session running" else if (tabCount == 0 && servers > 0) "Running in the background" else "$tabCount sessions running") +
+            (if (servers > 0) " • $servers server${if (servers == 1) "" else "s"}" else "") +
             (if (jobs > 0) " • $jobs plugin job${if (jobs == 1) "" else "s"}" else "")
         // NotificationCompat.Builder rather than the plain platform Notification.Builder(this,
         // channelId) two-arg constructor, which doesn't exist before API 26 (a NoSuchMethodError

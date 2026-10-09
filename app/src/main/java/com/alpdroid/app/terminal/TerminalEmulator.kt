@@ -35,7 +35,19 @@ data class Cell(
      *  row that ended on a space (most `ls -l`/column output) and left text broken at its old
      *  width after the terminal got wider. */
     var wrapped: Boolean = false,
+    /** The whole text of this cell when one `Char` cannot hold it: a character outside the BMP (an emoji), or a base
+     *  character with combining marks / joiners attached. Null for ordinary cells (`ch` is then everything). */
+    var ext: String? = null,
+    /** The right half of a double-width character: its text lives in the cell to the left, this one draws nothing. */
+    var cont: Boolean = false,
 ) {
+    /** Appends what this cell shows to [sb]: nothing for the right half of a wide character. */
+    fun appendTo(sb: StringBuilder) {
+        if (cont) return
+        val e = ext
+        if (e != null) sb.append(e) else sb.append(ch)
+    }
+
     companion object {
         const val KIND_DEFAULT = -1
         const val KIND_FIXED = -2
@@ -189,7 +201,11 @@ class TerminalEmulator(
     private enum class State { NORMAL, ESCAPE, CSI, OSC, CHARSET }
     private var state = State.NORMAL
     private val csiBuf = StringBuilder()
-    private val utf8Pending = ArrayList<Int>(4)
+    // UTF-8 decoder state: the code point so far, the continuation bytes still expected, and the smallest value a
+    // sequence of this length may encode (anything lower is an overlong form).
+    private var utf8Cp = 0
+    private var utf8Left = 0
+    private var utf8Min = 0
 
     // Deferred callbacks: feed() runs under the emulator lock on the PTY reader thread, but
     // onBell/onAltScreenChanged touch Activity UI (binder IPC, view ops) and respond() writes
@@ -287,7 +303,7 @@ class TerminalEmulator(
         }.trimEnd()
     }
 
-    private fun rowText(row: Array<Cell>): String = buildString { row.forEach { append(it.ch) } }.trimEnd()
+    private fun rowText(row: Array<Cell>): String = buildString { row.forEach { it.appendTo(this) } }.trimEnd()
 
     /** Combined-row indices (see [combinedRow]) whose text contains [query], case-insensitive —
      *  a plain linear scan; only run on an explicit search action, never per-frame, so an O(n)
@@ -346,7 +362,7 @@ class TerminalEmulator(
                 val fromCol = if (r == r1) c1.coerceIn(0, row.size) else 0
                 val toCol = if (r == r2) c2.coerceIn(0, row.size - 1) else row.size - 1
                 val seg = StringBuilder()
-                for (c in fromCol..toCol) seg.append(row[c].ch)
+                for (c in fromCol..toCol) row[c].appendTo(seg)
                 // A row that soft-wrapped into the next continues the same logical line: no newline, and its
                 // trailing cell is real text rather than padding.
                 if (r != r2 && toCol == row.size - 1 && row.isNotEmpty() && row.last().wrapped) {
@@ -720,6 +736,8 @@ class TerminalEmulator(
         for (row in screen) {
             for (c in row) {
                 var v = c.ch.code.toLong() or ((c.fg.toLong() and 0xFFFFFFFFL) shl 16)
+                if (c.ext != null) v = v xor (c.ext.hashCode().toLong() shl 40)
+                if (c.cont) v = v xor 0x5A5A00L
                 if (c.bold) v = v xor (1L shl 52)
                 if (c.underline) v = v xor (1L shl 53)
                 if (c.reverse) v = v xor (1L shl 54)
@@ -751,8 +769,8 @@ class TerminalEmulator(
         // here directly (bypassing feedUtf8() entirely), which used to leave those stray pending
         // bytes sitting around forever, silently prepended onto the *next* genuine multi-byte
         // sequence's own bytes and corrupting whatever character that produced.
-        if (utf8Pending.isNotEmpty() && b < 0x80) {
-            utf8Pending.clear()
+        if (utf8Left > 0 && b < 0x80) {
+            utf8Left = 0
             putChar('�')
         }
         when {
@@ -768,40 +786,115 @@ class TerminalEmulator(
         }
     }
 
-    private var utf8PendingExpected = 0
-
     private fun feedUtf8(b: Int) {
-        if (utf8Pending.isEmpty()) {
-            utf8PendingExpected = when {
-                b and 0xE0 == 0xC0 -> 2
-                b and 0xF0 == 0xE0 -> 3
-                b and 0xF8 == 0xF0 -> 4
-                else -> { putChar('�'); return } // stray continuation byte with no lead
+        if (utf8Left == 0) {
+            when {
+                b and 0xE0 == 0xC0 -> { utf8Cp = b and 0x1F; utf8Left = 1; utf8Min = 0x80 }
+                b and 0xF0 == 0xE0 -> { utf8Cp = b and 0x0F; utf8Left = 2; utf8Min = 0x800 }
+                b and 0xF8 == 0xF0 -> { utf8Cp = b and 0x07; utf8Left = 3; utf8Min = 0x10000 }
+                else -> putChar('�') // stray continuation byte with no lead
             }
-            utf8Pending.add(b)
             return
         }
         if (b and 0xC0 != 0x80) {
             // Not a valid continuation byte (10xxxxxx) — the sequence in progress was truncated
             // (output cut off mid-character at a buffer boundary, or a program emitting raw bytes
             // without properly encoding them) and this byte is actually the start of the NEXT,
-            // unrelated thing. Discard what was pending and reprocess this byte completely fresh
-            // instead of feeding it into flushUtf8() as a bogus "continuation," which corrupted
-            // whatever character came out the other end.
-            utf8Pending.clear()
+            // unrelated thing. Drop what was pending and reprocess this byte completely fresh.
+            utf8Left = 0
             putChar('�')
             processNormal(b)
             return
         }
-        utf8Pending.add(b)
-        if (utf8Pending.size >= utf8PendingExpected) flushUtf8()
+        utf8Cp = (utf8Cp shl 6) or (b and 0x3F)
+        if (--utf8Left > 0) return
+        val cp = utf8Cp
+        if (cp < utf8Min || cp > 0x10FFFF || cp in 0xD800..0xDFFF) putChar('�') else putCodePoint(cp)
     }
 
-    private fun flushUtf8() {
-        val bytes = ByteArray(utf8Pending.size) { utf8Pending[it].toByte() }
-        utf8Pending.clear()
-        val decoded = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
-        putChar(decoded?.firstOrNull() ?: '�')
+    /** A decoded character above ASCII: placed by its width (see [CharWidth]) — one cell, two for wide characters
+     *  and emoji, or none at all when it only modifies the character before it. */
+    private fun putCodePoint(cp: Int) {
+        val w = CharWidth.of(cp)
+        if (w == 1 && cp < 0x10000) { putChar(cp.toChar()); return }
+        if (w == 0) { attachToPrevious(cp); return }
+        // After a zero-width joiner the next emoji belongs to the cluster before it (👨‍👩‍👧): same cell, no advance.
+        val prev = previousCell()
+        if (prev != null && prev.ext?.endsWith("\u200D") == true) { prev.ext = prev.ext + String(Character.toChars(cp)); return }
+        putCell(if (cp < 0x10000) cp.toChar() else Character.highSurrogate(cp), if (cp < 0x10000) null else String(Character.toChars(cp)), w)
+    }
+
+    /** The cell the cursor just moved past (the head of a wide character when the cursor is after its right half). */
+    private fun previousCell(): Cell? {
+        val row = screen.getOrNull(cursorRow) ?: return null
+        var col = min(cursorCol, cols) - 1
+        if (col < 0) return null
+        if (row[col].cont && col > 0) col--
+        return row[col]
+    }
+
+    private fun attachToPrevious(cp: Int) {
+        val cell = previousCell() ?: return
+        cell.ext = (cell.ext ?: cell.ch.toString()) + String(Character.toChars(cp))
+        generation++
+    }
+
+    /** Writes one character that is not a plain single-column BMP one: [width] columns, text in [ext] when needed. */
+    private fun putCell(ch: Char, ext: String?, width: Int) {
+        cursorRow = cursorRow.coerceIn(0, rows - 1)
+        cursorCol = cursorCol.coerceIn(0, cols)
+        if (cursorCol + width > cols) {
+            if (!autoWrapEnabled) {
+                cursorCol = max(0, cols - width)
+            } else {
+                // A wide character that does not fit in the last column goes to the next line, like in xterm.
+                screen[cursorRow][min(cursorCol, cols - 1)].wrapped = true
+                cursorCol = 0
+                lineFeed()
+            }
+        }
+        val row = screen[cursorRow]
+        breakWide(row, cursorCol)
+        if (width == 2) breakWide(row, cursorCol + 1)
+        val cell = row[cursorCol]
+        cell.wrapped = false
+        cell.ch = ch
+        cell.ext = ext
+        cell.cont = false
+        applyStyle(cell)
+        if (width == 2 && cursorCol + 1 < cols) {
+            val right = row[cursorCol + 1]
+            right.wrapped = false
+            right.ch = ' '
+            right.ext = null
+            right.cont = true
+            applyStyle(right)
+        }
+        cursorCol += width
+    }
+
+    private fun applyStyle(cell: Cell) {
+        cell.fg = curFg
+        cell.bg = curBg
+        cell.fgKind = curFgKind
+        cell.bgKind = curBgKind
+        cell.bold = curBold
+        cell.underline = curUnderline
+        cell.reverse = curReverse
+    }
+
+    /** About to overwrite [col]: if it is half of a wide character, blank the other half so no orphan is left. */
+    private fun breakWide(row: Array<Cell>, col: Int) {
+        if (col < 0 || col >= row.size) return
+        if (row[col].cont) {
+            if (col > 0) { row[col - 1].ch = ' '; row[col - 1].ext = null }
+            row[col].cont = false
+        }
+        if (col + 1 < row.size && row[col + 1].cont) {
+            row[col + 1].cont = false
+            row[col + 1].ch = ' '
+            row[col + 1].ext = null
+        }
     }
 
     private fun processEscape(b: Int) {
@@ -871,7 +964,7 @@ class TerminalEmulator(
         if (prefixChar != null && prefixChar != '?') return
         val private = prefixChar == '?'
         val body = if (private) raw.substring(1) else raw
-        val params = if (final == 'm' && !private) parseSgrParams(body) else body.split(";").map { it.toIntOrNull() ?: 0 }
+        val params = if (final == 'm' && !private) parseSgrParams(body) else parseInts(body)
         // Clamp: an unbounded count (e.g. 2147483647) would overflow cursor arithmetic to a
         // negative row/col and crash on the next screen[] access.
         fun p(i: Int, default: Int = 0) = params.getOrNull(i)?.takeIf { it != 0 }?.coerceIn(0, 9999) ?: default
@@ -1017,7 +1110,31 @@ class TerminalEmulator(
     /** SGR parameters with ':' sub-parameters (ITU T.416 colours `38:2::r:g:b`, underline styles `4:3`)
      *  flattened into the classic ';' form. Unknown colon forms are dropped — they used to parse as 0,
      *  i.e. a full attribute reset. */
+    /**
+     * The `;`-separated numbers of a CSI parameter string, scanned in one pass (this runs for every escape sequence of
+     * a full-screen program). Same results as `split(";").map { it.toIntOrNull() ?: 0 }`: an empty or non-numeric
+     * field, or one too large for an Int, is 0.
+     */
+    private fun parseInts(body: String): List<Int> {
+        val out = ArrayList<Int>(4)
+        var value = 0L
+        var digits = 0
+        var bad = false
+        for (ch in body) {
+            if (ch == ';') {
+                out.add(if (bad || value > Int.MAX_VALUE) 0 else value.toInt())
+                value = 0; digits = 0; bad = false
+            } else if (ch in '0'..'9') {
+                if (digits < 11) value = value * 10 + (ch - '0')
+                digits++
+            } else bad = true
+        }
+        out.add(if (bad || value > Int.MAX_VALUE || digits > 11) 0 else value.toInt())
+        return out
+    }
+
     private fun parseSgrParams(body: String): List<Int> {
+        if (':' !in body) return parseInts(body) // the common case: no sub-parameters, no splitting
         val out = ArrayList<Int>()
         for (tok in body.split(';')) {
             if (':' !in tok) { out.add(tok.toIntOrNull() ?: 0); continue }
@@ -1104,7 +1221,13 @@ class TerminalEmulator(
                 lineFeed()
             }
         }
-        val cell = screen[cursorRow][cursorCol]
+        val row = screen[cursorRow]
+        val cell = row[cursorCol]
+        // Overwriting half of a wide character (or a cell carrying an emoji/combined text): leave nothing stale behind.
+        if (cell.cont || cell.ext != null || (cursorCol + 1 < cols && row[cursorCol + 1].cont)) {
+            breakWide(row, cursorCol)
+            cell.ext = null
+        }
         cell.wrapped = false
         cell.ch = c
         cell.fg = curFg
@@ -1146,6 +1269,7 @@ class TerminalEmulator(
     private fun clearRow(r: Array<Cell>): Array<Cell> {
         for (it in r) {
             it.ch = ' '
+            it.ext = null; it.cont = false
             it.wrapped = false
             it.fg = TerminalColors.DEFAULT_FG; it.bg = TerminalColors.DEFAULT_BG
             it.fgKind = Cell.KIND_DEFAULT; it.bgKind = Cell.KIND_DEFAULT
@@ -1156,16 +1280,14 @@ class TerminalEmulator(
 
     private fun scrollDown(n: Int) {
         repeat(min(n, bottomMargin - topMargin + 1).coerceAtLeast(0)) {
-            screen.removeAt(bottomMargin)
-            screen.add(topMargin, blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
+            screen.add(topMargin, clearRow(screen.removeAt(bottomMargin)))
         }
     }
 
     private fun insertLines(n: Int) {
         if (cursorRow < topMargin || cursorRow > bottomMargin) return
         repeat(min(n, bottomMargin - cursorRow + 1).coerceAtLeast(0)) {
-            screen.removeAt(bottomMargin)
-            screen.add(cursorRow, blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
+            screen.add(cursorRow, clearRow(screen.removeAt(bottomMargin)))
         }
     }
 
@@ -1173,8 +1295,7 @@ class TerminalEmulator(
         if (cursorRow < topMargin || cursorRow > bottomMargin) return
         if (screen.getOrNull(cursorRow) == null || screen.getOrNull(bottomMargin) == null) return
         repeat(min(n, bottomMargin - cursorRow + 1).coerceAtLeast(0)) {
-            screen.removeAt(cursorRow)
-            screen.add(bottomMargin, blankRow(cols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
+            screen.add(bottomMargin, clearRow(screen.removeAt(cursorRow)))
         }
     }
 
@@ -1183,6 +1304,7 @@ class TerminalEmulator(
         // runs off-UI and an IndexOutOfBounds would kill the session's reader thread.
         val row = screen.getOrNull(cursorRow) ?: return
         val count = min(n, cols - cursorCol)
+        breakWide(row, cursorCol)
         // Copy: Cells are mutable and putChar edits in place — sharing one instance across
         // two columns would make a later write to one visibly rewrite the other.
         for (i in cols - 1 downTo cursorCol + count) row[i] = row[i - count].copy()
@@ -1192,12 +1314,16 @@ class TerminalEmulator(
     private fun deleteChars(n: Int) {
         val row = screen.getOrNull(cursorRow) ?: return
         val count = min(n, cols - cursorCol)
+        breakWide(row, cursorCol)
+        breakWide(row, cursorCol + count)
         for (i in cursorCol until cols - count) row[i] = row[i + count].copy()
         for (i in cols - count until cols) row[i] = Cell(fg = curFg, bg = curBg, fgKind = curFgKind, bgKind = curBgKind)
     }
 
     private fun eraseChars(n: Int) {
         val row = screen.getOrNull(cursorRow) ?: return
+        breakWide(row, cursorCol)
+        breakWide(row, min(cols, cursorCol + n) - 1)
         for (i in cursorCol until min(cols, cursorCol + n)) row[i] = Cell(fg = curFg, bg = curBg, fgKind = curFgKind, bgKind = curBgKind)
     }
 
@@ -1210,6 +1336,8 @@ class TerminalEmulator(
             1 -> 0..col
             else -> 0 until cols
         }
+        breakWide(row, range.first)
+        breakWide(row, range.last)
         for (i in range) row[i] = Cell(fg = curFg, bg = curBg, fgKind = curFgKind, bgKind = curBgKind)
     }
 

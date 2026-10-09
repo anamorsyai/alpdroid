@@ -1,0 +1,1 @@
+Fix: emoji and wide characters display correctly; faster terminal; updater checksum; more audit fixes

@@ -699,14 +699,23 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         val yBottom = ((screenRow + 1) * cellHeight).roundToInt().toFloat()
         if (rowCharBuf.size < row.size) rowCharBuf = CharArray(row.size)
         var hasRtl = false
+        var hasExt = false
         for (i in row.indices) {
-            val ch = row[i].ch
+            val c = row[i]
+            val ch = c.ch
+            if (c.ext != null || c.cont) {
+                // An emoji / combined character, or the right half of a wide one: drawn separately below, so the
+                // per-glyph batch sees a blank here.
+                rowCharBuf[i] = ' '
+                hasExt = true
+                continue
+            }
             rowCharBuf[i] = ch
             if (ch >= '\u0590' && isRtlChar(ch)) hasRtl = true
         }
         // Rows with Arabic/Hebrew take the bidi path (reordering + joined letter shapes); every other
         // row — nearly all of them — keeps the plain fixed-cell path below at zero extra cost.
-        if (hasRtl) { drawRowBidi(canvas, row, y, yBottom); return }
+        if (hasRtl) { drawRowBidi(canvas, row, y, yBottom, hasExt); return }
         var runStart = 0
         while (runStart < row.size) {
             val cell = row[runStart]
@@ -720,7 +729,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
                 canvas.drawRect(x, y, x + (runEnd - runStart) * cw, yBottom, paint)
             }
             var blank = !cell.underline
-            if (blank) for (i in runStart until runEnd) if (rowCharBuf[i] != ' ') { blank = false; break }
+            if (blank) for (i in runStart until runEnd) if (rowCharBuf[i] != ' ' || row[i].ext != null) { blank = false; break }
             if (blank) { runStart = runEnd; continue }
             paint.color = fg
             paint.isFakeBoldText = cell.bold
@@ -746,7 +755,16 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             }
             @Suppress("DEPRECATION")
             canvas.drawPosText(rowCharBuf, runStart, runLen, runPosBuf, paint)
+            if (hasExt) drawExtCells(canvas, row, runStart, runEnd, y)
             runStart = runEnd
+        }
+    }
+
+    /** Emoji and combined characters in columns [from, to): each drawn as one string at its cell (the font shapes it). */
+    private fun drawExtCells(canvas: Canvas, row: Array<Cell>, from: Int, to: Int, y: Float) {
+        for (i in from until to) {
+            val ext = row[i].ext ?: continue
+            canvas.drawText(ext, i * cellWidth, y + baselineOffset, paint)
         }
     }
 
@@ -761,7 +779,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
      * right-to-left runs are shaped and ordered by the platform text engine and fitted into the
      * columns they occupy. Backgrounds, the cursor and selection stay on logical columns.
      */
-    private fun drawRowBidi(canvas: Canvas, row: Array<Cell>, y: Float, yBottom: Float) {
+    private fun drawRowBidi(canvas: Canvas, row: Array<Cell>, y: Float, yBottom: Float, hasExt: Boolean = false) {
         val cw = cellWidth
         val n = row.size
         var runStart = 0
@@ -780,12 +798,12 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         for (r in 0 until bidi.runCount) {
             val s = bidi.getRunStart(r)
             val e = bidi.getRunLimit(r)
-            if ((bidi.getRunLevel(r) and 1) == 1) drawRtlRun(canvas, row, s, e, y) else drawTextCells(canvas, row, s, e, y)
+            if ((bidi.getRunLevel(r) and 1) == 1) drawRtlRun(canvas, row, s, e, y) else drawTextCells(canvas, row, s, e, y, hasExt)
         }
     }
 
     /** Per-cell text for columns [from, to): the same one-glyph-per-cell drawing as the plain path. */
-    private fun drawTextCells(canvas: Canvas, row: Array<Cell>, from: Int, to: Int, y: Float) {
+    private fun drawTextCells(canvas: Canvas, row: Array<Cell>, from: Int, to: Int, y: Float, hasExt: Boolean = false) {
         val cw = cellWidth
         var runStart = from
         while (runStart < to) {
@@ -793,7 +811,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             var runEnd = runStart + 1
             while (runEnd < to && sameStyle(row[runEnd], cell)) runEnd++
             var blank = !cell.underline
-            if (blank) for (i in runStart until runEnd) if (rowCharBuf[i] != ' ') { blank = false; break }
+            if (blank) for (i in runStart until runEnd) if (rowCharBuf[i] != ' ' || row[i].ext != null) { blank = false; break }
             if (!blank) {
                 paint.color = if (cell.reverse) cell.bg else cell.fg
                 paint.isFakeBoldText = cell.bold
@@ -806,6 +824,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
                 }
                 @Suppress("DEPRECATION")
                 canvas.drawPosText(rowCharBuf, runStart, runLen, runPosBuf, paint)
+                if (hasExt) drawExtCells(canvas, row, runStart, runEnd, y)
             }
             runStart = runEnd
         }

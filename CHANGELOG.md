@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.7.67 — emoji and wide characters, a faster terminal, more audit fixes
+
+- Fixed: **emoji and other characters outside the basic plane (🚀 📁 🔧 …) showed up broken** — only half of the
+  character was stored. They now display whole, take two columns like in other terminals (so boxes drawn around
+  them by opencode or Claude Code line up), and copy correctly. Chinese/Japanese/Korean characters also take two
+  columns now instead of one. Combining accents (é written as e + ´), skin-tone emoji (👍🏽) and joined emoji
+  (👨‍👩‍👧) are kept as one character. Overwriting or erasing half of a wide character no longer leaves a stray half.
+- Faster: the terminal's text parser is about 50% faster on full-screen program output (measured on a synthetic
+  opencode-like workload: 28.7 → 43 MB/s on a PC): no allocation per non-ASCII character or per colour sequence,
+  and scrolling / inserting / deleting lines reuse rows.
+- Security: the self-updater checks the download against the SHA-256 GitHub publishes for the release file, when
+  it is there.
+- Fixed: the plugin job pool was 4 threads, and each "keep running" plugin job holds one for as long as it runs, so
+  four of them starved every scheduled job; it is 16 now.
+- Changed: the background resource check (it lists /proc) runs every 45 seconds instead of 15 while the app is in the
+  background and nothing is busy — one less phone wake-up all night; a busy session brings the 15-second rhythm back.
+- Fixed: after a failed or cancelled restore the message claimed a fresh Alpine would be set up; your current Alpine
+  is in fact unchanged, and now it says so.
+- Fixed: a restore, reinstall or first-run setup finishing after the screen was closed no longer tries to open a tab
+  on the dead screen.
+- Cleaned up: the code and settings left over from when servers ran in tabs (double-Ctrl+C force stop, "server tab"
+  flags, the unused direct-command path) are gone.
+
 ## 1.7.66 — audit fixes: background servers, the login-free front door, secrets
 
 Found by a full review of the app (security, bugs, performance). Most of the bugs came with 1.7.65's move of the servers

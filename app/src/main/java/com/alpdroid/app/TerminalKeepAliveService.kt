@@ -56,6 +56,7 @@ class TerminalKeepAliveService : Service() {
             val doomed = app.tabs.toList()
             doomed.forEach { it.session.destroy() }
             app.pluginJobs.apply { paused = true; stopAll() }
+            app.services.stopAll()
             // Normally the reader threads report EOF and the tabs disappear. A wedged session never
             // does — "Exit" must still end it from the user's side, so after a short grace period any
             // tab still listed is torn down through the same path (and dropped outright if no Activity

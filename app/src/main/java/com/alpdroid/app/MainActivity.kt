@@ -129,6 +129,8 @@ class MainActivity : Activity() {
             paused = false
             (application as AlpineTermApp).backgroundExecutor.execute { refreshCount() }
         }
+        servicesListener = { mainHandler.post { updateKeepAliveService(); servicesBox?.let { renderServices(it) } } }
+        (application as AlpineTermApp).services.onChanged = servicesListener
         agentBridge.host = agentHost
         if (settingsStore.agentAccessEnabled) syncAgentBridge()
         // System-kill detector: a stale heartbeat means the OS killed the process (battery
@@ -517,6 +519,7 @@ class MainActivity : Activity() {
 
     private fun showSettingsCategoryList() {
         devicesPanel = null
+        servicesBox = null
         settingsPanel.removeAllViews()
         settingsPanel.addView(
             TextView(this).apply {
@@ -574,6 +577,7 @@ class MainActivity : Activity() {
 
     private fun showSettingsCategory(category: SettingsCategory) {
         devicesPanel = null
+        servicesBox = null
         settingsPanel.removeAllViews()
         settingsPanel.addView(
             LinearLayout(this).apply {
@@ -1430,7 +1434,80 @@ class MainActivity : Activity() {
         )
     }
 
+    /** The "Running in the background" list currently on screen (Network & SSH), redrawn when a service starts or ends. */
+    private var servicesBox: LinearLayout? = null
+
+    private fun renderServices(box: LinearLayout) {
+        box.removeAllViews()
+        val running = services.list()
+        if (running.isEmpty()) {
+            box.addView(
+                TextView(this).apply {
+                    text = "Nothing is running in the background. Servers you start here run without a tab."
+                    setTextColor(0xFF8B93A1.toInt())
+                    textSize = 13f
+                    setPadding(0, 0, 0, dp(6))
+                },
+            )
+            return
+        }
+        val usage = (application as AlpineTermApp).resourceManager.serviceUsage.toMap()
+        for (svc in running) {
+            box.addView(
+                TextView(this).apply {
+                    val mins = (System.currentTimeMillis() - svc.startedAt) / 60_000
+                    text = svc.label + (if (svc.stopping) " — stopping…" else " — running " + (if (mins < 1) "just now" else "$mins min")) +
+                        (usage[svc.id]?.let { "\n$it" } ?: "")
+                    setTextColor(0xFFD4D4D4.toInt())
+                    textSize = 13f
+                    setPadding(0, dp(4), 0, dp(2))
+                },
+            )
+            box.addView(
+                LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    if (svc.id == OpencodeWeb.SERVICE_ID) {
+                        addView(pillButton().apply { text = "Open"; setOnClickListener { openOpencodeInBrowser() } })
+                    }
+                    addView(pillButton().apply { text = "Log"; setOnClickListener { showServiceLog(svc) } })
+                    addView(
+                        pillButton().apply {
+                            text = "Stop"
+                            setOnClickListener {
+                                if (svc.id == OpencodeWeb.SERVICE_ID) stopOpencodeWeb() else services.stop(svc.id)
+                            }
+                        },
+                    )
+                },
+            )
+        }
+    }
+
+    private fun showServiceLog(svc: BackgroundServices.Service) {
+        val text = svc.tail(6000).ifBlank { "(nothing printed yet)" }
+        val view = TextView(this).apply {
+            this.text = text
+            typeface = Typeface.MONOSPACE
+            textSize = 11f
+            setTextIsSelectable(true)
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+        }
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle(svc.label + " — log")
+            .setView(android.widget.ScrollView(this).apply { addView(view) })
+            .setPositiveButton("Copy") { _, _ ->
+                (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("service log", text))
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
     private fun buildNetworkCategory(panel: LinearLayout) {
+        panel.addView(sectionLabel("Running in the background"))
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        panel.addView(box)
+        servicesBox = box
+        renderServices(box)
         panel.addView(sectionLabel("Network"))
         panel.addView(guideLink("Network, SSH & opencode web"))
         panel.addView(
@@ -1441,21 +1518,13 @@ class MainActivity : Activity() {
                 textSize = 13f
             },
         )
-        val ocRunning = opencodeServerTab() != null
+        val ocRunning = opencodeRunning()
         panel.addView(
             pillButton().apply {
                 text = if (ocRunning) "opencode web is running — open in browser" else "Start opencode web server (:${OpencodeWeb.PORT})"
                 setOnClickListener { if (ocRunning) openOpencodeInBrowser() else confirmOpencodeWeb() }
             },
         )
-        if (ocRunning) {
-            panel.addView(
-                pillButton().apply {
-                    text = "Stop opencode web server"
-                    setOnClickListener { stopOpencodeWeb() }
-                },
-            )
-        }
         panel.addView(
             MaterialSwitch(this).apply {
                 text = "Allow other devices on the Wi-Fi to use it"
@@ -1463,7 +1532,7 @@ class MainActivity : Activity() {
                 isChecked = settingsStore.opencodeWebLan
                 setOnCheckedChangeListener { _, checked ->
                     settingsStore.opencodeWebLan = checked
-                    if (opencodeServerTab() != null) android.widget.Toast.makeText(this@MainActivity, "Applies the next time the server starts", android.widget.Toast.LENGTH_SHORT).show()
+                    if (opencodeRunning()) android.widget.Toast.makeText(this@MainActivity, "Applies the next time the server starts", android.widget.Toast.LENGTH_SHORT).show()
                 }
             },
         )
@@ -1474,7 +1543,7 @@ class MainActivity : Activity() {
                 isChecked = settingsStore.opencodeWebNoLogin
                 setOnCheckedChangeListener { _, checked ->
                     settingsStore.opencodeWebNoLogin = checked
-                    if (opencodeServerTab() != null) android.widget.Toast.makeText(this@MainActivity, "Applies the next time the server starts", android.widget.Toast.LENGTH_SHORT).show()
+                    if (opencodeRunning()) android.widget.Toast.makeText(this@MainActivity, "Applies the next time the server starts", android.widget.Toast.LENGTH_SHORT).show()
                 }
             },
         )
@@ -2308,9 +2377,12 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    /** The running opencode web server's tab, if any. */
-    private fun opencodeServerTab(): TerminalTab? =
-        tabs.firstOrNull { it.isServer && it.label == OpencodeWeb.TAB_LABEL && it.session.isAlive() }
+    private val services get() = (application as AlpineTermApp).services
+
+    /** What this Activity registered with [BackgroundServices.onChanged]; removed again in onDestroy. */
+    private var servicesListener: (() -> Unit)? = null
+
+    private fun opencodeRunning(): Boolean = services.isRunning(OpencodeWeb.SERVICE_ID)
 
     /**
      * One-click opencode web server (see [OpencodeWeb]): a tab whose session directly execs a small restart loop
@@ -2318,7 +2390,7 @@ class MainActivity : Activity() {
      * is the same after every start; "Allow other devices" in Settings decides 127.0.0.1 or 0.0.0.0.
      */
     private fun confirmOpencodeWeb() {
-        opencodeServerTab()?.let { openOpencodeInBrowser(); return }
+        if (opencodeRunning()) { openOpencodeInBrowser(); return }
         val lan = settingsStore.opencodeWebLan
         val ips = NetworkInfo.localIpv4Addresses()
         val urls = if (!lan) "Only this phone: http://127.0.0.1:${OpencodeWeb.PORT}"
@@ -2326,10 +2398,11 @@ class MainActivity : Activity() {
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setTitle("Start opencode server?")
             .setMessage(
+                "It runs in the background — no tab. Stop it from Settings → Network & SSH.\n\n" +
                 (if (lan) "Other devices on this network can log in with the password — only use it on networks you trust. Turn off \"Allow other devices\" in Settings → Network to keep it on this phone.\n\n"
                 else "Only this phone can reach it.\n\n") +
                     (if (settingsStore.opencodeWebNoLogin) "This phone's browser is signed in for you (no password page). Other apps on this phone could also use it; turn off \"No login on this phone\" to change that.\n\n" else "") +
-                    "URLs:\n$urls\n\nIt restarts by itself if it stops. Stop it with the Stop button in Settings → Network or Ctrl+C in its tab.",
+                    "URLs:\n$urls\n\nIt restarts by itself if it stops.",
             )
             .setPositiveButton("Start server") { _, _ -> startOpencodeWeb(auto = false) }
             .setNegativeButton("Cancel", null)
@@ -2337,7 +2410,7 @@ class MainActivity : Activity() {
     }
 
     private fun startOpencodeWeb(auto: Boolean) {
-        if (opencodeServerTab() != null) return
+        if (opencodeRunning()) return
         drawerLayout.closeDrawer(GravityCompat.END)
         val lan = settingsStore.opencodeWebLan
         val password = settingsStore.opencodeWebPassword
@@ -2346,19 +2419,16 @@ class MainActivity : Activity() {
             .onFailure { android.widget.Toast.makeText(this, "Could not start the login-free front door (port ${OpencodeWeb.PORT} busy?) — using the normal login", android.widget.Toast.LENGTH_LONG).show() }
             .isSuccess
         val serverPort = if (noLogin) OpencodeWeb.INTERNAL_PORT else OpencodeWeb.PORT
-        val before = activeTabIndex
-        addTab(
-            OpencodeWeb.TAB_LABEL,
-            onStarted = {
-                tabs.lastOrNull { it.isServer && it.label == OpencodeWeb.TAB_LABEL }?.let { tab ->
-                    awaitOpencodeReady(tab, lan, noLogin, serverPort, password, auto, 120)
-                    // Started by itself: leave the user on the tab they were in.
-                    if (auto && before in tabs.indices && before != tabs.indexOf(tab)) switchToTab(before)
-                }
+        services.start(
+            OpencodeWeb.SERVICE_ID, "opencode web",
+            OpencodeWeb.command(serverPort, lan && !noLogin, password),
+            onExit = { OpencodeWeb.stopProxy() },
+            onFailed = { why ->
+                OpencodeWeb.stopProxy()
+                mainHandler.post { android.widget.Toast.makeText(this, "opencode web: $why", android.widget.Toast.LENGTH_LONG).show() }
             },
-            onFailed = { OpencodeWeb.stopProxy() },
-            directCommand = OpencodeWeb.command(serverPort, lan && !noLogin, password),
         )
+        awaitOpencodeReady(lan, noLogin, serverPort, password, auto, 120)
     }
 
     /** Opens the web page in the phone's browser: plain when the login-free proxy is up, otherwise already signed in. */
@@ -2370,14 +2440,11 @@ class MainActivity : Activity() {
             .onFailure { android.widget.Toast.makeText(this, "No browser available", android.widget.Toast.LENGTH_SHORT).show() }
     }
 
-    /** Stops the server and its restart loop (the same teardown as a second Ctrl+C on the tab). */
+    /** Stops the server and its restart loop. */
     private fun stopOpencodeWeb() {
-        val tab = opencodeServerTab() ?: return
         android.widget.Toast.makeText(this, "Stopping the opencode server…", android.widget.Toast.LENGTH_SHORT).show()
         OpencodeWeb.stopProxy()
-        tab.session.forceKill()
-        mainHandler.postDelayed({ tab.session.destroy() }, 1500)
-        forceRemoveTabIfStuck(tab, 4000)
+        services.stop(OpencodeWeb.SERVICE_ID)
     }
 
     /**
@@ -2444,45 +2511,46 @@ class MainActivity : Activity() {
         val cmds = if (ips.isEmpty()) "(no network address found)" else ips.joinToString("\n") { "ssh -p $SSH_SERVER_PORT root@$it" }
         fun start() {
             drawerLayout.closeDrawer(GravityCompat.END)
-            addTab(
-                "sshd",
-                onStarted = { tabs.getOrNull(activeTabIndex)?.let { catchSshPassword(it, 12) } },
-                directCommand = "PORT=$SSH_SERVER_PORT; PWF=/etc/alpdroid/ssh_password; " +
+            services.start(
+                SSH_SERVICE_ID, "SSH server",
+                "PORT=$SSH_SERVER_PORT; PWF=/etc/alpdroid/ssh_password; " +
                     "if ! command -v sshd >/dev/null 2>&1; then echo 'Installing openssh…'; " +
                     "${apkAddRetry("openssh")}; fi; " +
                     "command -v sshd >/dev/null 2>&1 || { echo 'openssh not installed — apk failed, check the network and try again'; exit 1; }; " +
                     "ssh-keygen -A >/dev/null 2>&1; mkdir -p /etc/alpdroid /root/.ssh /var/empty; chmod 700 /root/.ssh; " +
                     "[ -s \"\$PWF\" ] || { tr -dc 'A-Za-z0-9' </dev/urandom | head -c 14 >\"\$PWF\"; chmod 600 \"\$PWF\"; }; " +
                     "PW=\$(cat \"\$PWF\"); echo \"root:\$PW\" | chpasswd 2>/dev/null; " +
-                    "echo \"ssh password \$PW\"; echo \"sshd on 0.0.0.0:\$PORT — Ctrl+C to stop\"; " +
+                    "echo \"ssh password \$PW\"; echo \"sshd on 0.0.0.0:\$PORT\"; " +
                     "/usr/sbin/sshd -D -e -p \$PORT -o PermitRootLogin=yes -o PasswordAuthentication=yes -o UsePAM=no -o StrictModes=no -o PidFile=/tmp/sshd.pid",
+                onFailed = { why -> mainHandler.post { android.widget.Toast.makeText(this, "SSH server: $why", android.widget.Toast.LENGTH_LONG).show() } },
             )
+            awaitSshPassword(40)
         }
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setTitle("Start SSH server?")
             .setMessage(
-                "Runs OpenSSH (installed on first use) on port $SSH_SERVER_PORT in a new tab, so you can log in as root from a laptop on the same Wi-Fi. A random password is generated and shown to you. Anyone on this network with it gets full access: only use on networks you trust.\n\n" +
-                    "From your laptop:\n$cmds\n\nStop with Ctrl+C in that tab.",
+                "Runs OpenSSH (installed on first use) on port $SSH_SERVER_PORT in the background (no tab), so you can log in as root from a laptop on the same Wi-Fi. A random password is generated and shown to you. Anyone on this network with it gets full access: only use on networks you trust.\n\n" +
+                    "From your laptop:\n$cmds\n\nStop it from Settings → Network & SSH.",
             )
             .setPositiveButton("Start server") { _, _ -> start() }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
-    /** Waits for the sshd tab's printed `ssh password X` line (first run installs openssh, so
-     *  this polls longer than the opencode one) and then shows the connect details. */
-    private fun catchSshPassword(tab: TerminalTab, attemptsLeft: Int) {
+    /** Waits for the SSH service to print its `ssh password X` line (the first run installs openssh, so this polls
+     *  for a few minutes) and then shows the connect details. */
+    private fun awaitSshPassword(attemptsLeft: Int) {
         if (attemptsLeft <= 0) return
         mainHandler.postDelayed({
-            if (isFinishing || isDestroyed || !tabs.contains(tab)) return@postDelayed
-            val hit = Regex("ssh password (\\S+)").find(tab.emulator.tailText(60))
-            if (hit != null) showSshReadyDialog(tab, hit.groupValues[1])
-            else catchSshPassword(tab, attemptsLeft - 1)
+            if (isFinishing || isDestroyed) return@postDelayed
+            if (!services.isRunning(SSH_SERVICE_ID)) return@postDelayed // ended or failed to start
+            val hit = Regex("ssh password (\\S+)").find(services.tail(SSH_SERVICE_ID, 2000))
+            if (hit != null) showSshReadyDialog(hit.groupValues[1]) else awaitSshPassword(attemptsLeft - 1)
         }, 5000)
     }
 
-    private fun showSshReadyDialog(tab: TerminalTab, password: String) {
-        if (isFinishing || isDestroyed || !tabs.contains(tab)) return
+    private fun showSshReadyDialog(password: String) {
+        if (isFinishing || isDestroyed) return
         val ips = NetworkInfo.localIpv4Addresses()
         val first = ips.firstOrNull()?.let { "ssh -p $SSH_SERVER_PORT root@$it" } ?: "ssh -p $SSH_SERVER_PORT root@<phone>"
         val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
@@ -2491,7 +2559,7 @@ class MainActivity : Activity() {
             .setTitle("SSH server running")
             .setMessage("Password copied. From a laptop on this Wi-Fi:\n\n" +
                 (if (ips.isEmpty()) first else ips.joinToString("\n") { "ssh -p $SSH_SERVER_PORT root@$it" }) +
-                "\n\nUser: root\nPassword: $password\n\nStop with Ctrl+C in the \"sshd\" tab.")
+                "\n\nUser: root\nPassword: $password\n\nIt runs in the background — stop it from Settings → Network & SSH.")
             .setPositiveButton("Copy ssh command") { _, _ ->
                 cm.setPrimaryClip(android.content.ClipData.newPlainText("ssh command", first))
                 android.widget.Toast.makeText(this, "Command copied", android.widget.Toast.LENGTH_SHORT).show()
@@ -2508,19 +2576,21 @@ class MainActivity : Activity() {
      * stored password; if the server rejects it (401) and printed its own, that printed one is shown instead.
      * Polled every 1.5 s for up to 3 minutes: bun under proot is slow on a busy phone or the first run.
      */
-    private fun awaitOpencodeReady(tab: TerminalTab, lan: Boolean, noLogin: Boolean, serverPort: Int, password: String, auto: Boolean, attemptsLeft: Int) {
+    private fun awaitOpencodeReady(lan: Boolean, noLogin: Boolean, serverPort: Int, password: String, auto: Boolean, attemptsLeft: Int) {
         mainHandler.postDelayed({
-            if (isFinishing || isDestroyed || !tabs.contains(tab) || !tab.session.isAlive()) return@postDelayed
-            val printed = servePasswordRe.find(tab.emulator.tailText(300, joinWrapped = true))?.groupValues?.get(1)
+            if (isFinishing || isDestroyed) return@postDelayed
+            // Ended, or never started (the failure was already reported): nothing to wait for.
+            if (!opencodeRunning()) return@postDelayed
+            val printed = servePasswordRe.find(services.tail(OpencodeWeb.SERVICE_ID, 2000))?.groupValues?.get(1)
             Thread({
                 val open = OpencodeWeb.portOpen(serverPort)
                 val accepted = open && (printed != null || OpencodeWeb.loginAccepted(OpencodeWeb.probeLogin(serverPort, password)))
                 mainHandler.post {
-                    if (isFinishing || isDestroyed || !tabs.contains(tab)) return@post
+                    if (isFinishing || isDestroyed || !opencodeRunning()) return@post
                     when {
                         accepted -> showServeReadyDialog(printed ?: password, lan, noLogin, auto)
                         attemptsLeft <= 0 && open -> showServeReadyDialog(password, lan, noLogin, auto, warn = true)
-                        attemptsLeft > 0 -> awaitOpencodeReady(tab, lan, noLogin, serverPort, password, auto, attemptsLeft - 1)
+                        attemptsLeft > 0 -> awaitOpencodeReady(lan, noLogin, serverPort, password, auto, attemptsLeft - 1)
                     }
                 }
             }, "oc-ready").start()
@@ -2539,7 +2609,7 @@ class MainActivity : Activity() {
         // Straight into the page on this phone — no password to type or paste.
         openOpencodeInBrowser()
         val ips = NetworkInfo.localIpv4Addresses()
-        val note = if (warn) "\n\nThe server did not accept the saved password — use the one it printed in the \"${OpencodeWeb.TAB_LABEL}\" tab." else ""
+        val note = if (warn) "\n\nThe server did not accept the saved password — use the one it printed (Settings → Network & SSH → Log)." else ""
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setTitle("opencode server running")
             .setMessage(OpencodeWeb.readyMessage(lan, noLogin, OpencodeWeb.PORT, ips, password) + note)
@@ -3313,7 +3383,7 @@ class MainActivity : Activity() {
 
     private fun updateKeepAliveService() {
         val intent = Intent(this, TerminalKeepAliveService::class.java)
-        if (settingsStore.keepAliveEnabled && (tabs.isNotEmpty() || (application as AlpineTermApp).pluginJobs.hasActive())) {
+        if (settingsStore.keepAliveEnabled && (tabs.isNotEmpty() || (application as AlpineTermApp).pluginJobs.hasActive() || (application as AlpineTermApp).services.hasActive())) {
             requestNotificationPermissionIfNeeded()
             intent.putExtra(TerminalKeepAliveService.EXTRA_WAKE_LOCK, settingsStore.wakeLockEnabled)
             // This can run well after a long first-run Alpine download finishes (posted from a
@@ -3771,7 +3841,6 @@ class MainActivity : Activity() {
     /** A tab's shell exited (typed "exit"/Ctrl-D, or crashed) — drop it and switch to a
      *  neighbor; closing the very last tab closes the app, same as the old single-tab behavior. */
     private fun onTabExited(tab: TerminalTab) {
-        if (tab.label == OpencodeWeb.TAB_LABEL) OpencodeWeb.stopProxy()
         val idx = tabs.indexOf(tab)
         if (idx < 0) return
         // This path fires when the shell process exited on its own (typed "exit"/Ctrl-D) — the
@@ -4416,6 +4485,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        if ((application as AlpineTermApp).services.onChanged === servicesListener) (application as AlpineTermApp).services.onChanged = null
         super.onDestroy()
         // A deliberate exit isn't a kill: zero the heartbeat so the next launch stays quiet.
         if (deliberateExit) settingsStore.lastAliveMs = 0L
@@ -4920,6 +4990,7 @@ class MainActivity : Activity() {
     companion object {
         /** Android apps cannot bind ports below 1024, so the one-tap SSH server uses this. */
         const val SSH_SERVER_PORT = 8022
+        const val SSH_SERVICE_ID = "sshd"
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
         private const val LOCATION_PERMISSION_REQUEST_CODE = 1002
         private const val BACKUP_CREATE_REQUEST_CODE = 2001

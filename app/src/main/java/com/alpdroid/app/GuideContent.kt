@@ -85,7 +85,7 @@ Your plugins and their saved values are included in every backup.""",
             """Settings → Network & SSH:
 • Shows your phone's address on your Wi-Fi.
 • Save SSH connections (server, port, user) and reconnect with one tap.
-• "Start SSH server" runs OpenSSH on port 8022 in a new tab so you can log in from a laptop on the same Wi-Fi: ssh -p 8022 root@<phone address>. The first run installs openssh; a random root password is generated, shown and copied for you (kept in /etc/alpdroid/ssh_password — delete that file to get a new one). Anyone on the network with the password gets full access, so only use trusted networks. Stop with Ctrl+C in that tab.
+• "Start SSH server" runs OpenSSH on port 8022 in the background (no tab) so you can log in from a laptop on the same Wi-Fi: ssh -p 8022 root@<phone address>. The first run installs openssh; a random root password is generated, shown and copied for you (kept in /etc/alpdroid/ssh_password — delete that file to get a new one). Anyone on the network with the password gets full access, so only use trusted networks. Stop it with its Stop button under "Running in the background" at the top of this screen.
 • "Add SSH public key" lets a laptop log in with its key (paste the contents of ~/.ssh/id_ed25519.pub) instead of the password.
 • A web server you start in a tab can be opened on the phone itself at 127.0.0.1 with the port number.
 
@@ -94,9 +94,9 @@ OPENCODE IN YOUR BROWSER
 • On this phone there is no login page: the app opens the browser straight into opencode ("No login on this phone", on by default). If you turn it off, "Open in browser" still signs you in with a link, and the password (user opencode) is copied for older versions that ask for it.
 • "Allow other devices on the Wi-Fi to use it" decides who can reach it: on = other devices on the network, with the password or the "Copy link for another device" link (only use trusted networks), off = this phone only.
 • With "No login on this phone" on, other apps on this phone that connect to 127.0.0.1 can use the server too; web pages in your browser cannot.
-• If it crashes or Android stops it, it restarts by itself. "Start opencode web when AlpDroid opens" starts it for you.
+• If it crashes it restarts by itself. "Start opencode web when AlpDroid opens" starts it for you.
 • Then open http://<phone address>:4096 on your other device, or the "open in browser" button on this phone.
-• Stop it with the Stop button in this screen, or Ctrl+C in its tab.""",
+• It runs in the background — no tab. Stop it with its Stop button under "Running in the background" at the top of this screen (Log shows what it printed).""",
         ),
         Section(
             "Devices",

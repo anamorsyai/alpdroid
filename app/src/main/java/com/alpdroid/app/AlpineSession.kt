@@ -191,7 +191,7 @@ object AlpineSession {
     /** Runs one shell command non-interactively in the guest (plugin buttons) with extra env vars,
      *  returning the live session so the caller can stream its output and stop it. Null when
      *  Alpine isn't ready. */
-    fun startScript(context: Context, command: String, extraEnv: Map<String, String>): PtySession? {
+    fun startScript(context: Context, command: String, extraEnv: Map<String, String>, fast: Boolean = false): PtySession? {
         if (!AlpineRootfs.isReady(context)) return null
         val nativeLibDir = File(context.applicationInfo.nativeLibraryDir)
         val bridge = File(nativeLibDir, "libpty_bridge.so")
@@ -223,7 +223,17 @@ object AlpineSession {
             "PROOT_NO_SECCOMP" to "1",
             "SSL_CERT_FILE" to "/etc/ssl/cert.pem",
         ) + extraEnv.filterKeys { it !in PROTECTED_ENV }
-        return PtySession.start(bridge, context.cacheDir, 24, 200, argv, context.filesDir, env)
+        // Long-running background services ask for the same settings interactive tabs honour: proot's seccomp
+        // tracing (far less CPU per syscall) and the low-power cores. Plugin scripts keep the conservative default.
+        var sessionEnv = env
+        if (fast) {
+            // Same as interactive tabs: pin apk's repository hosts to IPv4 (a server's first `apk add` needs it).
+            writeApkHostsIPv4Only(root)
+            val settings = SettingsStore(context)
+            if (settings.fastProotTracing) sessionEnv = sessionEnv - "PROOT_NO_SECCOMP"
+            if (settings.efficiencyCores) CpuTopology.readEfficiencyMask()?.let { sessionEnv = sessionEnv + ("ALPDROID_CPU_MASK" to it) }
+        }
+        return PtySession.start(bridge, context.cacheDir, 24, 200, argv, context.filesDir, sessionEnv)
             .also { it.cleanupDir = prootScratch }
     }
 

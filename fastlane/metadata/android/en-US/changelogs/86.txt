@@ -1,0 +1,1 @@
+Change: opencode web and SSH servers run in the background with Stop buttons, no tab

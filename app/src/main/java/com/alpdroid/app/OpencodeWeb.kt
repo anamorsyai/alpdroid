@@ -21,7 +21,7 @@ object OpencodeWeb {
     /** Where the real server listens when [LocalAuthProxy] fronts it on [PORT]. */
     const val INTERNAL_PORT = 4097
     const val USER = "opencode"
-    const val TAB_LABEL = "opencode serve"
+    const val SERVICE_ID = "opencode-web"
 
     /** The proxy fronting the running server (see [LocalAuthProxy]); process-wide because tabs outlive the Activity. */
     @Volatile var proxy: LocalAuthProxy? = null
@@ -126,6 +126,6 @@ object OpencodeWeb {
         else if (ips.isEmpty()) "Other devices: http://<phone address>:$port"
         else "Other devices on this Wi-Fi:\n" + ips.joinToString("\n") { "http://$it:$port" }
         return "$local\n$others\n\nFor other devices — user: $USER, password: $password (or use \"Copy link for another device\").\n\n" +
-            "It restarts by itself if it stops. Stop it with the Stop button in Settings → Network, or Ctrl+C in the \"$TAB_LABEL\" tab."
+            "It restarts by itself if it stops. It runs in the background — stop it from Settings → Network & SSH."
     }
 }

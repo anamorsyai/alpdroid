@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.7.65 — servers run in the background, not in tabs
+
+- Changed: the opencode web server and the SSH server no longer open a tab. They run as background services — no tab
+  to look at or to keep in the tab bar. **Settings → Network & SSH → Running in the background** lists each one with
+  how long it has run, its CPU and memory, and **Open / Log / Stop** buttons (Stop ends the server and everything it
+  started). Closing the app's last tab no longer matters to them; they keep the foreground notification up while they
+  run and let it go when they end.
+- Changed: background services use proot's faster tracing and the low-power cores when those settings are on, like
+  interactive tabs (before, scripts and servers started outside a tab always used the slow single-step mode).
+- Changed: Settings → Usage lists the background services too (CPU, memory, busiest process), they count towards the
+  child-process total, and the "killed" message can name a service as the busiest process.
+- Measured: opencode v2 idle is about 0% of a core and ~170 MB (with a browser page open ~4% and ~310 MB); the
+  login-free front door adds no measurable delay per request and no threads while idle.
+
 ## 1.7.64 — opencode web: no login page on this phone, and the browser opens by itself again
 
 - Fixed: the browser did not open and the "server running" dialog never appeared in 1.7.63. Android refuses plain

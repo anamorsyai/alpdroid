@@ -29,6 +29,9 @@ class AlpineTermApp : Application() {
     /** Scheduled / keep-running plugin scripts (see PluginJobs). */
     val pluginJobs = PluginJobs(this)
 
+    /** The opencode web server, the SSH server: listening programs that run without a tab (see BackgroundServices). */
+    val services = BackgroundServices(this)
+
     /**
      * One-off proot runs (plugin buttons, package search) each mint a `proot-scratch-*` dir
      * that nothing ever deleted. Safe to wipe them all here: this runs at process start, and

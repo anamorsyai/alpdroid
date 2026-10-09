@@ -67,6 +67,11 @@ class ResourceManager(private val app: AlpineTermApp) {
     private class Sample(val bridgeJiffies: Long, val guestJiffies: Long, val atMs: Long)
 
     private val samples = HashMap<Int, Sample>()
+    /** Background services: id -> (CPU time, when) at the previous tick. */
+    private val serviceSamples = HashMap<String, Pair<Long, Long>>()
+    /** One line per running background service (name, CPU, memory, busiest process) for the usage view and Settings. */
+    @Volatile var serviceUsage: List<Pair<String, String>> = emptyList()
+        private set
     /** Per-process CPU time at the previous tick, to tell which process inside a session is the busy one. */
     private var prevPidJiffies = HashMap<Int, Long>()
     private val balancerStates = HashMap<Int, LoadBalancer.State>()
@@ -171,7 +176,8 @@ class ResourceManager(private val app: AlpineTermApp) {
         }
         appRssBytes = readText("/proc/self/statm")?.let { ResourcePolicy.parseStatmRssBytes(it) } ?: 0L
         val tabs = app.tabs.toList()
-        if (tabs.isEmpty()) { usage = emptyList(); processCount = 0; peakProcessCount = 0; busiest = ""; samples.clear(); detectors.clear(); return }
+        val services = app.services.list()
+        if (tabs.isEmpty() && services.isEmpty()) { usage = emptyList(); serviceUsage = emptyList(); processCount = 0; peakProcessCount = 0; busiest = ""; samples.clear(); detectors.clear(); serviceSamples.clear(); return }
 
         // One pass over /proc: ppid + cpu of every process we are allowed to see (our own uid).
         val parentOf = HashMap<Int, Int>()
@@ -231,12 +237,43 @@ class ResourceManager(private val app: AlpineTermApp) {
             result += TabUsage(tab.id, tab.label ?: "Session ${index + 1}", cpu, rss, parked, top)
         }
         usage = result
-        prevPidJiffies = HashMap(jiffiesOf)
         busiest = result.maxByOrNull { it.cpuPercent }?.top.orEmpty()
         processCount = tabs.sumOf { tab ->
             val bridge = tab.session.pid
             if (bridge <= 0 || !parentOf.containsKey(bridge)) 0 else 1 + ResourcePolicy.descendants(bridge, parentOf).size
         }
+        // Background services (opencode web, sshd …) count towards Android's child-process limit and use CPU like a tab.
+        val svcLines = ArrayList<Pair<String, String>>()
+        var svcBusyCpu = 0.0
+        var svcBusyTop = ""
+        val liveServices = HashSet<String>()
+        for (svc in services) {
+            val pid = svc.session.pid
+            if (pid <= 0 || !jiffiesOf.containsKey(pid)) continue
+            liveServices += svc.id
+            val tree = ResourcePolicy.descendants(pid, parentOf) + pid
+            processCount += tree.size
+            val total = tree.sumOf { jiffiesOf[it] ?: 0L }
+            val rss = tree.sumOf { p -> readText("/proc/$p/statm")?.let { ResourcePolicy.parseStatmRssBytes(it) } ?: 0L }
+            val before = serviceSamples[svc.id]
+            serviceSamples[svc.id] = total to now
+            val cpu = if (before == null) 0.0 else ResourcePolicy.cpuPercent(total - before.first, now - before.second)
+            val top = if (before == null) "" else tree
+                .mapNotNull { p ->
+                    val was = prevPidJiffies[p] ?: return@mapNotNull null
+                    val pct = ResourcePolicy.cpuPercent((jiffiesOf[p] ?: was) - was, now - before.second)
+                    if (pct < 10.0) null else p to pct
+                }
+                .sortedByDescending { it.second }.take(3)
+                .joinToString(", ") { (p, pct) -> (readText("/proc/$p/comm")?.trim().orEmpty().ifEmpty { "pid $p" }) + " " + pct.toInt() + "%" }
+            if (cpu > svcBusyCpu && top.isNotEmpty()) { svcBusyCpu = cpu; svcBusyTop = svc.label + ": " + top }
+            svcLines += svc.id to ("CPU " + cpu.toInt() + "% · RAM " + rss / (1024 * 1024) + " MB" + if (top.isNotEmpty()) " · busiest: $top" else "")
+        }
+        serviceUsage = svcLines
+        // The kill message names the busiest process wherever it runs — a tab or a background service.
+        if (svcBusyCpu > (result.maxOfOrNull { it.cpuPercent } ?: 0.0)) busiest = svcBusyTop
+        serviceSamples.keys.retainAll(liveServices)
+        prevPidJiffies = HashMap(jiffiesOf)
         if (processCount > peakProcessCount) peakProcessCount = processCount
         samples.keys.retainAll(liveIds)
         detectors.keys.retainAll(liveIds)
@@ -278,7 +315,11 @@ class ResourceManager(private val app: AlpineTermApp) {
             if (u.parked) sb.append(" · parked on efficiency cores")
             if (u.top.isNotEmpty()) sb.append("\n   busiest: ").append(u.top)
         }
-        if (usage.isEmpty()) sb.append("\nNo sessions running.")
+        for ((id, line) in serviceUsage) {
+            val label = app.services.get(id)?.label ?: id
+            sb.append("\n").append(label).append(" (background): ").append(line)
+        }
+        if (usage.isEmpty() && serviceUsage.isEmpty()) sb.append("\nNo sessions running.")
         return sb.toString()
     }
 

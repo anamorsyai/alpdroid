@@ -17,3 +17,6 @@ __pycache__/
 *.keystore
 *.p12
 keystore.properties
+
+# Kotlin compiler session files
+.kotlin/

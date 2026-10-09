@@ -1,9 +1,9 @@
 package com.alpdroid.app
 
-import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.net.URL
+import java.net.URLEncoder
+import java.util.Base64
 
 /**
  * The opencode web server (`opencode serve`) started from the Network settings. Kept free of Android types so
@@ -18,8 +18,29 @@ import java.net.URL
  */
 object OpencodeWeb {
     const val PORT = 4096
+    /** Where the real server listens when [LocalAuthProxy] fronts it on [PORT]. */
+    const val INTERNAL_PORT = 4097
     const val USER = "opencode"
     const val TAB_LABEL = "opencode serve"
+
+    /** The proxy fronting the running server (see [LocalAuthProxy]); process-wide because tabs outlive the Activity. */
+    @Volatile var proxy: LocalAuthProxy? = null
+        private set
+
+    /** Starts the proxy on [PORT] in front of the server that will listen on [INTERNAL_PORT]; throws if the port is taken. */
+    @Synchronized
+    fun startProxy(lan: Boolean, password: String) {
+        stopProxy()
+        val p = LocalAuthProxy(PORT, INTERNAL_PORT, bindAll = lan, user = USER, password = password)
+        p.start()
+        proxy = p
+    }
+
+    @Synchronized
+    fun stopProxy() {
+        proxy?.stop()
+        proxy = null
+    }
 
     /** Wraps [s] in single quotes for `sh`, so a password or path can never end the quoting. */
     fun shQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
@@ -56,27 +77,55 @@ object OpencodeWeb {
         Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), timeoutMs); true }
     } catch (_: Exception) { false }
 
-    /** HTTP status of GET / with the server login, or -1 when nothing answered (200 = the password works, 401 = it does not). */
-    fun probeLogin(port: Int, password: String, timeoutMs: Int = 3000): Int = try {
-        val conn = URL("http://127.0.0.1:$port/").openConnection() as HttpURLConnection
-        conn.connectTimeout = timeoutMs
-        conn.readTimeout = timeoutMs
-        conn.instanceFollowRedirects = false
-        val token = java.util.Base64.getEncoder().encodeToString("$USER:$password".toByteArray())
-        conn.setRequestProperty("Authorization", "Basic $token")
-        val code = conn.responseCode
-        conn.disconnect()
-        code
+    /**
+     * Status of an authenticated request to a path the server protects, or -1 when nothing answers. Plain sockets, not
+     * HttpURLConnection: Android refuses cleartext HTTP from an app that does not allow it, even to 127.0.0.1.
+     * v2 serves its web page without a login and protects only the paths under /api, v1 protects everything — so a path counts as
+     * protected when it answers 401 without the login; if none does, nothing is protected and the answer is 200.
+     */
+    fun probeLogin(port: Int, password: String, timeoutMs: Int = 3000): Int {
+        val token = "Basic " + Base64.getEncoder().encodeToString("$USER:$password".toByteArray())
+        var answered = false
+        for (path in listOf("/api/session", "/session", "/")) {
+            val plain = rawStatus(port, path, null, timeoutMs)
+            if (plain == -1) continue
+            answered = true
+            if (plain == 401) return rawStatus(port, path, token, timeoutMs)
+        }
+        return if (answered) 200 else -1
+    }
+
+    /** Whether [probeLogin]'s answer means the password was accepted. */
+    fun loginAccepted(status: Int): Boolean = status != -1 && status != 401 && status != 403
+
+    private fun rawStatus(port: Int, path: String, authorization: String?, timeoutMs: Int): Int = try {
+        Socket().use { s ->
+            s.soTimeout = timeoutMs
+            s.connect(InetSocketAddress("127.0.0.1", port), timeoutMs)
+            val req = "GET $path HTTP/1.0\r\nHost: 127.0.0.1:$port\r\n" +
+                (if (authorization != null) "Authorization: $authorization\r\n" else "") + "\r\n"
+            s.getOutputStream().write(req.toByteArray())
+            s.getOutputStream().flush()
+            val line = s.getInputStream().bufferedReader().readLine() ?: ""
+            line.split(" ").getOrNull(1)?.toIntOrNull() ?: -1
+        }
     } catch (_: Exception) { -1 }
 
-    /** What the "server running" dialog shows. [loginWorks] false means the stored password was rejected and the
-     *  server printed its own — [password] is then the one read from the tab. */
-    fun readyMessage(lan: Boolean, port: Int, ips: List<String>, password: String): String {
-        val local = "On this phone: http://127.0.0.1:$port"
+    /** `?auth_token=` value the v2 web page signs itself in with: base64 of `user:password`. */
+    fun authToken(password: String): String = Base64.getEncoder().encodeToString("$USER:$password".toByteArray())
+
+    /** A link that opens the v2 web page already signed in (older opencode versions ignore the parameter). */
+    fun loginUrl(host: String, port: Int, password: String): String =
+        "http://$host:$port/?auth_token=" + URLEncoder.encode(authToken(password), "UTF-8")
+
+    /** What the "server running" dialog shows. [noLogin]: this phone needs no password (see [LocalAuthProxy]). */
+    fun readyMessage(lan: Boolean, noLogin: Boolean, port: Int, ips: List<String>, password: String): String {
+        val local = if (noLogin) "On this phone: http://127.0.0.1:$port — no login needed."
+        else "On this phone: http://127.0.0.1:$port (opened already signed in)."
         val others = if (!lan) "Other devices cannot reach it (\"Allow other devices\" is off)."
         else if (ips.isEmpty()) "Other devices: http://<phone address>:$port"
         else "Other devices on this Wi-Fi:\n" + ips.joinToString("\n") { "http://$it:$port" }
-        return "$local\n$others\n\nUser: $USER\nPassword: $password\n\nIt restarts by itself if it stops. " +
-            "Stop it with the Stop button in Settings → Network, or Ctrl+C in the \"$TAB_LABEL\" tab."
+        return "$local\n$others\n\nFor other devices — user: $USER, password: $password (or use \"Copy link for another device\").\n\n" +
+            "It restarts by itself if it stops. Stop it with the Stop button in Settings → Network, or Ctrl+C in the \"$TAB_LABEL\" tab."
     }
 }

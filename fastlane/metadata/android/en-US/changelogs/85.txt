@@ -1,0 +1,1 @@
+Fix: opencode web opens the browser again; no login page on this phone; link to sign in another device

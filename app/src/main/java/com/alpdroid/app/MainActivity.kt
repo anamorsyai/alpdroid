@@ -1469,6 +1469,17 @@ class MainActivity : Activity() {
         )
         panel.addView(
             MaterialSwitch(this).apply {
+                text = "No login on this phone (other apps on this phone can use it too)"
+                setTextColor(0xFFD4D4D4.toInt())
+                isChecked = settingsStore.opencodeWebNoLogin
+                setOnCheckedChangeListener { _, checked ->
+                    settingsStore.opencodeWebNoLogin = checked
+                    if (opencodeServerTab() != null) android.widget.Toast.makeText(this@MainActivity, "Applies the next time the server starts", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            },
+        )
+        panel.addView(
+            MaterialSwitch(this).apply {
                 text = "Start opencode web when AlpDroid opens"
                 setTextColor(0xFFD4D4D4.toInt())
                 isChecked = settingsStore.opencodeWebAutoStart
@@ -2317,6 +2328,7 @@ class MainActivity : Activity() {
             .setMessage(
                 (if (lan) "Other devices on this network can log in with the password — only use it on networks you trust. Turn off \"Allow other devices\" in Settings → Network to keep it on this phone.\n\n"
                 else "Only this phone can reach it.\n\n") +
+                    (if (settingsStore.opencodeWebNoLogin) "This phone's browser is signed in for you (no password page). Other apps on this phone could also use it; turn off \"No login on this phone\" to change that.\n\n" else "") +
                     "URLs:\n$urls\n\nIt restarts by itself if it stops. Stop it with the Stop button in Settings → Network or Ctrl+C in its tab.",
             )
             .setPositiveButton("Start server") { _, _ -> startOpencodeWeb(auto = false) }
@@ -2329,23 +2341,32 @@ class MainActivity : Activity() {
         drawerLayout.closeDrawer(GravityCompat.END)
         val lan = settingsStore.opencodeWebLan
         val password = settingsStore.opencodeWebPassword
+        // "No login on this phone": a small proxy owns port 4096 and the real server listens privately on 4097.
+        val noLogin = settingsStore.opencodeWebNoLogin && runCatching { OpencodeWeb.startProxy(lan, password) }
+            .onFailure { android.widget.Toast.makeText(this, "Could not start the login-free front door (port ${OpencodeWeb.PORT} busy?) — using the normal login", android.widget.Toast.LENGTH_LONG).show() }
+            .isSuccess
+        val serverPort = if (noLogin) OpencodeWeb.INTERNAL_PORT else OpencodeWeb.PORT
         val before = activeTabIndex
         addTab(
             OpencodeWeb.TAB_LABEL,
             onStarted = {
                 tabs.lastOrNull { it.isServer && it.label == OpencodeWeb.TAB_LABEL }?.let { tab ->
-                    awaitOpencodeReady(tab, lan, password, auto, 120)
+                    awaitOpencodeReady(tab, lan, noLogin, serverPort, password, auto, 120)
                     // Started by itself: leave the user on the tab they were in.
                     if (auto && before in tabs.indices && before != tabs.indexOf(tab)) switchToTab(before)
                 }
             },
-            directCommand = OpencodeWeb.command(OpencodeWeb.PORT, lan, password),
+            onFailed = { OpencodeWeb.stopProxy() },
+            directCommand = OpencodeWeb.command(serverPort, lan && !noLogin, password),
         )
     }
 
+    /** Opens the web page in the phone's browser: plain when the login-free proxy is up, otherwise already signed in. */
     private fun openOpencodeInBrowser() {
         drawerLayout.closeDrawer(GravityCompat.END)
-        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("http://127.0.0.1:${OpencodeWeb.PORT}"))) }
+        val url = if (OpencodeWeb.proxy != null) "http://127.0.0.1:${OpencodeWeb.PORT}/"
+        else OpencodeWeb.loginUrl("127.0.0.1", OpencodeWeb.PORT, settingsStore.opencodeWebPassword)
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
             .onFailure { android.widget.Toast.makeText(this, "No browser available", android.widget.Toast.LENGTH_SHORT).show() }
     }
 
@@ -2353,6 +2374,7 @@ class MainActivity : Activity() {
     private fun stopOpencodeWeb() {
         val tab = opencodeServerTab() ?: return
         android.widget.Toast.makeText(this, "Stopping the opencode server…", android.widget.Toast.LENGTH_SHORT).show()
+        OpencodeWeb.stopProxy()
         tab.session.forceKill()
         mainHandler.postDelayed({ tab.session.destroy() }, 1500)
         forceRemoveTabIfStuck(tab, 4000)
@@ -2486,44 +2508,50 @@ class MainActivity : Activity() {
      * stored password; if the server rejects it (401) and printed its own, that printed one is shown instead.
      * Polled every 1.5 s for up to 3 minutes: bun under proot is slow on a busy phone or the first run.
      */
-    private fun awaitOpencodeReady(tab: TerminalTab, lan: Boolean, password: String, auto: Boolean, attemptsLeft: Int) {
+    private fun awaitOpencodeReady(tab: TerminalTab, lan: Boolean, noLogin: Boolean, serverPort: Int, password: String, auto: Boolean, attemptsLeft: Int) {
         mainHandler.postDelayed({
             if (isFinishing || isDestroyed || !tabs.contains(tab) || !tab.session.isAlive()) return@postDelayed
             val printed = servePasswordRe.find(tab.emulator.tailText(300, joinWrapped = true))?.groupValues?.get(1)
             Thread({
-                val open = OpencodeWeb.portOpen(OpencodeWeb.PORT)
-                val login = if (open && printed == null) OpencodeWeb.probeLogin(OpencodeWeb.PORT, password) else -1
+                val open = OpencodeWeb.portOpen(serverPort)
+                val accepted = open && (printed != null || OpencodeWeb.loginAccepted(OpencodeWeb.probeLogin(serverPort, password)))
                 mainHandler.post {
                     if (isFinishing || isDestroyed || !tabs.contains(tab)) return@post
                     when {
-                        printed != null && open -> showServeReadyDialog(printed, lan, auto)
-                        open && login == 200 -> showServeReadyDialog(password, lan, auto)
-                        attemptsLeft <= 0 && open -> showServeReadyDialog(password, lan, auto, warn = true)
-                        attemptsLeft > 0 -> awaitOpencodeReady(tab, lan, password, auto, attemptsLeft - 1)
+                        accepted -> showServeReadyDialog(printed ?: password, lan, noLogin, auto)
+                        attemptsLeft <= 0 && open -> showServeReadyDialog(password, lan, noLogin, auto, warn = true)
+                        attemptsLeft > 0 -> awaitOpencodeReady(tab, lan, noLogin, serverPort, password, auto, attemptsLeft - 1)
                     }
                 }
             }, "oc-ready").start()
         }, 1500)
     }
 
-    private fun showServeReadyDialog(password: String, lan: Boolean, auto: Boolean, warn: Boolean = false) {
+    private fun showServeReadyDialog(password: String, lan: Boolean, noLogin: Boolean, auto: Boolean, warn: Boolean = false) {
         if (isFinishing || isDestroyed) return
-        val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
         if (auto) {
             // Started by itself: no browser, no dialog — just say it is up.
             android.widget.Toast.makeText(this, "opencode web is running (127.0.0.1:${OpencodeWeb.PORT})", android.widget.Toast.LENGTH_LONG).show()
             return
         }
+        val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
         cm.setPrimaryClip(android.content.ClipData.newPlainText("opencode password", password))
+        // Straight into the page on this phone — no password to type or paste.
+        openOpencodeInBrowser()
         val ips = NetworkInfo.localIpv4Addresses()
         val note = if (warn) "\n\nThe server did not accept the saved password — use the one it printed in the \"${OpencodeWeb.TAB_LABEL}\" tab." else ""
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setTitle("opencode server running")
-            .setMessage(OpencodeWeb.readyMessage(lan, OpencodeWeb.PORT, ips, password) + "\n\nThe password is copied." + note)
+            .setMessage(OpencodeWeb.readyMessage(lan, noLogin, OpencodeWeb.PORT, ips, password) + note)
             .setPositiveButton("Open in browser") { _, _ -> openOpencodeInBrowser() }
-            .setNeutralButton("Copy password") { _, _ ->
-                cm.setPrimaryClip(android.content.ClipData.newPlainText("opencode password", password))
-                android.widget.Toast.makeText(this, "Password copied", android.widget.Toast.LENGTH_SHORT).show()
+            .setNeutralButton("Copy link for another device") { _, _ ->
+                val host = ips.firstOrNull()
+                if (!lan || host == null) {
+                    android.widget.Toast.makeText(this, if (!lan) "Other devices are not allowed (see Settings → Network)" else "No network address found", android.widget.Toast.LENGTH_LONG).show()
+                } else {
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("opencode link", OpencodeWeb.loginUrl(host, OpencodeWeb.PORT, password)))
+                    android.widget.Toast.makeText(this, "Link copied — it signs the other device in", android.widget.Toast.LENGTH_SHORT).show()
+                }
             }
             .setNegativeButton("Done", null)
             .show()
@@ -3743,6 +3771,7 @@ class MainActivity : Activity() {
     /** A tab's shell exited (typed "exit"/Ctrl-D, or crashed) — drop it and switch to a
      *  neighbor; closing the very last tab closes the app, same as the old single-tab behavior. */
     private fun onTabExited(tab: TerminalTab) {
+        if (tab.label == OpencodeWeb.TAB_LABEL) OpencodeWeb.stopProxy()
         val idx = tabs.indexOf(tab)
         if (idx < 0) return
         // This path fires when the shell process exited on its own (typed "exit"/Ctrl-D) — the

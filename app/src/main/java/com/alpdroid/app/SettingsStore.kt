@@ -159,6 +159,12 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_OC_LAN, true)
         set(value) = prefs.edit().putBoolean(KEY_OC_LAN, value).apply()
 
+    /** No password page on this phone: a small front door (see LocalAuthProxy) signs the phone's own browser in.
+     *  Other devices on the Wi-Fi still need the password. On by default. */
+    var opencodeWebNoLogin: Boolean
+        get() = prefs.getBoolean(KEY_OC_NOLOGIN, true)
+        set(value) = prefs.edit().putBoolean(KEY_OC_NOLOGIN, value).apply()
+
     /** Start the opencode web server by itself when AlpDroid opens. Off by default. */
     var opencodeWebAutoStart: Boolean
         get() = prefs.getBoolean(KEY_OC_AUTOSTART, false)
@@ -259,6 +265,7 @@ class SettingsStore(context: Context) {
         private const val KEY_GH_CLIENT = "github_client_id"
         private const val KEY_OC_PASS = "opencode_web_password"
         private const val KEY_OC_LAN = "opencode_web_lan"
+        private const val KEY_OC_NOLOGIN = "opencode_web_nologin"
         private const val KEY_OC_AUTOSTART = "opencode_web_autostart"
         private const val KEY_AUTO_BACKUP = "auto_backup_enabled"
         private const val KEY_LAST_AUTO_BACKUP = "last_auto_backup_ms"

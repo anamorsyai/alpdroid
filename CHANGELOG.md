@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.7.64 — opencode web: no login page on this phone, and the browser opens by itself again
+
+- Fixed: the browser did not open and the "server running" dialog never appeared in 1.7.63. Android refuses plain
+  HTTP from an app that has not allowed it — even to 127.0.0.1 — so the app could never check that the server was up;
+  it now checks with a plain socket. The server's page is also open without a login (only its API is protected), which
+  the old check did not know. The browser opens as soon as the server answers.
+- New: **No login on this phone** (on by default). opencode v2 cannot run without a password, so a small front door
+  on port 4096 signs this phone's own browser in: `http://127.0.0.1:4096` opens straight into opencode, nothing to
+  type or paste, and it stays that way after a reload. Other devices on the Wi-Fi still need the password. A web page
+  open in the phone's browser cannot use it (requests from another site or a rebound name are not signed in), but
+  other apps on this phone that connect to 127.0.0.1 can — turn the setting off if that matters to you.
+- New: "Copy link for another device" in the running dialog: a link that signs the other device in too (v2 pages
+  accept `?auth_token=`). With the setting off, "Open in browser" uses that link, so the password is not typed then
+  either.
+
 ## 1.7.63 — a sturdier opencode web server
 
 - Changed: the opencode web server keeps the same login after every start. Its password is now passed to it

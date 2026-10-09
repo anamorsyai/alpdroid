@@ -1441,10 +1441,38 @@ class MainActivity : Activity() {
                 textSize = 13f
             },
         )
+        val ocRunning = opencodeServerTab() != null
         panel.addView(
             pillButton().apply {
-                text = "Start opencode web server (0.0.0.0:4096)"
-                setOnClickListener { confirmOpencodeWeb() }
+                text = if (ocRunning) "opencode web is running — open in browser" else "Start opencode web server (:${OpencodeWeb.PORT})"
+                setOnClickListener { if (ocRunning) openOpencodeInBrowser() else confirmOpencodeWeb() }
+            },
+        )
+        if (ocRunning) {
+            panel.addView(
+                pillButton().apply {
+                    text = "Stop opencode web server"
+                    setOnClickListener { stopOpencodeWeb() }
+                },
+            )
+        }
+        panel.addView(
+            MaterialSwitch(this).apply {
+                text = "Allow other devices on the Wi-Fi to use it"
+                setTextColor(0xFFD4D4D4.toInt())
+                isChecked = settingsStore.opencodeWebLan
+                setOnCheckedChangeListener { _, checked ->
+                    settingsStore.opencodeWebLan = checked
+                    if (opencodeServerTab() != null) android.widget.Toast.makeText(this@MainActivity, "Applies the next time the server starts", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            },
+        )
+        panel.addView(
+            MaterialSwitch(this).apply {
+                text = "Start opencode web when AlpDroid opens"
+                setTextColor(0xFFD4D4D4.toInt())
+                isChecked = settingsStore.opencodeWebAutoStart
+                setOnCheckedChangeListener { _, checked -> settingsStore.opencodeWebAutoStart = checked }
             },
         )
         panel.addView(
@@ -2269,46 +2297,66 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    /** The running opencode web server's tab, if any. */
+    private fun opencodeServerTab(): TerminalTab? =
+        tabs.firstOrNull { it.isServer && it.label == OpencodeWeb.TAB_LABEL && it.session.isAlive() }
+
     /**
-     * One-click opencode server: a single Start button opens a tab whose session directly
-     * execs the server command — nothing is typed, so no proot-startup race. v2 has no `web`
-     * subcommand (that was v1); `serve` starts the API + web server. The binary is resolved
-     * in-guest (opencode, else opencode2, else a hint to Quick install). Stop with Ctrl+C
-     * in that tab.
+     * One-click opencode web server (see [OpencodeWeb]): a tab whose session directly execs a small restart loop
+     * around `opencode serve` — nothing is typed, so no proot-startup race. The login is the stored password, so it
+     * is the same after every start; "Allow other devices" in Settings decides 127.0.0.1 or 0.0.0.0.
      */
     private fun confirmOpencodeWeb() {
-        val port = 4096
+        opencodeServerTab()?.let { openOpencodeInBrowser(); return }
+        val lan = settingsStore.opencodeWebLan
         val ips = NetworkInfo.localIpv4Addresses()
-        val urls = if (ips.isEmpty()) "(no network address found)" else ips.joinToString("\n") { "http://$it:$port" }
-        fun start() {
-            drawerLayout.closeDrawer(GravityCompat.END)
-            // Direct-exec session: the server command is argv from spawn, nothing is typed —
-            // typing into a just-spawned tab lost bytes while proot was still starting.
-            // LD_PRELOAD gcompat: bun's FFI stub needs a glibc symbol musl lacks (fixes the
-            // "gnu_get_libc_version: symbol not found" dlopen crash on Alpine).
-            addTab(
-                "opencode serve",
-                onStarted = {
-                    tabs.getOrNull(activeTabIndex)?.let { catchServePassword(it, 90) }
-                },
-                directCommand = "[ -f /lib/libgcompat.so.0 ] && export LD_PRELOAD=/lib/libgcompat.so.0; " +
-                    "BIN=\$(command -v opencode || command -v opencode2); " +
-                    "if [ -z \"\$BIN\" ]; then echo 'opencode not installed — Settings > Quick install first'; exit 1; fi; " +
-                    "\"\$BIN\" serve --hostname 0.0.0.0 --port $port",
-            )
-        }
+        val urls = if (!lan) "Only this phone: http://127.0.0.1:${OpencodeWeb.PORT}"
+        else if (ips.isEmpty()) "(no network address found)" else ips.joinToString("\n") { "http://$it:${OpencodeWeb.PORT}" }
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setTitle("Start opencode server?")
             .setMessage(
-                "Runs `opencode serve --hostname 0.0.0.0 --port $port` in a new tab. It prints a generated password — the app catches it and shows it to you for the browser login. Anyone on this network with that password gets full access: only use on networks you trust.\n\n" +
-                    "URLs:\n$urls\n\n" +
-                    "Stop with Ctrl+C in that tab.",
+                (if (lan) "Other devices on this network can log in with the password — only use it on networks you trust. Turn off \"Allow other devices\" in Settings → Network to keep it on this phone.\n\n"
+                else "Only this phone can reach it.\n\n") +
+                    "URLs:\n$urls\n\nIt restarts by itself if it stops. Stop it with the Stop button in Settings → Network or Ctrl+C in its tab.",
             )
-            .setPositiveButton("Start server") { _, _ -> start() }
+            .setPositiveButton("Start server") { _, _ -> startOpencodeWeb(auto = false) }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
+    private fun startOpencodeWeb(auto: Boolean) {
+        if (opencodeServerTab() != null) return
+        drawerLayout.closeDrawer(GravityCompat.END)
+        val lan = settingsStore.opencodeWebLan
+        val password = settingsStore.opencodeWebPassword
+        val before = activeTabIndex
+        addTab(
+            OpencodeWeb.TAB_LABEL,
+            onStarted = {
+                tabs.lastOrNull { it.isServer && it.label == OpencodeWeb.TAB_LABEL }?.let { tab ->
+                    awaitOpencodeReady(tab, lan, password, auto, 120)
+                    // Started by itself: leave the user on the tab they were in.
+                    if (auto && before in tabs.indices && before != tabs.indexOf(tab)) switchToTab(before)
+                }
+            },
+            directCommand = OpencodeWeb.command(OpencodeWeb.PORT, lan, password),
+        )
+    }
+
+    private fun openOpencodeInBrowser() {
+        drawerLayout.closeDrawer(GravityCompat.END)
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("http://127.0.0.1:${OpencodeWeb.PORT}"))) }
+            .onFailure { android.widget.Toast.makeText(this, "No browser available", android.widget.Toast.LENGTH_SHORT).show() }
+    }
+
+    /** Stops the server and its restart loop (the same teardown as a second Ctrl+C on the tab). */
+    private fun stopOpencodeWeb() {
+        val tab = opencodeServerTab() ?: return
+        android.widget.Toast.makeText(this, "Stopping the opencode server…", android.widget.Toast.LENGTH_SHORT).show()
+        tab.session.forceKill()
+        mainHandler.postDelayed({ tab.session.destroy() }, 1500)
+        forceRemoveTabIfStuck(tab, 4000)
+    }
 
     /**
      * One-tap SSH server so a laptop can log in to this phone's Alpine guest. Same direct-exec
@@ -2430,42 +2478,51 @@ class MainActivity : Activity() {
             .show()
     }
 
-    /** Watches a just-started serve tab for its printed `server password X` line, then
-     *  hands the URL + password to the user (serve always generates one; there is no
-     *  passwordless mode). Retries a few times — bun under proot can take a while. */
+    /** A server that prints its own `server password X` (a version that ignores OPENCODE_SERVER_PASSWORD). */
     private val servePasswordRe = Regex("(?i)server password\\s*[:=]?\\s*(\\S+)")
 
-    private fun catchServePassword(tab: TerminalTab, attemptsLeft: Int) {
-        if (attemptsLeft <= 0) return
-        // Polled every 2 s for up to ~3 minutes (was 5 x 8 s): on a slow start — low-power cores, a busy
-        // phone, first-run bun under proot — the password line can appear well after 40 s, and the
-        // dialog (browser + copied password) was then silently never shown.
+    /**
+     * Waits (polling, off the main thread) until the server answers, then shows how to reach it. The login is the
+     * stored password; if the server rejects it (401) and printed its own, that printed one is shown instead.
+     * Polled every 1.5 s for up to 3 minutes: bun under proot is slow on a busy phone or the first run.
+     */
+    private fun awaitOpencodeReady(tab: TerminalTab, lan: Boolean, password: String, auto: Boolean, attemptsLeft: Int) {
         mainHandler.postDelayed({
-            if (isFinishing || isDestroyed) return@postDelayed
-            if (!tabs.contains(tab)) return@postDelayed // tab closed meanwhile
-            if (!tab.session.isAlive()) return@postDelayed // the server exited (error shown in the tab)
-            val hit = servePasswordRe.find(tab.emulator.tailText(300, joinWrapped = true))
-            if (hit != null) showServeReadyDialog(tab, hit.groupValues[1])
-            else catchServePassword(tab, attemptsLeft - 1)
-        }, 2000)
+            if (isFinishing || isDestroyed || !tabs.contains(tab) || !tab.session.isAlive()) return@postDelayed
+            val printed = servePasswordRe.find(tab.emulator.tailText(300, joinWrapped = true))?.groupValues?.get(1)
+            Thread({
+                val open = OpencodeWeb.portOpen(OpencodeWeb.PORT)
+                val login = if (open && printed == null) OpencodeWeb.probeLogin(OpencodeWeb.PORT, password) else -1
+                mainHandler.post {
+                    if (isFinishing || isDestroyed || !tabs.contains(tab)) return@post
+                    when {
+                        printed != null && open -> showServeReadyDialog(printed, lan, auto)
+                        open && login == 200 -> showServeReadyDialog(password, lan, auto)
+                        attemptsLeft <= 0 && open -> showServeReadyDialog(password, lan, auto, warn = true)
+                        attemptsLeft > 0 -> awaitOpencodeReady(tab, lan, password, auto, attemptsLeft - 1)
+                    }
+                }
+            }, "oc-ready").start()
+        }, 1500)
     }
 
-    private fun showServeReadyDialog(tab: TerminalTab, password: String) {
-        if (isFinishing || isDestroyed || !tabs.contains(tab)) return
-        val port = 4096
+    private fun showServeReadyDialog(password: String, lan: Boolean, auto: Boolean, warn: Boolean = false) {
+        if (isFinishing || isDestroyed) return
+        val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        if (auto) {
+            // Started by itself: no browser, no dialog — just say it is up.
+            android.widget.Toast.makeText(this, "opencode web is running (127.0.0.1:${OpencodeWeb.PORT})", android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("opencode password", password))
         val ips = NetworkInfo.localIpv4Addresses()
-        val urls = if (ips.isEmpty()) "http://<phone>:$port" else ips.joinToString("\n") { "http://$it:$port" }
-        // Auto-open this phone's browser on the local URL; password is copied so the
-        // login page is one paste away (the page has no URL param to pre-fill).
-        (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
-            .setPrimaryClip(android.content.ClipData.newPlainText("opencode password", password))
-        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("http://127.0.0.1:$port")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        val note = if (warn) "\n\nThe server did not accept the saved password — use the one it printed in the \"${OpencodeWeb.TAB_LABEL}\" tab." else ""
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setTitle("opencode server running")
-            .setMessage("Browser opened on this phone (127.0.0.1:$port) and the password is copied — paste it in. From another device on this Wi-Fi open:\n\n$urls\n\nPassword: $password\n\nStop with Ctrl+C in the \"opencode serve\" tab.")
-            .setPositiveButton("Copy password again") { _, _ ->
-                (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
-                    .setPrimaryClip(android.content.ClipData.newPlainText("opencode password", password))
+            .setMessage(OpencodeWeb.readyMessage(lan, OpencodeWeb.PORT, ips, password) + "\n\nThe password is copied." + note)
+            .setPositiveButton("Open in browser") { _, _ -> openOpencodeInBrowser() }
+            .setNeutralButton("Copy password") { _, _ ->
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("opencode password", password))
                 android.widget.Toast.makeText(this, "Password copied", android.widget.Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("Done", null)
@@ -3574,6 +3631,10 @@ class MainActivity : Activity() {
                     switchToTab(tabs.size - 1)
                     updateKeepAliveService()
                     onStarted?.invoke()
+                    if (!opencodeAutoStartDone && directCommand == null) {
+                        opencodeAutoStartDone = true
+                        if (settingsStore.opencodeWebAutoStart) startOpencodeWeb(auto = true)
+                    }
                 }.onFailure { e ->
                     // Previously left the user stuck here with no way forward but to leave the
                     // app and come back — ensureReady() succeeding but the shell itself then
@@ -3589,6 +3650,9 @@ class MainActivity : Activity() {
             }
         }
     }
+
+    /** The auto-start of the opencode web server is tried once per app process, after the first normal tab is up. */
+    private var opencodeAutoStartDone = false
 
     private fun startReaderThread(tab: TerminalTab) {
         Thread({

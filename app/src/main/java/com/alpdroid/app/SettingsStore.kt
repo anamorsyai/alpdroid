@@ -142,7 +142,7 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_GH_CLIENT, "") ?: ""
         set(value) = prefs.edit().putString(KEY_GH_CLIENT, value.trim()).apply()
 
-    /** Password protecting the LAN-exposed opencode web server (user "opencode"). */
+    /** Password of the opencode web server (user "opencode"), passed to it as OPENCODE_SERVER_PASSWORD so the login is the same after every restart. */
     val opencodeWebPassword: String
         @Synchronized get() = prefs.getString(KEY_OC_PASS, null) ?: run {
             val chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -152,6 +152,17 @@ class SettingsStore(context: Context) {
             prefs.edit().putString(KEY_OC_PASS, pw).commit()
             pw
         }
+
+    /** The opencode web server also listens for other devices on the Wi-Fi (0.0.0.0). On, as the one-tap server
+     *  always did; off keeps it on this phone (127.0.0.1) only. Read when the server starts. */
+    var opencodeWebLan: Boolean
+        get() = prefs.getBoolean(KEY_OC_LAN, true)
+        set(value) = prefs.edit().putBoolean(KEY_OC_LAN, value).apply()
+
+    /** Start the opencode web server by itself when AlpDroid opens. Off by default. */
+    var opencodeWebAutoStart: Boolean
+        get() = prefs.getBoolean(KEY_OC_AUTOSTART, false)
+        set(value) = prefs.edit().putBoolean(KEY_OC_AUTOSTART, value).apply()
 
     /** On by default — Fira Code is bundled specifically for its ligatures. */
     var ligaturesEnabled: Boolean
@@ -247,6 +258,8 @@ class SettingsStore(context: Context) {
         private const val KEY_AGENT_TOKEN = "agent_token"
         private const val KEY_GH_CLIENT = "github_client_id"
         private const val KEY_OC_PASS = "opencode_web_password"
+        private const val KEY_OC_LAN = "opencode_web_lan"
+        private const val KEY_OC_AUTOSTART = "opencode_web_autostart"
         private const val KEY_AUTO_BACKUP = "auto_backup_enabled"
         private const val KEY_LAST_AUTO_BACKUP = "last_auto_backup_ms"
         private const val KEY_LAST_UPDATE_CHECK = "last_update_check_ms"

@@ -1,0 +1,1 @@
+Change: opencode web server keeps its password, restarts by itself, can stay on this phone only, optional auto-start

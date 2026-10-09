@@ -90,11 +90,12 @@ Your plugins and their saved values are included in every backup.""",
 • A web server you start in a tab can be opened on the phone itself at 127.0.0.1 with the port number.
 
 OPENCODE IN YOUR BROWSER
-"Start opencode web server" runs opencode's web version so you can use it from a browser on another device on the same Wi-Fi.
-• You choose opencode or opencode2 and the server opens in a new tab.
-• It prints a generated password, which the app catches and shows you with a Copy button — enter it in the browser. Anyone on that network with the password gets full access. Only use this on a network you trust.
-• Then open http://<phone address>:4096 on your other device.
-• Stop it any time with Ctrl+C in that tab.""",
+"Start opencode web server" runs opencode's web version so you can use it from a browser — on this phone, or on another device on the same Wi-Fi.
+• The login is user opencode with a fixed password the app keeps for you, so it is the same after every start. The app copies it when the server is ready and offers "Open in browser".
+• "Allow other devices on the Wi-Fi to use it" decides who can reach it: on = anyone on the network with the password (only use trusted networks), off = this phone only (127.0.0.1).
+• If it crashes or Android stops it, it restarts by itself. "Start opencode web when AlpDroid opens" starts it for you.
+• Then open http://<phone address>:4096 on your other device, or the "open in browser" button on this phone.
+• Stop it with the Stop button in this screen, or Ctrl+C in its tab.""",
         ),
         Section(
             "Devices",

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.7.63 — a sturdier opencode web server
+
+- Changed: the opencode web server keeps the same login after every start. Its password is now passed to it
+  (`OPENCODE_SERVER_PASSWORD`, user `opencode`) instead of being a new generated one each time that the app had to read
+  back off the screen. If an older opencode ignores it and prints its own, that printed one is still found and shown.
+- New: it restarts by itself if it crashes or Android kills it (pauses of 2, 4, 8 … 30 s; it gives up after five quick
+  failures in a row). Ctrl+C in its tab, or the new **Stop opencode web server** button, ends it for good.
+- New: "Allow other devices on the Wi-Fi" in Settings → Network. Off keeps the server on this phone only (127.0.0.1);
+  on (the default, as before) also listens for other devices (0.0.0.0).
+- New: "Start opencode web when AlpDroid opens" (off by default).
+- Changed: the start button waits until the server really answers (it checks the port and the login) before opening
+  the browser, instead of waiting for a printed line; while it runs the button becomes "open in browser".
+
 ## 1.7.62 — Android's "excessive CPU" kill: see the busy process, faster tracing on by default
 
 - Found: the "AlpDroid was stopped by Android" dialog reported `[EXCESSIVE CPU USAGE] Caused by child process …

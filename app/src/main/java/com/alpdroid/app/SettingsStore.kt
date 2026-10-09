@@ -22,10 +22,11 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_FONT_FAMILY, "monospace") ?: "monospace"
         set(value) = prefs.edit().putString(KEY_FONT_FAMILY, value).apply()
 
-    /** Experimental. proot's seccomp acceleration for new interactive sessions: much less CPU for
-     *  syscall-heavy programs, but some `apk` operations can fail with EPERM, so it is opt-in. */
+    /** proot's seccomp acceleration for new interactive sessions: much less CPU for syscall-heavy
+     *  programs (opencode, node, python) — the CPU use Android kills background apps over. On by
+     *  default since 1.7.62; some `apk` operations can fail with EPERM, and then it is one switch off. */
     var fastProotTracing: Boolean
-        get() = prefs.getBoolean(KEY_FAST_TRACING, false)
+        get() = prefs.getBoolean(KEY_FAST_TRACING, true)
         set(value) = prefs.edit().putBoolean(KEY_FAST_TRACING, value).apply()
 
     /** Pins new interactive sessions to the phone's low-power cores (see CpuTopology): a program that

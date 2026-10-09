@@ -98,4 +98,8 @@ class ResourcePolicyTest {
         assertTrue(ResourcePolicy.explainKill(5, 6, 2000).contains("battery manager"))
         assertTrue(ResourcePolicy.explainKill(0, 0, -1).startsWith("killed (SIGKILL)"))
     }
+
+    @Test fun killExplanationShowsTheBusiestProcess() {
+        assertTrue(ResourcePolicy.explainKill(5, 6, 2000, "opencode 180%").contains("busiest: opencode 180%"))
+    }
 }

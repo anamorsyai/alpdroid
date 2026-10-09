@@ -66,10 +66,11 @@ object ResourcePolicy {
      * (or at its peak) means Android's child-process limit (32), very little free memory means the
      * low-memory killer, neither means the phone's own battery manager.
      */
-    fun explainKill(processes: Int, peakProcesses: Int, memAvailableMb: Long): String {
+    fun explainKill(processes: Int, peakProcesses: Int, memAvailableMb: Long, busiest: String = ""): String {
         val facts = buildString {
             if (peakProcesses > 0) append("; processes: ").append(processes).append(" now, ").append(peakProcesses).append(" at most (Android's limit is 32)")
             if (memAvailableMb >= 0) append("; free memory ").append(memAvailableMb).append(" MB")
+            if (busiest.isNotEmpty()) append("; busiest: ").append(busiest)
         }
         val likely = when {
             maxOf(processes, peakProcesses) >= 28 -> " — most likely the child-process limit: turn on Developer options → \"Disable child process restrictions\" (Android 14+) or use the adb fix in Settings"

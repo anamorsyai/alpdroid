@@ -26,7 +26,7 @@ import java.util.concurrent.TimeUnit
  * Everything here is cheap: one pass over /proc every 15 seconds.
  */
 class ResourceManager(private val app: AlpineTermApp) {
-    data class TabUsage(val tabId: Int, val title: String, val cpuPercent: Double, val rssBytes: Long, val parked: Boolean = false)
+    data class TabUsage(val tabId: Int, val title: String, val cpuPercent: Double, val rssBytes: Long, val parked: Boolean = false, val top: String = "")
 
     @Volatile var mode: ResourcePolicy.Mode = ResourcePolicy.Mode.NORMAL
         private set
@@ -39,6 +39,9 @@ class ResourceManager(private val app: AlpineTermApp) {
         private set
     /** Highest [processCount] seen since the sessions started — a kill is usually reported after the burst of
      *  processes that caused it is already gone, so the last sample alone would hide it. */
+    /** The busiest processes (name and CPU%) of the busiest session at the last sample, for the kill message. */
+    @Volatile var busiest = ""
+        private set
     @Volatile var peakProcessCount = 0
         private set
 
@@ -64,6 +67,8 @@ class ResourceManager(private val app: AlpineTermApp) {
     private class Sample(val bridgeJiffies: Long, val guestJiffies: Long, val atMs: Long)
 
     private val samples = HashMap<Int, Sample>()
+    /** Per-process CPU time at the previous tick, to tell which process inside a session is the busy one. */
+    private var prevPidJiffies = HashMap<Int, Long>()
     private val balancerStates = HashMap<Int, LoadBalancer.State>()
     private var wasBalancing = false
     /** Low-power cores of this phone (hex mask), looked up once; null when they can't be identified. */
@@ -166,7 +171,7 @@ class ResourceManager(private val app: AlpineTermApp) {
         }
         appRssBytes = readText("/proc/self/statm")?.let { ResourcePolicy.parseStatmRssBytes(it) } ?: 0L
         val tabs = app.tabs.toList()
-        if (tabs.isEmpty()) { usage = emptyList(); processCount = 0; peakProcessCount = 0; samples.clear(); detectors.clear(); return }
+        if (tabs.isEmpty()) { usage = emptyList(); processCount = 0; peakProcessCount = 0; busiest = ""; samples.clear(); detectors.clear(); return }
 
         // One pass over /proc: ppid + cpu of every process we are allowed to see (our own uid).
         val parentOf = HashMap<Int, Int>()
@@ -215,9 +220,19 @@ class ResourceManager(private val app: AlpineTermApp) {
                 }
             }
             val parked = balance(tab, index == app.activeTabIndex, cpu, balancing)
-            result += TabUsage(tab.id, tab.label ?: "Session ${index + 1}", cpu, rss, parked)
+            val top = if (prev == null) "" else (tree + bridge)
+                .mapNotNull { pid ->
+                    val before = prevPidJiffies[pid] ?: return@mapNotNull null
+                    val pct = ResourcePolicy.cpuPercent((jiffiesOf[pid] ?: before) - before, now - prev.atMs)
+                    if (pct < 10.0) null else pid to pct
+                }
+                .sortedByDescending { it.second }.take(3)
+                .joinToString(", ") { (pid, pct) -> (readText("/proc/$pid/comm")?.trim().orEmpty().ifEmpty { "pid $pid" }) + " " + pct.toInt() + "%" }
+            result += TabUsage(tab.id, tab.label ?: "Session ${index + 1}", cpu, rss, parked, top)
         }
         usage = result
+        prevPidJiffies = HashMap(jiffiesOf)
+        busiest = result.maxByOrNull { it.cpuPercent }?.top.orEmpty()
         processCount = tabs.sumOf { tab ->
             val bridge = tab.session.pid
             if (bridge <= 0 || !parentOf.containsKey(bridge)) 0 else 1 + ResourcePolicy.descendants(bridge, parentOf).size
@@ -261,6 +276,7 @@ class ResourceManager(private val app: AlpineTermApp) {
         for (u in usage) {
             sb.append("\n").append(u.title).append(": CPU ").append(u.cpuPercent.toInt()).append("% · RAM ").append(u.rssBytes / (1024 * 1024)).append(" MB")
             if (u.parked) sb.append(" · parked on efficiency cores")
+            if (u.top.isNotEmpty()) sb.append("\n   busiest: ").append(u.top)
         }
         if (usage.isEmpty()) sb.append("\nNo sessions running.")
         return sb.toString()

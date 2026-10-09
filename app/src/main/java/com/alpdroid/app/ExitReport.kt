@@ -53,7 +53,10 @@ object ExitReport {
         }
         val advice = when (reason) {
             REASON_LOW_MEMORY -> "Programs such as opencode use hundreds of MB. Close other apps, run fewer things at once, or lower Settings → Sessions & Background → Terminal memory."
-            REASON_SIGNALED, REASON_EXCESSIVE_RESOURCE_USAGE, REASON_FREEZER ->
+            REASON_EXCESSIVE_RESOURCE_USAGE ->
+                "A program inside AlpDroid kept the CPU far busier than Android allows a background app (about 25% on average over 5 minutes). " +
+                    "Settings → Usage shows which process is the busiest; keep \"Faster process tracing\" on, run fewer agents at once, or keep AlpDroid open while a heavy job runs."
+            REASON_SIGNALED, REASON_FREEZER ->
                 "Allow AlpDroid to run in the background and start by itself in the phone's battery / app-launch settings, lock it in the recent-apps list, and keep \"Keep sessions alive in background\" on."
             REASON_CRASH, REASON_CRASH_NATIVE, REASON_ANR -> "If it keeps happening, please report it with what you were doing."
             else -> "Keep \"Keep sessions alive in background\" on and exempt AlpDroid from battery optimisation."

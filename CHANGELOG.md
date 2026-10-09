@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.7.62 — Android's "excessive CPU" kill: see the busy process, faster tracing on by default
+
+- Found: the "AlpDroid was stopped by Android" dialog reported `[EXCESSIVE CPU USAGE] Caused by child process …
+  limit=25` — a process inside a session (a coding agent with sub-agents) kept 3 cores busy, far above the ~25%
+  average Android tolerates from a background app's child processes, and Android closed the app.
+- New: Settings → Usage now lists the busiest processes of each session ("busiest: opencode 180%, rg 60%"), and the
+  "Session ended: killed" message includes them, so the process that burns the CPU is no longer a guess.
+- Changed: "Faster process tracing" (proot's seccomp acceleration, much less CPU for opencode/node/python) is now on by
+  default. If `apk` fails with "Permission denied" in a new tab, switch it off in Settings. Anyone who already chose a
+  value keeps it.
+- Changed: the dialog for an excessive-CPU kill now says what happened and what to do, instead of the generic
+  battery-manager advice.
+
 ## 1.7.61 — a killed session now tells you who killed it
 
 - Changed: when Android kills a session (SIGKILL, "Session ended: killed …"), the message now shows how many

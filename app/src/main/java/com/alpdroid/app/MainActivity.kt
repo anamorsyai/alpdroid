@@ -3633,7 +3633,7 @@ class MainActivity : Activity() {
                 if (code != null && code != 0 && tabs.contains(tab)) {
                     val rm = (application as AlpineTermApp).resourceManager
                     val why = when (code) {
-                        137 -> ResourcePolicy.explainKill(rm.processCount, rm.peakProcessCount, rm.memAvailableMb())
+                        137 -> ResourcePolicy.explainKill(rm.processCount, rm.peakProcessCount, rm.memAvailableMb(), rm.busiest)
                         143 -> "terminated (SIGTERM)"
                         125 -> "closed by AlpDroid's own cleanup (the terminal link ended while the program was still running)"
                         else -> "exit code $code"

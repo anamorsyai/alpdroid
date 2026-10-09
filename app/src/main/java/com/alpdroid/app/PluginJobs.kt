@@ -17,8 +17,9 @@ class PluginJobs(private val app: AlpineTermApp) {
     data class Job(val plugin: Plugins.Plugin, val id: String, val label: String, val script: String, val everyMinutes: Int?)
 
     // Fixed pool, not cached: tick()/launch() submit per job, and a crafted plugin.json with
-    // hundreds of schedules would otherwise spawn unbounded threads (each holding a PtySession).
-    private val pool = Executors.newFixedThreadPool(4) { r -> Thread(r, "plugin-job").apply { isDaemon = true } }
+    // hundreds of schedules would otherwise spawn unbounded threads (each holding a PtySession). Sized
+    // for several "keep running" jobs, each of which holds a thread for its whole lifetime.
+    private val pool = Executors.newFixedThreadPool(16) { r -> Thread(r, "plugin-job").apply { isDaemon = true } }
     private val scheduler = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "plugin-scheduler").apply { isDaemon = true } }
     private val running = ConcurrentHashMap<String, PtySession>()
     private val watchdogs = ConcurrentHashMap<String, Thread>()
@@ -48,11 +49,12 @@ class PluginJobs(private val app: AlpineTermApp) {
     }
 
     private fun tick() {
-        if (paused || !AlpineRootfs.isReady(app)) return
+        if (paused) return
         // Idle fast path: no enabled jobs and nothing running means the loop below is pure
         // I/O (plugin list + hash/mtime walks + state reads) every 30s for nothing. Running
         // jobs still need the loop (revocation kills), so only skip when both are empty.
         if (enabledCount == 0 && running.isEmpty()) return
+        if (!AlpineRootfs.isReady(app)) return // file stats: only worth doing when there is something to run
         val now = System.currentTimeMillis()
         var count = 0
         // Approval + switch states read once per plugin: the old loop re-hashed the plugin

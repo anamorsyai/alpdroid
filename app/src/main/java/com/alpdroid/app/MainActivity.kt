@@ -1425,7 +1425,8 @@ class MainActivity : Activity() {
                                 runCatching { AlpineRootfs.wipeForReinstall(this@MainActivity) }
                                 mainHandler.post {
                                     pendingSessionStarts--
-                                    addTab()
+                                    // This screen may be gone by now (swiped away mid-wipe): a new one starts its own session.
+                                    if (!isFinishing && !isDestroyed) addTab()
                                 }
                             }
                         }
@@ -2399,9 +2400,9 @@ class MainActivity : Activity() {
     private fun opencodeRunning(): Boolean = services.isRunning(OpencodeWeb.SERVICE_ID)
 
     /**
-     * One-click opencode web server (see [OpencodeWeb]): a tab whose session directly execs a small restart loop
-     * around `opencode serve` — nothing is typed, so no proot-startup race. The login is the stored password, so it
-     * is the same after every start; "Allow other devices" in Settings decides 127.0.0.1 or 0.0.0.0.
+     * One-click opencode web server (see [OpencodeWeb]): a background service (no tab) running a small restart loop
+     * around `opencode serve`. The login is the stored password, so it is the same after every start; "Allow other
+     * devices" in Settings decides 127.0.0.1 or 0.0.0.0, and "No login on this phone" signs the phone's browser in.
      */
     private fun confirmOpencodeWeb() {
         if (opencodeRunning()) { openOpencodeInBrowser(); return }
@@ -2466,12 +2467,11 @@ class MainActivity : Activity() {
     }
 
     /**
-     * One-tap SSH server so a laptop can log in to this phone's Alpine guest. Same direct-exec
-     * tab pattern as the opencode server (nothing typed, no proot-startup race). Android blocks
-     * ports below 1024 for app processes, so this listens on [SSH_SERVER_PORT] (Termux's choice
+     * One-tap SSH server so a laptop can log in to this phone's Alpine guest, as a background service (no tab).
+     * Android blocks ports below 1024 for app processes, so this listens on [SSH_SERVER_PORT] (Termux's choice
      * too). First run installs openssh and generates host keys; the root password is random,
      * generated once and kept in /etc/alpdroid/ssh_password (delete that file to rotate it).
-     * Stop with Ctrl+C in the tab; the keep-alive service/wake lock keep it reachable meanwhile.
+     * Stop it from Settings → Network & SSH; the keep-alive service/wake lock keep it reachable meanwhile.
      */
     /**
      * Lets a laptop log in to the SSH server with a key instead of the password: pastes one public
@@ -3608,10 +3608,10 @@ class MainActivity : Activity() {
     }
 
     private fun persistTabLabels() {
-        // One-tap server tabs (SSH, opencode serve) are not remembered: their process does not survive a
+        // Background servers (SSH, opencode serve) are not tabs and are not remembered: their process does not survive a
         // restart, and their name used to come back on an ordinary shell tab ("opencode serve" on a tab
         // running plain opencode).
-        SessionPersistence.save(this, tabs.filterNot { it.isServer }.map { it.label })
+        SessionPersistence.save(this, tabs.map { it.label })
         rebuildSessionsList()
     }
 
@@ -3619,7 +3619,7 @@ class MainActivity : Activity() {
      * [onFailed] fires (once) whenever this attempt ends without a tab — setup failure or
      * shell-start failure — alongside the usual Retry UI. Lets chained callers (session
      * resume) keep going instead of stalling silently on one bad tab. */
-    private fun addTab(initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null, directCommand: String? = null) {
+    private fun addTab(initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null) {
         // Balanced by exactly one decrement wherever this particular attempt's flow actually
         // ends: startSessionNow()'s completion (success or failure) below, or showSetupFailure()
         // if ensureReady() itself fails first. Covers every path that can ever call addTab() — a
@@ -3680,9 +3680,9 @@ class MainActivity : Activity() {
                     // arch, proot missing), not for "the network hiccuped." Stopping here and
                     // making the user explicitly retry is what guarantees a session only ever
                     // starts once Alpine is actually installed and verified.
-                    !rootfsReady -> showSetupFailure(initialLabel, onStarted, onFailed, directCommand)
-                    !wasReadyBefore && !StorageAccess.isGranted(this) -> showReadyGate(id, initialLabel, onStarted, onFailed, directCommand)
-                    else -> startSessionNow(id, initialLabel, onStarted, onFailed, directCommand)
+                    !rootfsReady -> showSetupFailure(initialLabel, onStarted, onFailed)
+                    !wasReadyBefore && !StorageAccess.isGranted(this) -> showReadyGate(id, initialLabel, onStarted, onFailed)
+                    else -> startSessionNow(id, initialLabel, onStarted, onFailed)
                 }
             }
         }
@@ -3698,7 +3698,7 @@ class MainActivity : Activity() {
     /** Alpine's download/extraction failed (network loss, interrupted transfer, unsupported CPU
      *  arch, etc.) — stop and make the user explicitly retry rather than ever silently starting a
      *  degraded system-shell session instead of the Alpine one they asked for. */
-    private fun showSetupFailure(initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null, directCommand: String? = null) {
+    private fun showSetupFailure(initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null) {
         // This addTab() attempt's flow ends right here (never reaches startSessionNow(), which is
         // the only other place this decrements) — Retry below calls addTab() fresh, with its own
         // new increment/decrement pair, so this one must close out now or it'd leak upward by one
@@ -3708,26 +3708,26 @@ class MainActivity : Activity() {
         setupStatus.text = "Alpine setup failed: $reason\n\nCheck your internet connection and try again."
         setupProgress.visibility = View.GONE
         retryButton.visibility = View.VISIBLE
-        retryButton.setOnClickListener { addTab(initialLabel, onStarted, onFailed, directCommand) }
+        retryButton.setOnClickListener { addTab(initialLabel, onStarted, onFailed) }
         onFailed?.invoke()
     }
 
-    private fun showReadyGate(id: Int, initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null, directCommand: String? = null) {
+    private fun showReadyGate(id: Int, initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null) {
         setupStatus.text = "Alpine is ready. Grant shared storage now so it's available in the shell (or skip — you can grant it later from Settings)."
         grantStorageButton.visibility = View.VISIBLE
         startTerminalButton.visibility = View.VISIBLE
         startTerminalButton.setOnClickListener {
             startTerminalButton.visibility = View.GONE
             grantStorageButton.visibility = View.GONE
-            startSessionNow(id, initialLabel, onStarted, onFailed, directCommand)
+            startSessionNow(id, initialLabel, onStarted, onFailed)
         }
     }
 
-    private fun startSessionNow(id: Int, initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null, directCommand: String? = null) {
+    private fun startSessionNow(id: Int, initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null) {
         setupStatus.text = "Starting shell…"
         val app = application as AlpineTermApp
         app.backgroundExecutor.execute {
-            val result = runCatching { AlpineSession.start(this, lastRows, lastCols, id, directCommand) }
+            val result = runCatching { AlpineSession.start(this, lastRows, lastCols, id) }
             mainHandler.post {
                 // Decremented here (success or failure) rather than at the top of addTab() —
                 // addTab() can run synchronously right after the old tab's destroy() call, well
@@ -3742,7 +3742,6 @@ class MainActivity : Activity() {
                         respond = { text -> writeToSession(started.session, text) },
                     )
                     val tab = TerminalTab(id, started.session, emulator, started.backendLabel, initialLabel)
-                    tab.isServer = directCommand != null
                     if (!tab.backendLabel.startsWith("Alpine")) {
                         val banner = "[AlpDroid] backend: ${tab.backendLabel}\r\n".toByteArray(Charsets.UTF_8)
                         emulator.feed(banner, banner.size)
@@ -3757,7 +3756,7 @@ class MainActivity : Activity() {
                     switchToTab(tabs.size - 1)
                     updateKeepAliveService()
                     onStarted?.invoke()
-                    if (!(application as AlpineTermApp).opencodeAutoStartDone && directCommand == null) {
+                    if (!(application as AlpineTermApp).opencodeAutoStartDone) {
                         (application as AlpineTermApp).opencodeAutoStartDone = true
                         if (settingsStore.opencodeWebAutoStart) startOpencodeWeb(auto = true)
                     }
@@ -3770,7 +3769,7 @@ class MainActivity : Activity() {
                     setupStatus.text = "Failed to start a shell: ${e.message}"
                     setupProgress.visibility = View.GONE
                     retryButton.visibility = View.VISIBLE
-                    retryButton.setOnClickListener { addTab(initialLabel, onStarted, onFailed, directCommand) }
+                    retryButton.setOnClickListener { addTab(initialLabel, onStarted, onFailed) }
                     onFailed?.invoke()
                 }
             }
@@ -4001,21 +4000,6 @@ class MainActivity : Activity() {
 
     private fun writeToActiveSession(bytes: ByteArray) {
         val tab = tabs.getOrNull(activeTabIndex) ?: return
-        if (tab.isServer && bytes.size == 1 && bytes[0] == 0x03.toByte()) {
-            val now = android.os.SystemClock.uptimeMillis()
-            if (tab.lastCtrlCMs != 0L && now - tab.lastCtrlCMs <= 2500L) {
-                // Second Ctrl+C in a row on a server tab: it did not stop (hung, ignoring SIGINT,
-                // or stuck shutting down) — kill the whole process group, with the usual tab
-                // teardown as the fallback.
-                tab.lastCtrlCMs = 0L
-                android.widget.Toast.makeText(this, "Force-stopping the server…", android.widget.Toast.LENGTH_SHORT).show()
-                tab.session.forceKill()
-                mainHandler.postDelayed({ tab.session.destroy() }, 1500)
-                forceRemoveTabIfStuck(tab, 4000)
-                return
-            }
-            tab.lastCtrlCMs = now
-        }
         writeToSession(tab.session, bytes)
     }
 
@@ -4032,12 +4016,6 @@ class MainActivity : Activity() {
      *  exactly what sendControlAware() exists to prevent for every other extra key. */
     private fun runShortcutCommand(cmd: String) {
         val tab = tabs.getOrNull(activeTabIndex) ?: return
-        if (tab.isServer) {
-            // A server tab execs the server directly — there is no shell to type into, so the text would be
-            // fed to the server's tty and silently do nothing.
-            android.widget.Toast.makeText(this, "This tab is running a server — switch to (or open) a normal tab for commands", android.widget.Toast.LENGTH_LONG).show()
-            return
-        }
         runShortcutCommand(tab.session, cmd)
     }
 
@@ -4839,15 +4817,14 @@ class MainActivity : Activity() {
                     )
                     mainHandler.post {
                         restoreCancelBtn?.visibility = View.GONE
-                        android.widget.Toast.makeText(this, if (ok) "Restore complete" else if (cancelled) "Restore cancelled — starting a fresh Alpine setup instead" else "Restore failed — starting a fresh Alpine setup instead", android.widget.Toast.LENGTH_LONG).show()
+                        android.widget.Toast.makeText(this, if (ok) "Restore complete" else if (cancelled) "Restore cancelled — your current Alpine is unchanged" else "Restore failed — your current Alpine is unchanged", android.widget.Toast.LENGTH_LONG).show()
                         drawerLayout.closeDrawer(GravityCompat.END)
                         pendingSessionStarts--
-                        // Always add a replacement, restore failure included — AlpineBackup.restore()
-                        // already deletes the old rootfs before extracting the new one, so a failed
-                        // restore leaves nothing usable behind either way; addTab()'s own
-                        // ensureReady() will just re-download a clean install rather than stranding
-                        // the user on a blank screen with every tab gone and nothing to recover it.
-                        addTab()
+                        // Always add a replacement tab, restore failure included: restore() extracts into a
+                        // staging copy and only swaps it in on full success, so after a failure the current
+                        // install is still there (and in the rare case the final swap itself failed,
+                        // addTab()'s own ensureReady() sets a clean install up) — never a blank screen.
+                        if (!isFinishing && !isDestroyed) addTab()
                     }
                 }
     }
@@ -4940,10 +4917,10 @@ class MainActivity : Activity() {
             )
             mainHandler.post {
                 restoreCancelBtn?.visibility = View.GONE
-                android.widget.Toast.makeText(this, if (ok) "Restore complete" else if (cancelled) "Restore cancelled — starting a fresh Alpine setup instead" else "Restore failed — starting a fresh Alpine setup instead", android.widget.Toast.LENGTH_LONG).show()
+                android.widget.Toast.makeText(this, if (ok) "Restore complete" else if (cancelled) "Restore cancelled — your current Alpine is unchanged" else "Restore failed — your current Alpine is unchanged", android.widget.Toast.LENGTH_LONG).show()
                 drawerLayout.closeDrawer(GravityCompat.END)
                 pendingSessionStarts--
-                addTab()
+                if (!isFinishing && !isDestroyed) addTab()
             }
         }
     }

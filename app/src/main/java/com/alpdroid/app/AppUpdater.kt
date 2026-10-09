@@ -22,7 +22,7 @@ object AppUpdater {
     /** Owner/repo whose releases carry AlpDroid-*.apk assets (releases before 1.7.43 used the AlpineTerm- prefix; any .apk asset is accepted). */
     const val RELEASES_REPO = "anamorsyai/alpdroid"
 
-    data class Update(val tag: String, val name: String, val notes: String, val apkUrl: String, val apiUrl: String, val size: Long)
+    data class Update(val tag: String, val name: String, val notes: String, val apkUrl: String, val apiUrl: String, val size: Long, val sha256: String = "")
 
     /** versionName + versionCode of the running APK. */
     fun currentVersion(context: Context): Pair<String, Long> = runCatching {
@@ -42,6 +42,21 @@ object AppUpdater {
             if (d != 0) return d > 0
         }
         return false
+    }
+
+    /** The hex SHA-256 from a GitHub asset `digest` field ("sha256:<hex>"), or "" when it is missing or another kind. */
+    fun sha256Of(digest: String): String {
+        val hex = digest.removePrefix("sha256:").lowercase()
+        return if (digest.startsWith("sha256:") && hex.length == 64 && hex.all { it in '0'..'9' || it in 'a'..'f' }) hex else ""
+    }
+
+    private fun sha256Hex(file: File): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) { val n = input.read(buf); if (n < 0) break; md.update(buf, 0, n) }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 
     /** Latest release carrying an APK asset, or null. Blocking — call off the main thread. */
@@ -66,7 +81,7 @@ object AppUpdater {
                 // The API asset URL (not browser_download_url): with Accept: octet-stream +
                 // auth it 302s to a signed host. browser_download_url without auth just 404s
                 // on a private repo, and sending the bearer token to a redirect host leaks it.
-                return Update(tag, r.optString("name", tag), r.optString("body", ""), a.optString("browser_download_url"), a.optString("url"), a.optLong("size"))
+                return Update(tag, r.optString("name", tag), r.optString("body", ""), a.optString("browser_download_url"), a.optString("url"), a.optLong("size"), sha256Of(a.optString("digest")))
             }
         }
         null
@@ -94,7 +109,7 @@ object AppUpdater {
         val dest = File(dir, "AlpDroid-${update.tag}.apk")
         // Size alone isn't proof the cached file is intact: also require it to parse as an APK.
         if (dest.isFile && dest.length() == update.size && update.size > 0) {
-            if (runCatching { apkVersionCode(context, dest) }.isSuccess) return dest
+            if (runCatching { apkVersionCode(context, dest) }.isSuccess && (update.sha256.isEmpty() || sha256Hex(dest) == update.sha256)) return dest
             dest.delete()
         }
         val tmp = File(dir, "${dest.name}.part")
@@ -151,6 +166,12 @@ object AppUpdater {
             if (update.size > 0 && tmp.length() != update.size) {
                 tmp.delete()
                 throw IllegalStateException("download size mismatch")
+            }
+            // GitHub publishes each asset's SHA-256: when it is there the download must match it exactly (a damaged or
+            // swapped file is refused before the installer ever sees it; Android's own signature check still applies).
+            if (update.sha256.isNotEmpty() && sha256Hex(tmp) != update.sha256) {
+                tmp.delete()
+                throw IllegalStateException("download checksum mismatch")
             }
             if (!tmp.renameTo(dest)) throw IllegalStateException("could not finalize download")
             tmp.delete() // rename succeeded; no-op. Kept explicit so the finally below reads correctly.

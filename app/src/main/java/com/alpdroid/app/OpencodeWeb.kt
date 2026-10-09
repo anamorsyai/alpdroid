@@ -49,7 +49,7 @@ object OpencodeWeb {
     fun shQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
 
     /**
-     * The command run directly (no typing) in the server tab. [lan] true binds 0.0.0.0, false 127.0.0.1.
+     * The command run as the background service. [lan] true binds 0.0.0.0, false 127.0.0.1.
      * The binary is resolved in the guest (opencode, else opencode2). LD_PRELOAD gcompat: bun's FFI stub needs a
      * glibc symbol musl lacks. Restart policy: exit 0, Ctrl+C (130) and SIGTERM (143) end it; anything else
      * (a crash, SIGKILL 137) restarts after 2, 4, 8 … 30 s, and five quick failures in a row give up.

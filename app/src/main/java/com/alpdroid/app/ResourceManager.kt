@@ -120,7 +120,7 @@ class ResourceManager(private val app: AlpineTermApp) {
 
     fun start() {
         refreshEnabled()
-        scheduler.scheduleWithFixedDelay({ runCatching { tick() } }, 5, TICK_SECONDS, TimeUnit.SECONDS)
+        scheduleNextTick(5)
         if (Build.VERSION.SDK_INT >= 29) {
             runCatching {
                 val pm = app.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -132,6 +132,23 @@ class ResourceManager(private val app: AlpineTermApp) {
         }
     }
 
+    /**
+     * Ticks every 15 s while the app is on screen or something is busy, and every 45 s when the app is in the
+     * background and everything is quiet — each tick lists /proc, which is a permanent wake-up for nothing then. A
+     * busy session (CPU at or above [BUSY_CPU]) brings the 15 s rhythm straight back, so the frozen-session check and the
+     * load balancer stay responsive exactly when they matter.
+     */
+    private fun scheduleNextTick(delaySeconds: Long) {
+        scheduler.schedule({
+            runCatching { tick() }
+            scheduleNextTick(if (appVisible || lastMaxCpu >= BUSY_CPU) TICK_SECONDS else QUIET_TICK_SECONDS)
+        }, delaySeconds, TimeUnit.SECONDS)
+    }
+
+    /** Highest CPU% of any session or service at the last tick. */
+    @Volatile private var lastMaxCpu = 0.0
+
+    @Synchronized
     private fun recomputeMode() {
         val pm = app.getSystemService(Context.POWER_SERVICE) as PowerManager
         val battery = app.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -177,7 +194,7 @@ class ResourceManager(private val app: AlpineTermApp) {
         appRssBytes = readText("/proc/self/statm")?.let { ResourcePolicy.parseStatmRssBytes(it) } ?: 0L
         val tabs = app.tabs.toList()
         val services = app.services.list()
-        if (tabs.isEmpty() && services.isEmpty()) { usage = emptyList(); serviceUsage = emptyList(); processCount = 0; peakProcessCount = 0; busiest = ""; samples.clear(); detectors.clear(); serviceSamples.clear(); return }
+        if (tabs.isEmpty() && services.isEmpty()) { usage = emptyList(); serviceUsage = emptyList(); processCount = 0; peakProcessCount = 0; busiest = ""; samples.clear(); detectors.clear(); serviceSamples.clear(); prevPidJiffies = HashMap(); lastMaxCpu = 0.0; return }
 
         // One pass over /proc: ppid + cpu of every process we are allowed to see (our own uid).
         val parentOf = HashMap<Int, Int>()
@@ -270,6 +287,7 @@ class ResourceManager(private val app: AlpineTermApp) {
             svcLines += svc.id to ("CPU " + cpu.toInt() + "% · RAM " + rss / (1024 * 1024) + " MB" + if (top.isNotEmpty()) " · busiest: $top" else "")
         }
         serviceUsage = svcLines
+        lastMaxCpu = maxOf(result.maxOfOrNull { it.cpuPercent } ?: 0.0, svcBusyCpu)
         // The kill message names the busiest process wherever it runs — a tab or a background service.
         if (svcBusyCpu > (result.maxOfOrNull { it.cpuPercent } ?: 0.0)) busiest = svcBusyTop
         serviceSamples.keys.retainAll(liveServices)
@@ -331,6 +349,8 @@ class ResourceManager(private val app: AlpineTermApp) {
     private companion object {
         const val TAG = "AlpDroid/Resources"
         const val TICK_SECONDS = 15L
+        const val QUIET_TICK_SECONDS = 45L
+        const val BUSY_CPU = 25.0
         const val UNCAPPED_FRAME_MS = 8L
         // android.content.ComponentCallbacks2.TRIM_MEMORY_*
         const val TRIM_RUNNING_LOW = 10

@@ -1,0 +1,38 @@
+#!/bin/sh
+# browserctl — drive AlpBrowser from the AlpDroid agent's Alpine shell (control API on 127.0.0.1, reachable from proot).
+#   export ALPBROWSER_TOKEN=<token from AlpBrowser → ⚙ Agent control>    # (ALPBROWSER_PORT optional, default 8899)
+#
+# General:   ping | ca | trust | mode [bugbounty|webdev] | navigate <url> | eval '<js>' | clear [cookies|cache|storage|all]
+# History:   history [host] | get <id>
+# Bug bounty: scope [<pattern> ...] | intercept on|off [hostFilter] | pending | resolve <holdId> [forward|drop]
+#             rule add <REQ_HEADER|REQ_BODY|RES_HEADER|RES_BODY> <find> <replace> [host] | rules | rule del <id>
+# Web dev:   console [limit]
+BASE="http://127.0.0.1:${ALPBROWSER_PORT:-8899}/v1"
+TOK="${ALPBROWSER_TOKEN:?set ALPBROWSER_TOKEN (see AlpBrowser → Agent control)}"
+H="Authorization: Bearer $TOK"
+get()  { wget -qO- --header "$H" "$BASE$1"; echo; }
+post() { wget -qO- --header "$H" --header "Content-Type: application/json" --post-data "$2" "$BASE$1"; echo; }
+jstr() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/'; }
+case "$1" in
+  ping)      get "/ping" ;;
+  ca)        get "/ca" | sed -n 's/.*"pem":"\(.*\)".*/\1/p' | sed 's/\\n/\n/g' ;;
+  trust)     browserctl ca >> /etc/ssl/certs/ca-certificates.crt && echo "CA appended to Alpine bundle" ;;
+  mode)      [ -n "$2" ] && post "/mode" "{\"mode\":\"$2\"}" || get "/mode" ;;
+  navigate)  post "/navigate" "{\"url\":\"$2\"}" ;;
+  eval)      post "/eval" "{\"js\":$(jstr "$2")}" ;;
+  clear)     post "/clear" "{\"what\":\"${2:-all}\"}" ;;
+  history)   [ -n "$2" ] && get "/history?host=$2" || get "/history" ;;
+  get)       get "/history/$2" ;;
+  scope)     if [ -n "$2" ]; then P=""; shift; for p in "$@"; do P="$P$(jstr "$p"),"; done; post "/scope" "{\"patterns\":[${P%,}]}"; else get "/scope"; fi ;;
+  intercept) post "/intercept" "{\"enabled\":$([ "$2" = on ] && echo true || echo false),\"hostFilter\":\"${3:-}\"}" ;;
+  pending)   get "/intercept" ;;
+  resolve)   post "/intercept/resolve" "{\"holdId\":\"$2\",\"action\":\"${3:-forward}\"}" ;;
+  rule)      case "$2" in
+               add) post "/rules" "{\"part\":\"$3\",\"find\":$(jstr "$4"),\"replace\":$(jstr "$5"),\"hostContains\":\"${6:-}\"}" ;;
+               del) post "/rules/delete" "{\"id\":\"$3\"}" ;;
+               *)   echo "usage: browserctl rule add <PART> <find> <replace> [host] | rule del <id>" >&2; exit 2 ;;
+             esac ;;
+  rules)     get "/rules" ;;
+  console)   get "/console?limit=${2:-200}" ;;
+  *) echo "usage: browserctl {ping|ca|trust|mode|navigate|eval|clear|history|get|scope|intercept|pending|resolve|rule|rules|console}" >&2; exit 2 ;;
+esac

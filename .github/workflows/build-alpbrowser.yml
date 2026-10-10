@@ -1,0 +1,37 @@
+name: Build AlpBrowser APK
+
+# AlpBrowser is a lean standalone intercepting browser (WebView + the core-proxy MITM engine), controlled by the
+# AlpDroid agent. It needs none of the :app proot/Alpine/opencode pipeline, so it has its own workflow.
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main, "feature/**", "fix/**", "ccr-**"]
+    paths:
+      - "alpbrowser/**"
+      - "core-proxy/**"
+      - ".github/workflows/build-alpbrowser.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Grant execute permission to gradlew
+        run: chmod +x gradlew
+      - name: Unit tests (core-proxy + alpbrowser)
+        run: ./gradlew :core-proxy:test :alpbrowser:testDebugUnitTest --stacktrace
+      - name: Build AlpBrowser debug APK
+        run: ./gradlew :alpbrowser:assembleDebug --stacktrace
+      - name: Upload AlpBrowser APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpbrowser-debug-apk
+          path: alpbrowser/build/outputs/apk/debug/alpbrowser-debug.apk
+          if-no-files-found: error

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- This app proxies both HTTP and HTTPS through its own in-process MITM engine. The WebView is
+         pointed at that proxy; the only "untrusted" cert it ever sees is this app's own per-host leaf,
+         which the WebView client accepts via onReceivedSslError (SSL_UNTRUSTED only). Cleartext is
+         allowed because the proxy also carries plain HTTP for inspection. -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

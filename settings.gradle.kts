@@ -17,3 +17,6 @@ dependencyResolutionManagement {
 rootProject.name = "alpdroid"
 
 include(":app")
+
+include(":core-proxy")
+include(":alpbrowser")

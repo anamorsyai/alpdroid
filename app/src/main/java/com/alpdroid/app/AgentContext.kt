@@ -53,6 +53,9 @@ This is a real Alpine Linux environment on an Android phone, inside the AlpDroid
 
 ## Controlling the app
 ${if (agentAccessOn) AGENT_ON else AGENT_OFF}
+
+## The built-in browser (AlpBrowser) — web dev & bug bounty
+$BROWSER
 """.trim()
 
     private const val AGENT_OFF = """Agent access is OFF, so the `alpctl` command does not work yet. If the user wants you to change app settings, use tabs, send notifications or add plugins, tell them to turn on Settings → Agent access & GitHub → "Let programs in the terminal control AlpDroid". `alpctl about` prints this note."""
@@ -87,6 +90,38 @@ Custom screens (plugins): to give the user their own fields and buttons, create 
   ]
 }
 Field types: text, number, toggle, select (with "options"). Each field reaches the script as the environment variable FIELD_<ID> in capitals (toggles are 1 or 0). One-shot scripts stop after 2 minutes; scheduled ones after 5."""
+
+    private const val BROWSER = """AlpDroid has a companion app, AlpBrowser (a separate app you may need the user to install). It is a real Chromium WebView whose traffic goes through an in-app HTTPS intercepting proxy, and it is fully controllable from here over a loopback control API — so you can browse, read and rewrite decrypted HTTPS, and automate the page for the user's own web development or authorized bug-bounty testing on targets they are permitted to test.
+
+Reach it with the `browserctl` command (loopback 127.0.0.1, token-authenticated). First time, ask the user to open AlpBrowser -> tap the gear "Agent control" and read you the token, then:
+  export ALPBROWSER_TOKEN=<token>        # (ALPBROWSER_PORT optional, default 8899)
+  browserctl trust                       # make Alpine's curl/python trust the intercepted HTTPS (appends the proxy CA)
+  browserctl ping                        # check it is reachable
+
+Two modes (set the one that fits the task): `browserctl mode bugbounty` or `browserctl mode webdev`.
+
+Both modes:
+- browserctl navigate <url>             open a page
+- browserctl eval '<js>'                run JavaScript in the live page (returns the result)
+- browserctl history [host]             captured requests; browserctl get <id> for one in full (TLS-decrypted bodies)
+- browserctl clear [cookies|cache|storage|all]
+- browserctl ca                         print the proxy root CA (PEM)
+
+Bug bounty (intercept & tamper):
+- browserctl scope <pattern> ...        only capture these hosts (globs, e.g. '*.target.com'); empty = everything
+- browserctl intercept on [hostFilter]  pause matching traffic; browserctl pending shows parked messages
+- browserctl resolve <holdId> [forward|drop]   release a parked message (or edit it via the /intercept/resolve API)
+- browserctl rule add <REQ_HEADER|REQ_BODY|RES_HEADER|RES_BODY> <find> <replace> [host]   auto match-and-replace
+- browserctl rules / browserctl rule del <id>
+- Repeater: re-send a request via the /resend API (method, url, headers, body) and read the response.
+
+Web development:
+- browserctl console [limit]            read the page's console.log/warn/error and uncaught JS errors
+- Chromium remote debugging (CDP/DevTools) is enabled, so a DevTools client can also attach to the live page.
+
+Rules: only test targets the user is authorized to test; never exfiltrate captured data anywhere; treat tokens/cookies in captured traffic as secret.
+
+Run `browserctl` with no arguments for the full command list."""
 
     private fun block(content: String) = "$BEGIN\n$content\n$END\n"
 

@@ -304,6 +304,30 @@ static int pump_master(int master, char *buf, size_t cap) {
     return write_all_stdout(buf, r) == 0 ? 1 : -1;
 }
 
+/** Drains the pty master into one buffer across several non-blocking reads, then forwards it to
+ *  stdout in a SINGLE write. The pty delivers output in ~4 KB chunks, so a bursty program used to
+ *  cost one write() (and one Java-reader wakeup + feed() lock cycle + render post) per 4 KB; one
+ *  write of up to the full 32 KB buffer cuts those ~8x under heavy output (opencode streaming,
+ *  `cat` of a big file). Bounded by [cap] so a flood can never starve stdin/control/SIGCHLD for
+ *  more than one buffer's worth. Idle cost is unchanged: a single read that returns EAGAIN, no write.
+ *  Returns 1 if data moved (master still alive), 0 if nothing was ready, -1 on master EOF/error or
+ *  a dead stdout. */
+static int drain_master(int master, char *buf, size_t cap) {
+    size_t total = 0;
+    int eof = 0;
+    while (total < cap) {
+        ssize_t r = read(master, buf + total, cap - total);
+        if (r > 0) { total += (size_t) r; continue; }
+        if (r == 0) { eof = 1; break; }                     // every process holding the pty is gone
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) break;  // nothing more ready right now
+        eof = 1; break;                                      // a real read error: treat as EOF
+    }
+    if (total > 0 && write_all_stdout(buf, (ssize_t) total) < 0) return -1;
+    if (eof) return -1;
+    return total > 0 ? 1 : 0;
+}
+
 /** Writes input to the pty master without ever wedging the relay: master is O_NONBLOCK, and on a
  *  full pty buffer we keep draining the master's own output to stdout while waiting for room.
  *  A plain blocking write() here deadlocked on large pastes (the shell echoes input, the echo
@@ -396,15 +420,10 @@ static int relay_loop(int master, pid_t child, int self_pipe_read_fd, int *out_s
         if (fds[master_idx].revents & (POLLIN | POLLHUP | POLLERR)) {
             // Non-blocking master: 0 means "nothing ready after all", -1 is master EOF
             // (every process holding the pty is gone) or a dead stdout.
-            // Bounded drain: under heavy output one poll() + read() per chunk was three syscalls per
-            // 4 KB; keep reading while data is immediately available, but never starve stdin/control.
-            int pumped = 0, dead = 0;
-            for (int i = 0; i < 8; i++) {
-                pumped = pump_master(master, buf, sizeof(buf));
-                if (pumped < 0) { dead = 1; break; }
-                if (pumped == 0) break;
-            }
-            if (dead) break;
+            // Coalesce everything the master currently has into one stdout write (see drain_master):
+            // far fewer write() syscalls and Java-reader wakeups under heavy output, while still
+            // bounded to one buffer so stdin/control/SIGCHLD are never starved.
+            if (drain_master(master, buf, sizeof(buf)) < 0) break;
         }
 
         if (fds[sigchld_idx].revents & POLLIN) {
@@ -430,7 +449,7 @@ static int relay_loop(int master, pid_t child, int self_pipe_read_fd, int *out_s
                     pfd.fd = master;
                     pfd.events = POLLIN;
                     if (poll(&pfd, 1, 200) <= 0) break;
-                    if (pump_master(master, buf, sizeof(buf)) <= 0) break;
+                    if (drain_master(master, buf, sizeof(buf)) <= 0) break;
                 }
                 // The shell is gone: whatever is left in its session (a daemon it started) must not outlive the tab.
                 if (g_child > 0) kill(-g_child, SIGKILL);

@@ -129,7 +129,7 @@ class MainActivity : Activity() {
             paused = false
             (application as AlpineTermApp).backgroundExecutor.execute { refreshCount() }
         }
-        servicesListener = { mainHandler.post { updateKeepAliveService(); servicesBox?.let { renderServices(it) } } }
+        servicesListener = { mainHandler.post { if (!isFinishing && !isDestroyed) { updateKeepAliveService(); servicesBox?.let { renderServices(it) } } } }
         (application as AlpineTermApp).services.onChanged = servicesListener
         agentBridge.host = agentHost
         if (settingsStore.agentAccessEnabled) syncAgentBridge()
@@ -1441,6 +1441,7 @@ class MainActivity : Activity() {
     private var servicesBox: LinearLayout? = null
 
     private fun renderServices(box: LinearLayout) {
+        if (isFinishing || isDestroyed) return
         box.removeAllViews()
         val running = services.list()
         if (running.isEmpty()) {
@@ -2441,9 +2442,9 @@ class MainActivity : Activity() {
         services.start(
             OpencodeWeb.SERVICE_ID, "opencode web",
             OpencodeWeb.command(serverPort, lan && !noLogin, password),
-            onExit = { OpencodeWeb.stopProxy(proxy) },
+            onExit = { if (proxy != null) OpencodeWeb.stopProxy(proxy) },
             onFailed = { why ->
-                OpencodeWeb.stopProxy(proxy)
+                if (proxy != null) OpencodeWeb.stopProxy(proxy)
                 mainHandler.post { android.widget.Toast.makeText(this, "opencode web: $why", android.widget.Toast.LENGTH_LONG).show() }
             },
         )
@@ -2618,8 +2619,8 @@ class MainActivity : Activity() {
 
     /** A service ended on its own while the user was waiting for it: show the last thing it printed. */
     private fun reportServiceStopped(label: String, id: String) {
-        val why = services.lastOutput(id).trim().lines().lastOrNull { it.isNotBlank() } ?: return // stopped by the user: it was cleared
-        if (services.get(id)?.stopping == true) return
+        if (services.wasStoppedByUser(id)) return // the user pressed Stop: its ending is expected, say nothing
+        val why = services.lastOutput(id).trim().lines().lastOrNull { it.isNotBlank() } ?: return
         android.widget.Toast.makeText(this, "$label stopped: $why", android.widget.Toast.LENGTH_LONG).show()
     }
 
@@ -3882,6 +3883,7 @@ class MainActivity : Activity() {
         val wasActive = idx == activeTabIndex
         val activeTab = tabs.getOrNull(activeTabIndex)
         tabs.removeAt(idx)
+        lastBellAtMs.remove(tab.id) // one entry per tab id ever opened would otherwise never be reclaimed
         if (tabs.isEmpty()) {
             // A restart/reinstall/restore/another still-in-flight addTab() is already expected to
             // add a replacement — never auto-finish() here just because some session's own exit
@@ -4502,7 +4504,10 @@ class MainActivity : Activity() {
         // Drop tab callbacks closing over this instance: the reader threads outlive it and
         // the tabs list (app-scoped) would otherwise pin the dead Activity until rebind.
         // Harmless across rotation — onCreate rebinds via rebindTabOutputs().
-        (application as AlpineTermApp).tabs.forEach { it.onOutput = null; it.onExit = null }
+        // onBell closes over this Activity too (toast/vibrator/getSystemService) and the emulator outlives it in the
+        // app-scoped tab list — drop it as well, or a backgrounded-then-destroyed Activity is pinned until a new one
+        // rebinds (see rebindTabOutputs). A no-op until then; a real bell while detached is simply not shown.
+        (application as AlpineTermApp).tabs.forEach { it.onOutput = null; it.onExit = null; it.emulator.onBell = {} }
         // Stop the GitHub device-flow poll promptly instead of delivering its result +
         // dialog.dismiss() to a destroyed instance (window leak on rotation).
         githubCancelled = true

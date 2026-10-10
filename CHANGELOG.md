@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.7.68 — deeper review: fewer syscalls, a memory-leak fix, background-service and reflow bugs
+
+Found by a full review of threads, CPU, memory and the native bridge.
+
+- Faster + less battery: the native bridge now coalesces a burst of terminal output into a single write to the app
+  instead of one write per ~4 KB chunk. Heavy output (opencode streaming, `cat` of a big file) wakes the reader
+  thread and repaints up to ~8x less often, for the same result. Idle cost is unchanged.
+- Fixed (memory leak): when Android destroyed the app's screen while it kept running in the background (a build or
+  agent still going under the keep-alive service), one callback still pointed at the gone screen and pinned it — and
+  its whole view/buffer memory — for the rest of the background session. It is released now.
+- Fixed (emoji/wide chars on resize): rotating or toggling the keyboard could split a wide character or emoji across
+  the wrap, leaving its right half orphaned at the start of the next line. A wide character now moves whole to the
+  next line, and is never cut in two by a resize.
+- Hardened: a single on-screen character can no longer be grown without bound by a flood of combining marks or joined
+  emoji (a hostile `cat` could otherwise balloon one cell's memory).
+- Fixed: pressing Stop on a background server in the exact moment it was still starting could be lost (the server then
+  ran anyway); it is now always honoured.
+- Fixed: stopping opencode web / the SSH server by hand while the "starting…" dialog was still waiting could show a
+  stray "… stopped" message; a deliberate stop is now silent.
+- Fixed: a per-tab bell timestamp was kept for every tab ever opened; it is dropped when the tab closes.
+
 ## 1.7.67 — emoji and wide characters, a faster terminal, more audit fixes
 
 - Fixed: **emoji and other characters outside the basic plane (🚀 📁 🔧 …) showed up broken** — only half of the

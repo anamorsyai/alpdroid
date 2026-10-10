@@ -174,4 +174,33 @@ class UnicodeTest {
         t.type("\u001B[38;2;10;20;30mq")  // truecolor SGR
         assertNotEquals(TerminalColors.DEFAULT_FG, t.rowAt(1)[1].fg)
     }
+
+    @Test fun reflowDoesNotSplitAWideCharacterAcrossTheNewWidth() {
+        val t = TerminalEmulator(3, 10)
+        // Fill columns 0..9 so a CJK char lands at columns 8-9, then shrink to 9 columns: the wide char would
+        // straddle the old boundary. It must move whole to the next row, never leave an orphan `cont` at column 0.
+        t.type("abcdefgh世界") // ...gh 世界  (世 at 8-9)
+        t.resize(3, 9)
+        for (r in 0 until t.rows) {
+            val row = t.rowAt(r)
+            if (row.isNotEmpty()) {
+                assertFalse("row $r starts with an orphaned wide-char right half", row[0].cont)
+                for (c in row.indices) {
+                    if (row[c].cont) assertFalse("a cont cell at $r,$c has no wide-char head before it", c == 0 || row[c - 1].ch == ' ')
+                }
+            }
+        }
+        // The characters survive the reflow intact.
+        val text = buildString { for (r in 0 until t.rows) t.rowAt(r).forEach { it.appendTo(this) } }
+        assertTrue(text.contains("世界"))
+    }
+
+    @Test fun oneCellCannotGrowWithoutBoundFromCombiningMarks() {
+        val t = TerminalEmulator(3, 10)
+        val sb = StringBuilder("a")
+        repeat(500) { sb.append('́') } // a + 500 combining acutes
+        t.type(sb.toString())
+        val ext = t.rowAt(0)[0].ext ?: ""
+        assertTrue("ext length ${ext.length} should be capped", ext.length <= 64)
+    }
 }

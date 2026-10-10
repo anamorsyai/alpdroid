@@ -37,6 +37,8 @@ class BackgroundServices(private val app: AlpineTermApp) {
     private val cancelled = ConcurrentHashMap.newKeySet<String>()
     /** The last output of each service that has ended — why it stopped (a missing program, a failed install). */
     private val lastOutput = ConcurrentHashMap<String, String>()
+    /** Services the user stopped by hand (Stop button / Exit): their end is expected, so no "it stopped" message. */
+    private val stoppedByUser = ConcurrentHashMap.newKeySet<String>()
     private val pool = Executors.newCachedThreadPool { r -> Thread(r, "bg-service").apply { isDaemon = true } }
 
     /** Called (on any thread) whenever a service starts or ends; the UI uses it to redraw its list. */
@@ -71,6 +73,7 @@ class BackgroundServices(private val app: AlpineTermApp) {
         if (running.containsKey(id)) return
         if (!starting.add(id)) return // already starting
         cancelled.remove(id)
+        stoppedByUser.remove(id)
         lastOutput.remove(id)
         pool.execute {
             val session = try {
@@ -89,10 +92,12 @@ class BackgroundServices(private val app: AlpineTermApp) {
                 return@execute
             }
             val svc = Service(id, label, session)
+            // Published to `running` BEFORE the cancelled re-check so a concurrent stop() either sees it here (and
+            // destroys it) or is seen here — closing the window where a Stop pressed mid-spawn was lost. `cancelled`
+            // is read (not removed): start() clears it up front, so it never lingers to cancel a later run.
             running[id] = svc
             starting.remove(id)
-            // Stop was pressed while it was being spawned: end it right away instead of letting it run.
-            if (cancelled.remove(id)) svc.stopping = true
+            if (cancelled.contains(id)) svc.stopping = true
             changed()
             if (svc.stopping) runCatching { session.destroy() }
             drain(svc)
@@ -121,14 +126,18 @@ class BackgroundServices(private val app: AlpineTermApp) {
 
     /** Stops service [id]: [PtySession.destroy] ends its whole process tree (and forces it after a short grace period). */
     fun stop(id: String) {
-        val svc = running[id]
-        if (svc == null) {
-            if (starting.contains(id)) cancelled.add(id) // not spawned yet: killed the moment it is
-            return
+        stoppedByUser.add(id)
+        // Mark intent first, then kill if already live: the spawn worker publishes to `running` before it re-reads
+        // `cancelled`, so between the two every stop is caught by one side or the other — no lost Stop.
+        cancelled.add(id)
+        running[id]?.let { svc ->
+            svc.stopping = true
+            runCatching { svc.session.destroy() }
         }
-        svc.stopping = true
-        runCatching { svc.session.destroy() }
     }
+
+    /** Whether service [id] was stopped by the user (so a UI waiter should stay quiet about it ending). */
+    fun wasStoppedByUser(id: String): Boolean = stoppedByUser.contains(id)
 
     fun stopAll() {
         (running.keys + starting).toList().forEach { stop(it) }

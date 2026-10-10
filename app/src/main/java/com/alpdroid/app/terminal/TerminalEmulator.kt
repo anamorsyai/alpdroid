@@ -513,7 +513,7 @@ class TerminalEmulator(
         var newCursorCol = 0
         for ((lineIdx, line) in logicalLines.withIndex()) {
             var end = line.size
-            while (end > 0 && line[end - 1].ch == ' ') end--
+            while (end > 0 && line[end - 1].ch == ' ' && !line[end - 1].cont) end--
             val trimmed = line.subList(0, end)
             if (trimmed.isEmpty()) {
                 newAllRows.add(blankRow(newCols, TerminalColors.DEFAULT_FG, TerminalColors.DEFAULT_BG))
@@ -522,15 +522,20 @@ class TerminalEmulator(
             }
             var pos = 0
             while (pos < trimmed.size) {
-                val chunkEnd = min(pos + newCols, trimmed.size)
-                val rowArr = Array(newCols) { c -> if (pos + c < chunkEnd) trimmed[pos + c].copy(wrapped = false) else Cell(fg = TerminalColors.DEFAULT_FG, bg = TerminalColors.DEFAULT_BG) }
-                if (pos + newCols < trimmed.size) rowArr[newCols - 1].wrapped = true
+                // Width of this row's content. Normally newCols, but when the last column would land on the LEFT
+                // half of a wide character (its `cont` right half is the next cell), end one column early and pad —
+                // the whole wide character then starts the next row, instead of being split across the boundary.
+                var width = min(newCols, trimmed.size - pos)
+                if (width == newCols && pos + newCols < trimmed.size && trimmed[pos + newCols].cont) width = newCols - 1
+                val chunkEnd = pos + width
+                val rowArr = Array(newCols) { c -> if (c < width) trimmed[pos + c].copy(wrapped = false) else Cell(fg = TerminalColors.DEFAULT_FG, bg = TerminalColors.DEFAULT_BG) }
+                if (chunkEnd < trimmed.size) rowArr[newCols - 1].wrapped = true
                 newAllRows.add(rowArr)
                 if (lineIdx == cursorLogicalLine) {
-                    if (cursorLogicalOffset in pos until (pos + newCols)) {
+                    if (cursorLogicalOffset in pos until chunkEnd) {
                         newCursorAbsRow = newAllRows.size - 1
                         newCursorCol = cursorLogicalOffset - pos
-                    } else if (cursorLogicalOffset >= trimmed.size && pos + newCols >= trimmed.size) {
+                    } else if (cursorLogicalOffset >= trimmed.size && chunkEnd >= trimmed.size) {
                         // Cursor sits right after the last real character (the common case for
                         // an active prompt) — what would otherwise be trailing blank space that
                         // just got trimmed away. Pin it to the end of this, the line's last chunk.
@@ -538,7 +543,7 @@ class TerminalEmulator(
                         newCursorCol = (trimmed.size - pos).coerceIn(0, newCols - 1)
                     }
                 }
-                pos += newCols
+                pos += width
             }
         }
 
@@ -820,7 +825,10 @@ class TerminalEmulator(
         if (w == 0) { attachToPrevious(cp); return }
         // After a zero-width joiner the next emoji belongs to the cluster before it (👨‍👩‍👧): same cell, no advance.
         val prev = previousCell()
-        if (prev != null && prev.ext?.endsWith("\u200D") == true) { prev.ext = prev.ext + String(Character.toChars(cp)); return }
+        if (prev != null && prev.ext?.endsWith("\u200D") == true) {
+            if ((prev.ext?.length ?: 0) < MAX_EXT) prev.ext = prev.ext + String(Character.toChars(cp))
+            return
+        }
         putCell(if (cp < 0x10000) cp.toChar() else Character.highSurrogate(cp), if (cp < 0x10000) null else String(Character.toChars(cp)), w)
     }
 
@@ -833,9 +841,16 @@ class TerminalEmulator(
         return row[col]
     }
 
+    /** A single on-screen character (base + marks, or a ZWJ/emoji cluster) never legitimately needs more than this
+     *  many UTF-16 units — the cap stops a hostile stream of combining marks or ZWJ joins on one cell from growing
+     *  its [Cell.ext] String without bound (one cell could otherwise reach hundreds of MB). */
+    private val MAX_EXT = 64
+
     private fun attachToPrevious(cp: Int) {
         val cell = previousCell() ?: return
-        cell.ext = (cell.ext ?: cell.ch.toString()) + String(Character.toChars(cp))
+        val base = cell.ext ?: cell.ch.toString()
+        if (base.length >= MAX_EXT) return // already a pathological cluster: drop further marks
+        cell.ext = base + String(Character.toChars(cp))
         generation++
     }
 

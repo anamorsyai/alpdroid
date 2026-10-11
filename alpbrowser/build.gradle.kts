@@ -46,6 +46,16 @@ android {
         compose = true
         buildConfig = true
     }
+    packaging {
+        resources {
+            // BouncyCastle's bcprov/bcpkix/bcutil jars each ship an identical
+            // META-INF/versions/9/OSGI-INF/MANIFEST.MF, so the APK resource merger fails on the
+            // duplicate. We don't ship OSGi metadata in an APK — drop it. The related license
+            // notices collide the same way across transitive deps; pick one.
+            excludes += "/META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

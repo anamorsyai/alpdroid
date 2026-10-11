@@ -97,6 +97,15 @@ jobs:
           path: AlpBrowser-${{ inputs.tag_name }}.apk
           if-no-files-found: error
 
+      - name: Build update deltas
+        # Small patches from the last few releases to this one, so installed apps download only what changed. Optional:
+        # the full APK is always published, and a failure here never blocks the release.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag_name }}
+        run: bash scripts/release_deltas.sh browser "$TAG" "AlpBrowser-${TAG}.apk" 3
+
       - name: Create release with the APK attached
         env:
           GH_TOKEN: ${{ github.token }}
@@ -114,4 +123,5 @@ jobs:
             echo
             echo "Android 8.0+ (minSdk 26). Control API on 127.0.0.1 with a per-install token shown in the app."
           } > notes.md
-          gh release create "$TAG" "$APK" --target "$GITHUB_SHA" --title "AlpBrowser $TAG" --notes-file notes.md
+          shopt -s nullglob
+          gh release create "$TAG" "$APK" deltas/*.adp --target "$GITHUB_SHA" --title "AlpBrowser $TAG" --notes-file notes.md

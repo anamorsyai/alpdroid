@@ -22,7 +22,12 @@ object AppUpdater {
     /** Owner/repo whose releases carry AlpDroid-*.apk assets (releases before 1.7.43 used the AlpineTerm- prefix; any .apk asset is accepted). */
     const val RELEASES_REPO = "anamorsyai/alpdroid"
 
-    data class Update(val tag: String, val name: String, val notes: String, val apkUrl: String, val apiUrl: String, val size: Long, val sha256: String = "", val fileName: String = "")
+    data class Update(val tag: String, val name: String, val notes: String, val apkUrl: String, val apiUrl: String, val size: Long, val sha256: String = "", val fileName: String = "",
+        /** A delta (`*-from-<installed version>.adp`) that turns the installed APK into this one, when the release carries one. */
+        val delta: Delta? = null)
+
+    /** A downloadable delta file: see [ApkDelta]. */
+    data class Delta(val apiUrl: String, val url: String, val size: Long, val sha256: String, val name: String)
 
     /** versionName + versionCode of the running APK. */
     fun currentVersion(context: Context): Pair<String, Long> = runCatching {
@@ -77,6 +82,7 @@ object AppUpdater {
             context,
             belongs = { tag -> !BrowserInstall.isBrowserTag(tag) }, // alpbrowser-v* is a different app
             newer = { tag -> isNewer(tag, currentName) },
+            installedName = currentName,
         )
     }
 
@@ -91,6 +97,7 @@ object AppUpdater {
             context,
             belongs = { tag -> BrowserInstall.isBrowserTag(tag) },
             newer = { tag -> installed == null || isNewer(BrowserInstall.versionFromTag(tag), installed) },
+            installedName = installed,
         )
     }
 
@@ -137,7 +144,7 @@ object AppUpdater {
      * "already up to date" case that is a single request per channel, which keeps the 15-minute auto-check far
      * under GitHub's unauthenticated 60-requests-per-hour limit.
      */
-    private fun selectRelease(context: Context, belongs: (String) -> Boolean, newer: (String) -> Boolean): Update? {
+    private fun selectRelease(context: Context, belongs: (String) -> Boolean, newer: (String) -> Boolean, installedName: String?): Update? {
         for (page in 1..MAX_RELEASE_PAGES) {
             val conn = openApi(context, "https://api.github.com/repos/$RELEASES_REPO/releases?per_page=30&page=$page")
             val text = try {
@@ -156,7 +163,8 @@ object AppUpdater {
                     // The API asset URL (not browser_download_url): with Accept: octet-stream +
                     // auth it 302s to a signed host. browser_download_url without auth just 404s
                     // on a private repo, and sending the bearer token to a redirect host leaks it.
-                    return Update(tag, r.optString("name", tag), r.optString("body", ""), a.optString("browser_download_url"), a.optString("url"), a.optLong("size"), sha256Of(a.optString("digest")), a.optString("name"))
+                    return Update(tag, r.optString("name", tag), r.optString("body", ""), a.optString("browser_download_url"), a.optString("url"), a.optLong("size"), sha256Of(a.optString("digest")), a.optString("name"),
+                        delta = findDelta(r.optJSONArray("assets"), installedName))
                 }
                 Pick.Stop -> return null
                 Pick.Continue -> {}
@@ -166,6 +174,22 @@ object AppUpdater {
     }
 
     private const val MAX_RELEASE_PAGES = 4
+
+    /**
+     * The delta asset made for the installed version: `<apk name>-from-<installed versionName>.adp`. CI attaches one for
+     * each of the last few releases, so a phone that is further behind simply gets no delta and downloads the full APK.
+     */
+    internal fun findDelta(assets: org.json.JSONArray?, installedName: String?): Delta? {
+        if (assets == null || installedName.isNullOrBlank()) return null
+        val suffix = "-from-${installedName.trim().removePrefix("v")}.adp"
+        for (i in 0 until assets.length()) {
+            val a = assets.optJSONObject(i) ?: continue
+            val name = a.optString("name")
+            if (!name.endsWith(suffix) || a.optLong("size") <= 0) continue
+            return Delta(a.optString("url"), a.optString("browser_download_url"), a.optLong("size"), sha256Of(a.optString("digest")), name)
+        }
+        return null
+    }
 
     private fun openApi(context: Context, url: String): HttpURLConnection {
         // Token only when the user allowed agents to use it — same gate as git/alpctl.
@@ -195,14 +219,76 @@ object AppUpdater {
             if (runCatching { apkVersionCode(context, dest) }.isSuccess && (update.sha256.isEmpty() || sha256Hex(dest) == update.sha256)) return dest
             dest.delete()
         }
+        // A delta against the installed APK first (a fraction of the size); any problem with it falls back to the full file.
+        update.delta?.let { d -> tryDelta(context, update, d, dest, dir, onProgress, isCancelled)?.let { return it } }
+
         val tmp = File(dir, "${dest.name}.part")
+        try {
+            fetchTo(context, update.apiUrl.ifBlank { update.apkUrl }, tmp, onProgress, isCancelled)
+            if (update.size > 0 && tmp.length() != update.size) {
+                tmp.delete()
+                throw IllegalStateException("download size mismatch")
+            }
+            // GitHub publishes each asset's SHA-256: when it is there the download must match it exactly (a damaged or
+            // swapped file is refused before the installer ever sees it; Android's own signature check still applies).
+            if (update.sha256.isNotEmpty() && sha256Hex(tmp) != update.sha256) {
+                tmp.delete()
+                throw IllegalStateException("download checksum mismatch")
+            }
+            if (!tmp.renameTo(dest)) throw IllegalStateException("could not finalize download")
+            return dest
+        } finally {
+            // Cancel/failure used to abandon the .part forever (never resumed, never swept).
+            // Success path renamed it away, so delete() there is a harmless no-op.
+            if (tmp.exists() && !dest.isFile) runCatching { tmp.delete() }
+        }
+    }
+
+    /** The installed APK that deltas are applied to, or null when it is not a single plain APK this process can read. */
+    internal fun installedBaseApk(context: Context, update: Update): File? = runCatching {
+        val info = if (BrowserInstall.isBrowserTag(update.tag)) context.packageManager.getApplicationInfo(BrowserInstall.PACKAGE, 0) else context.applicationInfo
+        if (!info.splitSourceDirs.isNullOrEmpty()) return@runCatching null
+        File(info.sourceDir).takeIf { it.isFile && it.canRead() }
+    }.getOrNull()
+
+    /**
+     * Downloads [delta], applies it to the installed APK and returns the rebuilt, verified APK ([dest]) — or null when
+     * anything about that fails (no readable base APK, a different installed build, a damaged download or result), so the
+     * caller downloads the whole APK instead. Cancelling is the one thing that is not swallowed.
+     */
+    private fun tryDelta(context: Context, update: Update, delta: Delta, dest: File, dir: File, onProgress: (Long, Long) -> Unit, isCancelled: () -> Boolean): File? {
+        val base = installedBaseApk(context, update) ?: return null
+        val patch = File(dir, "${delta.name}.part")
+        val rebuilt = File(dir, "${dest.name}.delta")
+        try {
+            fetchTo(context, delta.apiUrl.ifBlank { delta.url }, patch, onProgress, isCancelled)
+            if (delta.size > 0 && patch.length() != delta.size) return null
+            if (delta.sha256.isNotEmpty() && sha256Hex(patch) != delta.sha256) return null
+            ApkDelta.apply(base, patch, rebuilt, expectedSha256 = update.sha256)
+            if (update.size > 0 && rebuilt.length() != update.size) return null
+            // The same proof of integrity as a full download: it parses as an APK (the caller then checks the package and version).
+            if (runCatching { apkVersionCode(context, rebuilt) }.isFailure) return null
+            if (!rebuilt.renameTo(dest)) return null
+            return dest
+        } catch (e: java.util.concurrent.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return null
+        } finally {
+            patch.delete()
+            if (!dest.isFile) rebuilt.delete()
+        }
+    }
+
+    /**
+     * Streams one release asset into [tmp] with progress. Follows redirects by hand: auth goes only to api.github.com (the
+     * asset endpoint), never to the signed host it 302s to — sending the bearer token there would leak it.
+     */
+    private fun fetchTo(context: Context, startUrl: String, tmp: File, onProgress: (Long, Long) -> Unit, isCancelled: () -> Boolean) {
         val token = runCatching {
             if (SettingsStore(context).agentGithubToken) GitHubAuth.validToken(context) else null
         }.getOrNull()
-        // Follow manually: auth goes only to api.github.com (the asset endpoint),
-        // never to the signed redirect host it 302s to — sending the bearer token
-        // there would leak it.
-        var url = update.apiUrl.ifBlank { update.apkUrl }
+        var url = startUrl
         var accept = "application/octet-stream"
         var conn: HttpURLConnection? = null
         // Bounded manual loop (not repeat{}): a bare `return@repeat` on success would
@@ -246,24 +332,8 @@ object AppUpdater {
                     }
                 }
             }
-            if (update.size > 0 && tmp.length() != update.size) {
-                tmp.delete()
-                throw IllegalStateException("download size mismatch")
-            }
-            // GitHub publishes each asset's SHA-256: when it is there the download must match it exactly (a damaged or
-            // swapped file is refused before the installer ever sees it; Android's own signature check still applies).
-            if (update.sha256.isNotEmpty() && sha256Hex(tmp) != update.sha256) {
-                tmp.delete()
-                throw IllegalStateException("download checksum mismatch")
-            }
-            if (!tmp.renameTo(dest)) throw IllegalStateException("could not finalize download")
-            tmp.delete() // rename succeeded; no-op. Kept explicit so the finally below reads correctly.
-            return dest
         } finally {
             connection.disconnect()
-            // Cancel/failure used to abandon the .part forever (never resumed, never swept).
-            // Success path renamed it away, so delete() there is a harmless no-op.
-            if (tmp.exists() && !dest.isFile) runCatching { tmp.delete() }
         }
     }
 

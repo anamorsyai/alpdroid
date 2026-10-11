@@ -74,3 +74,5 @@ signed `AlpDroid-vX.Y.Z.apk` as a workflow artifact.
 
 AlpBrowser is released separately by [`build-alpbrowser.yml`](.github/workflows/build-alpbrowser.yml): bump its `versionCode`/`versionName` in
 `alpbrowser/build.gradle.kts` and run the workflow with a tag such as `alpbrowser-vX.Y.Z` and *publish_release* on. Signing secrets live in repository Actions secrets, never in the tree.
+
+Each publishing run also builds **update deltas** (`scripts/release_deltas.sh`, using `scripts/make_apk_delta.py`): small `*-from-<old version>.adp` files for the last three earlier releases of the same app, attached next to the APK. The in-app updater applies the one that matches the installed version (`ApkDelta.kt`) and falls back to the full APK for anything else, so a missing or failed delta never blocks an update. Releases are therefore best made from tags in order; do not delete the APK assets of recent releases, because the next release builds its deltas from them.

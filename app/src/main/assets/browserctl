@@ -58,7 +58,7 @@ fail_hint() {
   if wget -qO- -T 5 --header "$H" "$BASE/ping" >/dev/null 2>&1; then
     echo "browserctl: the request failed (exit $1) although AlpBrowser is running: it was rejected or took too long. Wait for the page (browserctl waitnav) and retry." >&2
   else
-    echo "browserctl: cannot reach AlpBrowser (exit $1) — is it open? try: browserctl ping" >&2
+    echo "browserctl: no usable answer from AlpBrowser (exit $1): it may be closed, or it requires the control token (Open local access is off) — open it once, then try: browserctl ping" >&2
   fi
 }
 get() {

@@ -172,7 +172,7 @@ Per plugin under Automation: switches, Run now, View log. Jobs run while the kee
 
 Settings → check for updates (auto-check throttled; manual anytime).
 
-- "Update now" downloads with the filling-logo progress screen, checks it's actually newer, then installs (app closes; tabs/sessions don't survive updates, files do).
+- "Update now" downloads only what changed when it can: each release carries small patch files for the last few versions, AlpDroid rebuilds the new app from the one you have installed and verifies it against the release checksum (typically about a quarter of the full size). If your version is too old for a patch, or anything fails to verify, it downloads the full file instead. It shows the filling-logo progress screen, checks it's actually newer, then installs (app closes; tabs/sessions don't survive updates, files do).
 - If Android detours you to allow installs, returning re-offers the waiting install automatically.
 - The companion **AlpBrowser** app updates the same way, from Settings → About → AlpBrowser (see [AlpBrowser](#10-alpbrowser--the-agents-browser)).
 

@@ -44,7 +44,7 @@ browser to test and automate web apps, with a built-in intercepting proxy.
 | **Cool and light** | A smart resource manager caps repaint rate (lower when the phone is hot or in battery saver), trims memory under pressure, closes frozen sessions, balances load across cores and keeps the guest `/tmp` from filling the phone. |
 | **Stays alive in the background** | A foreground service, optional wake lock and Wi-Fi lock keep long builds, servers and jobs running with the screen off — and AlpDroid tells you plainly if Android stopped it. |
 | **Your files, both sides** | Built-in file browser for Android and Alpine storage; `/sdcard` and USB/SD drives are visible inside Linux. Back up the whole Alpine system to one file, with optional weekly automatic backups. |
-| **Self-updating** | AlpDroid checks for new versions, downloads and verifies them, and installs over the old one. It updates AlpBrowser the same way. |
+| **Self-updating** | AlpDroid checks for new versions, downloads only what changed (small patches, about a quarter of the full size), verifies the result and installs over the old one. It updates AlpBrowser the same way. |
 | **Safe by design** | No analytics, no ads. Tokens live in the Android Keystore. Plugins and agent powers need your approval. |
 
 ## Install

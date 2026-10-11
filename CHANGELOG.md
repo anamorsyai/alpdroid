@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.85 — Readable pages on the dark app, cookie attributes, background reliability (AlpBrowser 0.6.5)
+
+- Pages that don't set their own background, and the page shown when a load fails, are readable again on the dark app. A failed load now shows a clear error page with the address, the reason and a Reload button.
+- `browserctl setcookie` accepts `--secure`, `--httponly`, `--samesite Lax|Strict|None`, `--expires` and `--max-age`.
+- AlpBrowser's settings have a new "Keep running in the background" switch that asks Android not to stop the browser while you work in another app, and `browserctl ping` reports whether it is allowed.
+- Faster releases: tests and the signed build now run side by side.
+
 ## 1.7.84 — eval answers again (AlpBrowser 0.6.4)
 
 - Fixes `browserctl eval` answering nothing at all: the reply used a helper that exists in the library the tests run on but not on Android. Any unexpected internal error in the control API now produces an error message instead of a silent drop, and a check keeps such calls out of the code.

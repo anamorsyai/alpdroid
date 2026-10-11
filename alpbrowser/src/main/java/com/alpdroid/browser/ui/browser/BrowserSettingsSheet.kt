@@ -57,6 +57,7 @@ fun BrowserSettingsSheet(
     var js by remember { mutableStateOf(app.jsEnabled()) }
     var desktop by remember { mutableStateOf(app.desktopMode()) }
     var devtools by remember { mutableStateOf(app.devtoolsEnabled()) }
+    var openLocal by remember { mutableStateOf(app.openLocalAccess()) }
     var capture by remember { mutableStateOf(app.captureEnabled()) }
     var mode by remember { mutableStateOf(app.mode()) }
     var blocked by remember { mutableIntStateOf(app.adBlocker.blockedCount.get().toInt()) }
@@ -85,6 +86,12 @@ fun BrowserSettingsSheet(
                 if (capture) "On — History shows full decrypted requests and responses (a bit slower)" else "Off — direct, fastest browsing; History lists URLs only",
                 capture,
             ) { capture = it; app.setCaptureEnabled(it) }
+
+            ToggleRow(
+                "Open local access",
+                if (openLocal) "On — AlpDroid and other programs on this phone control AlpBrowser with no token. Web pages are still refused." else "Off — every request needs the control token",
+                openLocal,
+            ) { openLocal = it; app.setOpenLocalAccess(it) }
 
             ToggleRow(
                 "Remote DevTools (CDP)",

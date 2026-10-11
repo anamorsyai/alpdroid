@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- No more tokens between AlpDroid and AlpBrowser: programs on the phone (the agent, `browserctl`, Playwright/Puppeteer over `cdp`) control AlpBrowser directly. Web pages are still refused, and Settings → Open local access turns the token requirement back on.
 - `history --compact` now honours `--limit` and `--page`.
 - `attr <selector> value` (also `checked`, `selected`, `disabled`) returns the live value of the field.
 - `eval` always runs through the page, so a page that is still loading is reported instead of answering `null`.

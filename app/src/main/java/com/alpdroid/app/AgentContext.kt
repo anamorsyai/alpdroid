@@ -93,7 +93,7 @@ Field types: text, number, toggle, select (with "options"). Each field reaches t
 
     private const val BROWSER = """AlpDroid has a companion app, AlpBrowser (a separate app you may need the user to install). It is a real Chromium WebView whose traffic goes through an in-app HTTPS intercepting proxy, and it is fully controllable from here over a loopback control API — so you can browse, read and rewrite decrypted HTTPS, and automate the page for the user's own web development or authorized bug-bounty testing on targets they are permitted to test.
 
-Reach it with the `browserctl` command (loopback 127.0.0.1, token-authenticated). It is already installed and AlpDroid provisions the token for you automatically (read from AlpBrowser over a same-signature channel) — no manual token copy. Just:
+Reach it with the `browserctl` command (loopback 127.0.0.1). It is already installed and needs no token on this phone — AlpBrowser accepts local programs directly (its "Open local access" setting), and a token that AlpDroid provisions is used only if that setting is off. Never ask the user to copy a token. Just:
   browserctl ping                        # check it is reachable
   browserctl trust                       # make Alpine's curl/python trust the intercepted HTTPS (appends the proxy CA)
 History, rules and interception only see traffic while Capture is on; without it the page browses directly. Every browserctl command exits non-zero when it did not really succeed (check the exit status, not just the text). If ping says AlpBrowser is not linked, the app is not installed yet — the user installs it from AlpDroid -> Settings -> About -> AlpBrowser. Once it is installed AlpDroid links to it automatically (within a few seconds, also in shells that are already open); `navigate`, `eval` and `clear` need a page, so if they report an error the user has to open AlpBrowser once so it has a page.
@@ -131,7 +131,7 @@ Driving the page without Playwright (acts on the tab in front; every command exi
 - browserctl waitfor <sel> [--state visible|hidden|attached] | waitnav [--state ...]   (all element commands wait up to 10 s by default; --timeout ms changes it)
 - browserctl shot [--selector css] [--full-page] [--out file.png] [--format png|jpeg]   screenshot; the Browser screen must be on screen (open AlpBrowser)
 - browserctl cookies [--domain d] | setcookie <name> <value> [--domain d] [--path p]
-- browserctl cdp   turns remote debugging on and prints a WebSocket URL (with the control token in it) for Puppeteer/Playwright `connectOverCDP`; the page being driven is the same one the proxy is capturing. `cdp off` turns it off.
+- browserctl cdp   turns remote debugging on and prints a WebSocket URL (it carries the control token only when Open local access is off) for Puppeteer/Playwright `connectOverCDP`; the page being driven is the same one the proxy is capturing. `cdp off` turns it off.
 
 Rules: only test targets the user is authorized to test; never exfiltrate captured data anywhere; treat tokens/cookies in captured traffic as secret.
 

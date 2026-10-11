@@ -293,10 +293,11 @@ class BrowserctlScriptTest {
         assertFalse(marker.exists())
     }
 
-    @Test fun withoutATokenItSaysHowToLinkAndExits3() {
+    @Test fun withoutATokenItStillTriesAndReportsARefusalClearly() {
+        // The mock insists on a token (as AlpBrowser does with Open local access off): the call fails loudly, not as "not linked".
         val r = run("ping", token = "")
-        assertEquals(3, r.code)
-        assertTrue(r.err.contains("not linked"))
+        assertTrue(r.code != 0 && r.code != 3)
+        assertTrue(r.err.contains("request failed"))
     }
 
     private fun lastPost(path: String): JSONObject = JSONObject(posts.last { it.first == path }.second)

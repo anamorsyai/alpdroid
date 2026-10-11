@@ -65,6 +65,8 @@ class BrowserBridge(
     private val page: PageControl? = null,
     private val cdp: CdpControl? = null,
     private val appVersion: String = "",
+    /** True while open local access is on: programs on this phone may skip the token (see [LocalAccess]). */
+    private val openAccess: () -> Boolean = { false },
 ) {
     data class ResendRequest(val method: String, val url: String, val headers: List<Pair<String, String>>, val body: ByteArray?)
     data class ResendResponse(val status: Int, val headers: List<Pair<String, String>>, val body: ByteArray?, val error: String? = null)
@@ -128,6 +130,7 @@ class BrowserBridge(
             val method = parts[0]
             var authHeader: String? = null
             var contentLength = 0L
+            val hdrs = HashMap<String, String>()
             while (true) {
                 val line = readLine(input) ?: break
                 if (line.isEmpty()) break
@@ -135,6 +138,7 @@ class BrowserBridge(
                 if (idx <= 0) continue
                 val name = line.substring(0, idx).trim().lowercase()
                 val value = line.substring(idx + 1).trim()
+                hdrs[name] = value
                 if (name == "authorization") authHeader = value
                 if (name == "content-length") contentLength = value.toLongOrNull() ?: 0L
             }
@@ -145,7 +149,7 @@ class BrowserBridge(
 
             // Token: Bearer header or ?token=. Constant-time-ish compare.
             val presented = authHeader?.removePrefix("Bearer ")?.trim() ?: query["token"] ?: ""
-            if (!tokenOk(presented)) { respond(sock.getOutputStream(), 401, error("unauthorized")); return }
+            if (!tokenOk(presented) && !(openAccess() && LocalAccess.allowed(hdrs))) { respond(sock.getOutputStream(), 401, error("unauthorized")); return }
 
             if (contentLength > MAX_BODY_BYTES) { respond(sock.getOutputStream(), 400, error("request body too large")); return }
             // Exactly Content-Length BYTES, decoded as UTF-8 afterwards: counting characters instead would hang on (or cut)

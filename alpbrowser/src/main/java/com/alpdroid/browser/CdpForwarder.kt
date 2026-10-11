@@ -21,6 +21,7 @@ import java.util.concurrent.Executors
 class CdpForwarder(
     private val token: String,
     private val connectUpstream: () -> Link,
+    private val openAccess: () -> Boolean = { false },
 ) {
     /** An open connection to DevTools and how to close it. */
     class Link(val input: InputStream, val output: OutputStream, val close: () -> Unit = {})
@@ -92,9 +93,11 @@ class CdpForwarder(
         val bearer = h("Authorization")?.removePrefix("Bearer ")?.trim()
         val prefix = "/$token"
         val firstSegment = path.removePrefix("/").substringBefore('/').substringBefore('?')
+        var tokened = true
         val authed = when {
             bearer != null && tokenOk(bearer) -> true
             tokenOk(firstSegment) -> { path = path.removePrefix(prefix).ifEmpty { "/" }; true }
+            openAccess() && LocalAccess.allowed(headers.associate { it.first.lowercase() to it.second }) -> { tokened = false; true }
             else -> false
         }
         if (!authed) return reply(cout, 401, "unauthorized: use the URL printed by `browserctl cdp`")
@@ -126,7 +129,7 @@ class CdpForwarder(
             val buf = ByteArray(8192)
             while (true) { val n = uin.read(buf); if (n < 0) break; all.write(buf, 0, n) }
             val raw = all.toByteArray()
-            cout.write(if (path.startsWith("/json")) rewrite(raw) else raw)
+            cout.write(if (path.startsWith("/json") && tokened) rewrite(raw) else raw)
             cout.flush()
         } finally { runCatching { link.close() } }
     }

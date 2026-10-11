@@ -87,10 +87,10 @@ private fun ControlInfoDialog(app: AlpBrowserApp, onDismiss: () -> Unit) {
     val info = buildString {
         appendLine("Control API:  http://127.0.0.1:${AlpBrowserApp.CONTROL_PORT}")
         appendLine("Proxy:        127.0.0.1:${AlpBrowserApp.PROXY_PORT}")
-        appendLine("Token:        ${app.controlToken}")
+        appendLine(if (app.openLocalAccess()) "Token:        not needed on this phone (Open local access is on)" else "Token:        ${app.controlToken}")
         appendLine()
         appendLine("From the AlpDroid agent (inside Alpine):")
-        appendLine("  export ALPBROWSER_TOKEN=${app.controlToken}")
+        if (!app.openLocalAccess()) appendLine("  export ALPBROWSER_TOKEN=${app.controlToken}")
         appendLine("  browserctl ping")
     }
     AlertDialog(

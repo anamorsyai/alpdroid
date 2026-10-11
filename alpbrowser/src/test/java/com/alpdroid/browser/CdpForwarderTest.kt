@@ -43,8 +43,8 @@ class CdpForwarderTest {
         return s
     }
 
-    private fun forwarder(devtools: ServerSocket): CdpForwarder {
-        val f = CdpForwarder(token, { val s = Socket("127.0.0.1", devtools.localPort); CdpForwarder.Link(s.getInputStream(), s.getOutputStream(), { s.close() }) })
+    private fun forwarder(devtools: ServerSocket, open: Boolean = false): CdpForwarder {
+        val f = CdpForwarder(token, { val s = Socket("127.0.0.1", devtools.localPort); CdpForwarder.Link(s.getInputStream(), s.getOutputStream(), { s.close() }) }, { open })
         f.start(0)
         forwarders += f
         return f
@@ -74,6 +74,19 @@ class CdpForwarderTest {
         assertTrue(r, r.contains("ws://127.0.0.1:9222/$token/devtools/browser/abc"))
         val declared = Regex("Content-Length: (\\d+)").find(r)!!.groupValues[1].toInt()
         assertEquals(declared, r.substringAfter("\r\n\r\n").toByteArray().size)
+    }
+
+    @Test fun `with open local access a program needs no token but a web page is refused`() {
+        val seen = ArrayList<String>()
+        val f = forwarder(fakeDevtools(seen), open = true)
+        val r = get(f.port, "/json/version")
+        assertTrue(r, r.startsWith("HTTP/1.1 200"))
+        assertTrue(r, r.contains("ws://127.0.0.1:9222/devtools/browser/abc"))
+        assertFalse(r.contains(token))
+        assertTrue(get(f.port, "/json/version", "Origin: https://evil.test\r\n").startsWith("HTTP/1.1 401"))
+        assertTrue(get(f.port, "/json/version", "Sec-Fetch-Mode: cors\r\n").startsWith("HTTP/1.1 401"))
+        // The token form keeps working, and still puts the token in the urls.
+        assertTrue(get(f.port, "/$token/json/version").contains("/$token/devtools/browser/abc"))
     }
 
     @Test fun `the bearer header works too`() {

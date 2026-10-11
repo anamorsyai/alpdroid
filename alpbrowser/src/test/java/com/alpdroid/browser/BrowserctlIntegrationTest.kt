@@ -27,6 +27,7 @@ class BrowserctlIntegrationTest {
     private val store = TransactionStore()
     private val intercept = InterceptController()
     private var capture = false
+    private var openAccess = true
     private var scope: List<String> = emptyList()
     private val pageArgs = ArrayList<JSONObject>()
     private val evaluated = ArrayList<String>()
@@ -79,7 +80,7 @@ class BrowserctlIntegrationTest {
                 override fun set(enabled: Boolean, preferredPort: Int?) = JSONObject().put("enabled", enabled).put("port", preferredPort ?: 9222)
                     .put("webSocketDebuggerUrl", "ws://127.0.0.1:9222/$token/devtools/browser/abc").put("ok", true)
             },
-            appVersion = "t",
+            appVersion = "t", openAccess = { openAccess },
         )
         bridge.start()
     }
@@ -204,5 +205,30 @@ class BrowserctlIntegrationTest {
         assertEquals("0", ctl("cdp", "off").out.trim())
         assertTrue(ctl("cookies", "--domain", "api.test").out.contains("sid"))
         assertEquals(0, ctl("setcookie", "sid", "9", "--domain", "api.test").code)
+    }
+
+    private fun rawStatus(vararg headers: String): Int {
+        java.net.Socket("127.0.0.1", bridge.boundPort).use { sock ->
+            sock.soTimeout = 5000
+            sock.getOutputStream().write(("GET /v1/ping HTTP/1.1\r\n" + headers.joinToString("") { "$it\r\n" } + "\r\n").toByteArray())
+            return sock.getInputStream().bufferedReader().readLine().split(' ')[1].toInt()
+        }
+    }
+
+    @Test fun `open local access needs no token for programs but refuses web pages`() {
+        assertEquals(0, ctl("ping", tok = "").code)
+        assertEquals(200, rawStatus("Host: 127.0.0.1:${bridge.boundPort}"))
+        assertEquals(401, rawStatus("Host: 127.0.0.1:${bridge.boundPort}", "Origin: https://evil.test"))
+        assertEquals(401, rawStatus("Host: 127.0.0.1:${bridge.boundPort}", "Sec-Fetch-Site: cross-site"))
+        assertEquals(401, rawStatus("Host: rebind.evil.test:${bridge.boundPort}"))
+        assertEquals(401, rawStatus("Host: evil.test"))
+        assertEquals(200, rawStatus("Host: localhost:${bridge.boundPort}"))
+    }
+
+    @Test fun `with open local access off the token is required again`() {
+        openAccess = false
+        assertTrue(ctl("ping", tok = "").code != 0)
+        assertEquals(401, rawStatus("Host: 127.0.0.1:${bridge.boundPort}"))
+        assertEquals(0, ctl("ping").code)
     }
 }

@@ -41,15 +41,12 @@ if [ -z "${ALPBROWSER_TOKEN:-}" ] && [ -r "$ENVFILE" ]; then
 fi
 TOK="${ALPBROWSER_TOKEN:-}"
 PORT="${ALPBROWSER_PORT:-8899}"
-if [ -z "$TOK" ]; then
-  echo "AlpBrowser is not linked yet. Install it from AlpDroid → Settings → About → AlpBrowser, open it once, then start a new shell." >&2
-  exit 3
-fi
-# Only a plain token and a plain port ever reach a URL or header.
+# No token is needed on this phone (AlpBrowser's "Open local access", on by default); a token, when one is known, is
+# still sent so it also works with that setting off. Only a plain token and a plain port ever reach a URL or header.
 case "$TOK" in *[!A-Za-z0-9]*) echo "browserctl: the AlpBrowser token looks malformed" >&2; exit 3 ;; esac
 case "$PORT" in ''|*[!0-9]*) echo "browserctl: the AlpBrowser port looks malformed" >&2; exit 3 ;; esac
 BASE="http://127.0.0.1:$PORT/v1"
-H="Authorization: Bearer $TOK"
+if [ -n "$TOK" ]; then H="Authorization: Bearer $TOK"; else H="X-Client: browserctl"; fi
 
 die() { echo "browserctl: $*" >&2; exit 2; }
 

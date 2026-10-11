@@ -62,6 +62,10 @@ class AlpBrowserApp : Application() {
 
     /** Chrome remote debugging (CDP/DevTools). OFF by default: it opens a process-wide debugging
      *  socket any local app could attach to, so it is an explicit opt-in the agent/user turns on. */
+    /** Open local access: programs on this phone (AlpDroid, browserctl, Playwright) need no token. On by default. */
+    fun openLocalAccess(): Boolean = prefs.getBoolean("openLocal", true)
+    fun setOpenLocalAccess(on: Boolean) { prefs.edit().putBoolean("openLocal", on).apply() }
+
     fun devtoolsEnabled(): Boolean = prefs.getBoolean("devtools", false)
     fun setDevtoolsEnabled(on: Boolean) {
         prefs.edit().putBoolean("devtools", on).apply()
@@ -84,7 +88,7 @@ class AlpBrowserApp : Application() {
                 } catch (e: Exception) { last = e }
             }
             throw java.io.IOException("DevTools socket not found", last)
-        })
+        }, { openLocalAccess() })
     }
 
     private val cdpControl = object : CdpControl {
@@ -92,7 +96,7 @@ class AlpBrowserApp : Application() {
             val on = devtoolsEnabled()
             val out = org.json.JSONObject().put("ok", true).put("enabled", on).put("port", if (on) cdpForwarder.port else 0)
             if (!on || cdpForwarder.port == 0) return out
-            val base = "http://127.0.0.1:${cdpForwarder.port}/$controlToken"
+            val base = "http://127.0.0.1:${cdpForwarder.port}" + if (openLocalAccess()) "" else "/$controlToken"
             out.put("browserUrl", base)
             // Ask DevTools (through our own forwarder) for the browser-level WebSocket URL, with the token already in it.
             runCatching {
@@ -268,6 +272,7 @@ class AlpBrowserApp : Application() {
             page = pageAutomation,
             appVersion = BuildConfig.VERSION_NAME,
             cdp = cdpControl,
+            openAccess = ::openLocalAccess,
             onClear = ::clearBrowserData,
             preferredPort = CONTROL_PORT,
         )

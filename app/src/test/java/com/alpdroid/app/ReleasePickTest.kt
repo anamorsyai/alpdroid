@@ -29,10 +29,23 @@ class ReleasePickTest {
         assertEquals("v1.7.75", (p as AppUpdater.Pick.Found).release.getString("tag_name"))
     }
 
-    @Test fun firstNotNewerInChannelStopsTheSearch() {
-        // Already current: stop at once — this is what keeps the auto-check at one request per channel.
+    @Test fun alreadyCurrentOffersNothing() {
         val p = AppUpdater.pickFromPage(page(release("v1.7.74"), release("v1.7.73")), appBelongs, appNewer("1.7.74"))
-        assertSame(AppUpdater.Pick.Stop, p)
+        assertSame(AppUpdater.Pick.Continue, p)
+    }
+
+    @Test fun newestVersionIsChosenEvenWhenTheListIsNotInVersionOrder() {
+        // GitHub listed alpbrowser-v0.6.10 below v0.6.2 (it sorts tags as text). The installed 0.6.9 must still see 0.6.10.
+        val p = AppUpdater.pickFromPage(
+            page(release("alpbrowser-v0.6.9"), release("alpbrowser-v0.6.8"), release("alpbrowser-v0.6.2"), release("alpbrowser-v0.6.10"), release("alpbrowser-v0.6.1")),
+            browserBelongs, browserNewer("0.6.9"),
+        )
+        assertEquals("alpbrowser-v0.6.10", (p as AppUpdater.Pick.Found).release.getString("tag_name"))
+    }
+
+    @Test fun theHighestOfSeveralNewerReleasesWins() {
+        val p = AppUpdater.pickFromPage(page(release("v1.7.76"), release("v1.7.100"), release("v1.7.99")), appBelongs, appNewer("1.7.74"))
+        assertEquals("v1.7.100", (p as AppUpdater.Pick.Found).release.getString("tag_name"))
     }
 
     @Test fun otherChannelsReleasesAreSkippedAndSearchContinues() {

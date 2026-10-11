@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The AlpBrowser update check no longer misses a new version: GitHub lists releases out of version order (0.6.10 appeared below 0.6.2), so the check now looks at every release and offers the highest version.
+
 ## 1.7.90 — Profile deletion that works (AlpBrowser 0.6.10)
 
 - `browserctl profile delete` works right after the tab is closed. When the browser engine still holds the profile, it is emptied and hidden at once (its name can be reused immediately) and removed from disk at the next start.

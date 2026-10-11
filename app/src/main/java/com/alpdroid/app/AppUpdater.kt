@@ -112,28 +112,38 @@ object AppUpdater {
     /** What one page of releases tells the search to do next. Pure, so it is unit-tested without a network. */
     internal sealed class Pick {
         class Found(val release: org.json.JSONObject, val asset: org.json.JSONObject) : Pick()
-        /** An in-channel release that is NOT newer: releases are newest-first, so nothing further down can be either. */
-        object Stop : Pick()
-        /** Nothing decisive on this page (other channel's releases, drafts…) — look at the next one. */
+        /** Nothing newer on this page (other channel's releases, drafts, or ones that are not newer) — look at the next one. */
         object Continue : Pick()
     }
 
+    /** `v1.7.90` / `alpbrowser-v0.6.10` -> the bare version, for ordering releases of one channel. */
+    private fun tagVersion(tag: String): String = tag.substringAfterLast('-').removePrefix("v")
+
+    /**
+     * The newest release on this page that belongs to the channel, is [newer] than what is installed and carries an APK.
+     * GitHub does not list releases in version order (an `alpbrowser-v0.6.10` can sit below `alpbrowser-v0.6.2`), so the
+     * highest version is chosen explicitly instead of trusting the first match or stopping at the first "not newer" one.
+     */
     internal fun pickFromPage(releases: org.json.JSONArray, belongs: (String) -> Boolean, newer: (String) -> Boolean): Pick {
+        var best: Pick.Found? = null
         for (i in 0 until releases.length()) {
             val r = releases.optJSONObject(i) ?: continue
             // Drafts AND prereleases are skipped: a prerelease with a higher tag would
             // otherwise be offered as a stable update to every auto-checking client.
             if (r.optBoolean("draft") || r.optBoolean("prerelease")) continue
             val tag = r.optString("tag_name")
-            if (!belongs(tag)) continue
-            if (!newer(tag)) return Pick.Stop
+            if (!belongs(tag) || !newer(tag)) continue
             val assets = r.optJSONArray("assets") ?: continue
             for (j in 0 until assets.length()) {
                 val a = assets.optJSONObject(j) ?: continue
-                if (a.optString("name").endsWith(".apk")) return Pick.Found(r, a)
+                if (a.optString("name").endsWith(".apk")) {
+                    val cur = best
+                    if (cur == null || isNewer(tagVersion(tag), tagVersion(cur.release.optString("tag_name")))) best = Pick.Found(r, a)
+                    break
+                }
             }
         }
-        return Pick.Continue
+        return best ?: Pick.Continue
     }
 
     /**
@@ -145,8 +155,9 @@ object AppUpdater {
      * under GitHub's unauthenticated 60-requests-per-hour limit.
      */
     private fun selectRelease(context: Context, belongs: (String) -> Boolean, newer: (String) -> Boolean, installedName: String?): Update? {
+        var best: Pick.Found? = null
         for (page in 1..MAX_RELEASE_PAGES) {
-            val conn = openApi(context, "https://api.github.com/repos/$RELEASES_REPO/releases?per_page=30&page=$page")
+            val conn = openApi(context, "https://api.github.com/repos/$RELEASES_REPO/releases?per_page=$PER_PAGE&page=$page")
             val text = try {
                 val code = conn.responseCode
                 if (code == 403 || code == 429) throw RateLimitedException()
@@ -155,25 +166,27 @@ object AppUpdater {
             } finally { conn.disconnect() }
             val releases = org.json.JSONArray(text)
             if (releases.length() == 0) break // no more pages
-            when (val p = pickFromPage(releases, belongs, newer)) {
-                is Pick.Found -> {
-                    val r = p.release
-                    val a = p.asset
-                    val tag = r.optString("tag_name")
-                    // The API asset URL (not browser_download_url): with Accept: octet-stream +
-                    // auth it 302s to a signed host. browser_download_url without auth just 404s
-                    // on a private repo, and sending the bearer token to a redirect host leaks it.
-                    return Update(tag, r.optString("name", tag), r.optString("body", ""), a.optString("browser_download_url"), a.optString("url"), a.optLong("size"), sha256Of(a.optString("digest")), a.optString("name"),
-                        delta = findDelta(r.optJSONArray("assets"), installedName))
-                }
-                Pick.Stop -> return null
-                Pick.Continue -> {}
+            val p = pickFromPage(releases, belongs, newer)
+            if (p is Pick.Found) {
+                val cur = best
+                if (cur == null || isNewer(tagVersion(p.release.optString("tag_name")), tagVersion(cur.release.optString("tag_name")))) best = p
             }
+            if (releases.length() < PER_PAGE) break // that was the last page
         }
-        return null
+        val found = best ?: return null
+        val r = found.release
+        val a = found.asset
+        val tag = r.optString("tag_name")
+        // The API asset URL (not browser_download_url): with Accept: octet-stream +
+        // auth it 302s to a signed host. browser_download_url without auth just 404s
+        // on a private repo, and sending the bearer token to a redirect host leaks it.
+        return Update(tag, r.optString("name", tag), r.optString("body", ""), a.optString("browser_download_url"), a.optString("url"), a.optLong("size"), sha256Of(a.optString("digest")), a.optString("name"),
+            delta = findDelta(r.optJSONArray("assets"), installedName))
     }
 
-    private const val MAX_RELEASE_PAGES = 4
+    private const val PER_PAGE = 100
+
+    private const val MAX_RELEASE_PAGES = 3
 
     /**
      * The delta asset made for the installed version: `<apk name>-from-<installed versionName>.adp`. CI attaches one for

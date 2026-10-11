@@ -32,6 +32,18 @@ class OpencodeWebTest {
         assertTrue(cmd.contains("giving up"))
     }
 
+    @Test fun sigkillAlwaysRestartsAndNeverGivesUp() {
+        val cmd = OpencodeWeb.command(4096, true, "x")
+        // 137 (SIGKILL by Android's killer) is handled on its own, before the give-up check, and loops back.
+        val kill = cmd.indexOf("code -eq 137")
+        val giveUp = cmd.indexOf("giving up")
+        assertTrue("SIGKILL must be handled", kill >= 0)
+        assertTrue("SIGKILL branch comes before the give-up check", kill < giveUp)
+        val branch = cmd.substring(kill, giveUp)
+        assertTrue("SIGKILL restarts the loop", branch.contains("continue"))
+        assertTrue("SIGKILL resets the quick-failure counter", branch.contains("quick=0"))
+    }
+
     /** Behaves like opencode v2: the page at "/" is open, "/api" paths need the Basic login. */
     private fun fakeServer(): ServerSocket {
         val good = "Basic " + Base64.getEncoder().encodeToString("opencode:secret".toByteArray())

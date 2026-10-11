@@ -51,8 +51,16 @@ object OpencodeWeb {
     /**
      * The command run as the background service. [lan] true binds 0.0.0.0, false 127.0.0.1.
      * The binary is resolved in the guest (opencode, else opencode2). LD_PRELOAD gcompat: bun's FFI stub needs a
-     * glibc symbol musl lacks. Restart policy: exit 0, Ctrl+C (130) and SIGTERM (143) end it; anything else
-     * (a crash, SIGKILL 137) restarts after 2, 4, 8 … 30 s, and five quick failures in a row give up.
+     * glibc symbol musl lacks.
+     *
+     * Restart policy:
+     *  - exit 0, Ctrl+C (130) and SIGTERM (143) end it for good;
+     *  - SIGKILL (137) is Android's own phantom-process / low-memory killer reaping a background child, NOT opencode
+     *    failing — the server ran fine and will run fine again — so it is ALWAYS brought back and never counts towards
+     *    giving up (this is the "it keeps getting killed every little while" case); the backoff resets whenever the
+     *    server had been up at least 60 s, so a kill after real work restarts in ~2 s rather than the 30 s cap;
+     *  - any other non-zero exit is a genuine crash or a failure to start: it backs off 2, 4, 8 … 30 s and gives up
+     *    only after five *quick* failures in a row (each under 60 s uptime), so a program that cannot run does not spin.
      */
     fun command(port: Int, lan: Boolean, password: String): String {
         val host = if (lan) "0.0.0.0" else "127.0.0.1"
@@ -68,6 +76,8 @@ object OpencodeWeb {
             append("\"\$BIN\" serve --hostname $host --port $port; code=\$?; ")
             append("[ \$code -eq 0 ] || [ \$code -eq 130 ] || [ \$code -eq 143 ] && exit \$code; ")
             append("if [ \$((\$(date +%s) - t0)) -ge 60 ]; then wait_s=2; quick=0; else quick=\$((quick + 1)); fi; ")
+            // SIGKILL (137): Android killed the background process, not opencode crashing — always restart, never give up.
+            append("if [ \$code -eq 137 ]; then quick=0; echo \"[AlpDroid] opencode was killed by Android (137, phantom-process/low-memory killer) — restarting in \${wait_s}s\"; sleep \$wait_s; wait_s=\$((wait_s * 2)); [ \$wait_s -gt 30 ] && wait_s=30; continue; fi; ")
             append("if [ \$quick -ge 5 ]; then echo \"[AlpDroid] opencode keeps failing (exit \$code) — giving up\"; exit \$code; fi; ")
             append("echo \"[AlpDroid] opencode exited (\$code) — restarting in \${wait_s}s\"; ")
             append("sleep \$wait_s; wait_s=\$((wait_s * 2)); [ \$wait_s -gt 30 ] && wait_s=30; ")

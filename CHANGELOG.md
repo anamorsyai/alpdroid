@@ -13,6 +13,12 @@ Linux box `/tmp` is wiped on every boot; AlpDroid's process can run for days, so
   Once it passes ~3 GB it removes the oldest scratch back down to ~1 GB, but never touches anything
   modified in the last 15 minutes, so an in-progress download or build is left completely alone.
 - Settings now shows the current guest `/tmp` size under Sessions & Background.
+- Fixed (opencode web kept dying): when Android's phantom-process / low-memory killer reaped the
+  background server (exit 137), the restart loop counted it as a failure and, after a few quick
+  kills, gave up for good — so it "kept getting killed every little while" and eventually stayed
+  down. A kill by Android is now always restarted and never counts towards giving up; only a server
+  that genuinely crashes or cannot start still backs off and stops. (The full cure for the repeated
+  kills is still the one-time adb command under Settings → "Copy adb fix".)
 
 ## 1.7.68 — deeper review: fewer syscalls, a memory-leak fix, background-service and reflow bugs
 

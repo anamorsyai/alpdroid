@@ -18,7 +18,7 @@ class CdpForwarderTest {
     @After fun tearDown() { forwarders.forEach { it.stop() }; servers.forEach { runCatching { it.close() } } }
 
     /** A stand-in for WebView's DevTools socket: answers /json/version, and echoes WebSocket bytes after an upgrade. */
-    private fun fakeDevtools(seen: MutableList<String>): ServerSocket {
+    private fun fakeDevtools(seen: MutableList<String>, holdOpen: Boolean = false): ServerSocket {
         val s = ServerSocket(0).also { servers += it }
         thread(isDaemon = true) {
             while (!s.isClosed) try {
@@ -36,6 +36,8 @@ class CdpForwarderTest {
                     } else {
                         val body = """{"Browser":"Chrome/1","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/browser/abc"}"""
                         it.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\n\r\n$body".toByteArray())
+                        it.getOutputStream().flush()
+                        if (holdOpen) Thread.sleep(30_000)
                     }
                 } }
             } catch (_: Exception) { }
@@ -87,6 +89,14 @@ class CdpForwarderTest {
         assertTrue(get(f.port, "/json/version", "Sec-Fetch-Mode: cors\r\n").startsWith("HTTP/1.1 401"))
         // The token form keeps working, and still puts the token in the urls.
         assertTrue(get(f.port, "/$token/json/version").contains("/$token/devtools/browser/abc"))
+    }
+
+    @Test fun `a DevTools that keeps the connection open after answering still gets its answer through`() {
+        val f = forwarder(fakeDevtools(ArrayList(), holdOpen = true), open = true)
+        val t0 = System.currentTimeMillis()
+        val r = get(f.port, "/json/version")
+        assertTrue(r, r.startsWith("HTTP/1.1 200") && r.contains("webSocketDebuggerUrl"))
+        assertTrue("answered by length, not by waiting for the socket to close", System.currentTimeMillis() - t0 < 4_000)
     }
 
     @Test fun `the bearer header works too`() {

@@ -53,7 +53,14 @@ die() { echo "browserctl: $*" >&2; exit 2; }
 # ---- HTTP ----------------------------------------------------------------------------------------------------
 # wget's own exit status is preserved and returned (the trailing `echo` that gives a readable trailing newline
 # would otherwise reset $? to 0 on every call, silently turning every failed request into an apparent success).
-fail_hint() { echo "browserctl: request failed (exit $1) — is AlpBrowser open and linked? try: browserctl ping" >&2; }
+# Says what is actually wrong: if AlpBrowser answers a ping it IS running, so the failure was this request (rejected or timed out).
+fail_hint() {
+  if wget -qO- -T 5 --header "$H" "$BASE/ping" >/dev/null 2>&1; then
+    echo "browserctl: the request failed (exit $1) although AlpBrowser is running: it was rejected or took too long. Wait for the page (browserctl waitnav) and retry." >&2
+  else
+    echo "browserctl: cannot reach AlpBrowser (exit $1) — is it open? try: browserctl ping" >&2
+  fi
+}
 get() {
   wget -qO- --header "$H" "$BASE$1" 2>/dev/null
   st=$?

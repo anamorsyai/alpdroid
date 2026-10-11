@@ -13,8 +13,10 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import org.json.JSONObject
 
 /**
@@ -29,7 +31,7 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
 
     /** Exposed to pages as `__alpbridge`. Only completes a call whose (random, unguessable) id this process issued. */
     inner class JsBridge {
-        @JavascriptInterface fun done(id: String, json: String) { pending.remove(id)?.complete(json) }
+        @JavascriptInterface fun done(id: String, json: String) { pending[id]?.complete(json) }
     }
     val jsBridge = JsBridge()
 
@@ -41,7 +43,7 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
     }
 
     /** Runs [body] (an async function body) in the page and waits for it to settle. */
-    private suspend fun callAsync(wv: WebView, body: String, timeoutMs: Long, tab: BrowserTab? = null): JSONObject {
+    private suspend fun callAsync(wv: WebView, body: String, timeoutMs: Long, tab: BrowserTab? = null, wrap: Boolean = false): JSONObject {
         val seq0 = tab?.navSeq
         val id = ByteArray(12).also { random.nextBytes(it) }.joinToString("") { "%02x".format(it) }
         val done = CompletableDeferred<String>()
@@ -56,7 +58,7 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
             if (!j.optBoolean("ok")) return fail(j.optString("error", "script failed"))
             val out = JSONObject().put("ok", true)
             val v = j.opt("v")
-            if (v is JSONObject) v.keys().forEach { out.put(it, v.get(it)) } else out.put("result", v ?: JSONObject.NULL)
+            if (v is JSONObject && !wrap) v.keys().forEach { out.put(it, v.get(it)) } else out.put("result", v ?: JSONObject.NULL)
             return out
         } finally { pending.remove(id) }
     }
@@ -74,7 +76,26 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
 
     override fun eval(js: String, await: Boolean, timeoutMs: Long): JSONObject = runBlocking {
         val (tab, wv) = front() ?: return@runBlocking fail("no page is open")
-        callAsync(wv, AutomationJs.evalBody(js), timeoutMs, tab)
+        val seq0 = tab.navSeq
+        val host = object : EvalHost {
+            override suspend fun raw(script: String): String? = withTimeoutOrNull(timeoutMs) {
+                withContext(Dispatchers.Main) {
+                    suspendCancellableCoroutine<String?> { c -> wv.evaluateJavascript(script) { r -> if (c.isActive) c.resume(r) } }
+                }
+            }
+            override fun newId(): String {
+                val id = ByteArray(12).also { random.nextBytes(it) }.joinToString("") { "%02x".format(it) }
+                pending[id] = CompletableDeferred()
+                return id
+            }
+            override suspend fun report(id: String, timeoutMs: Long): String? =
+                try { pending[id]?.let { d -> withTimeoutOrNull(timeoutMs) { d.await() } } } finally { pending.remove(id) }
+            override suspend fun asyncBody(body: String, timeoutMs: Long): JSONObject {
+                return callAsync(wv, body, timeoutMs, tab, wrap = true)
+            }
+            override fun navigated() = tab.navSeq != seq0
+        }
+        EvalPlanner(host).run(js, timeoutMs)
     }
 
     // ------------------------------------------------------------------------------------------------- navigation

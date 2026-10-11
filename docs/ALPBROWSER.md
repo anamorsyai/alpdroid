@@ -145,7 +145,7 @@ Selectors are standard CSS selectors. Time values are in milliseconds. Every com
 | `text <sel>` · `attr <sel> <name>` · `html [sel]` | Read an element's text, an attribute (`value`, `checked`, `selected` and `disabled` return the live state), or HTML. |
 | `exists <sel>` | Report whether the element exists and is visible (exit `1` if not). |
 | `waitfor <sel> [--state visible\|hidden\|attached] [--timeout ms]` | Wait for an element. |
-| `eval '<js>'` · `eval --file <path>` · `eval --stdin` `[--await] [--timeout ms]` | Run JavaScript in the page. Long, multi-line scripts and any language are supported; `--await` waits for a promise. |
+| `eval '<js>'` · `eval --file <path>` · `eval --stdin` `[--timeout ms]` | Run JavaScript in the page and print its value. Works on sites with a strict Content-Security-Policy. The script can be an expression (a promise or `await` is waited for), a list of statements (the value of the last expression is printed), or statements that `return` a value. Long, multi-line scripts and any language are supported. |
 | `shot [--selector css] [--full-page] [--out path] [--format png\|jpeg]` | Screenshot of the visible page, one element, or the whole page. Needs the Browser screen to be on screen. |
 | `cookies [--domain d]` · `setcookie <name> <value> [--domain d] [--path p]` | Read or set cookies. Android exposes name and value only. |
 | `cdp [port]` · `cdp off` · `cdp --json` | Turn on remote debugging and print the WebSocket address for Playwright or Puppeteer. |

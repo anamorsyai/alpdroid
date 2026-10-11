@@ -26,6 +26,8 @@ class CdpForwarder(
     /** An open connection to DevTools and how to close it. */
     class Link(val input: InputStream, val output: OutputStream, val close: () -> Unit = {})
 
+    private companion object { const val READ_LIMIT_MS = 8_000L }
+
     @Volatile private var server: ServerSocket? = null
     private val pool = Executors.newCachedThreadPool { r -> Thread(r, "alp-cdp").apply { isDaemon = true } }
 
@@ -125,13 +127,42 @@ class CdpForwarder(
                 return
             }
             // A plain request: read the whole answer, then (for the /json listings) put the token into the WebSocket URLs.
-            val all = ByteArrayOutputStream()
-            val buf = ByteArray(8192)
-            while (true) { val n = uin.read(buf); if (n < 0) break; all.write(buf, 0, n) }
-            val raw = all.toByteArray()
+            val raw = readResponse(uin, link)
             cout.write(if (path.startsWith("/json") && tokened) rewrite(raw) else raw)
             cout.flush()
         } finally { runCatching { link.close() } }
+    }
+
+    /**
+     * Reads one HTTP response from DevTools: the head, then exactly `Content-Length` bytes. DevTools keeps the
+     * connection open after answering (it ignores `Connection: close`), so waiting for the socket to close would never
+     * return; a response without a length is read until the socket closes or [READ_LIMIT_MS] passes, whichever is first.
+     */
+    private fun readResponse(uin: InputStream, link: Link): ByteArray {
+        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+        Thread({ Thread.sleep(READ_LIMIT_MS); if (!finished.get()) runCatching { link.close() } }, "alp-cdp-limit").apply { isDaemon = true }.start()
+        try {
+            val all = ByteArrayOutputStream()
+            val buf = ByteArray(8192)
+            var headEnd = -1
+            var total = -1
+            while (true) {
+                val n = try { uin.read(buf) } catch (e: java.io.IOException) { -1 }
+                if (n < 0) break
+                all.write(buf, 0, n)
+                if (headEnd < 0) {
+                    val text = String(all.toByteArray(), Charsets.ISO_8859_1)
+                    val i = text.indexOf("\r\n\r\n")
+                    if (i >= 0) {
+                        headEnd = i + 4
+                        val cl = Regex("(?im)^Content-Length:\\s*(\\d+)").find(text.substring(0, i))?.groupValues?.get(1)?.toIntOrNull()
+                        if (cl != null) total = headEnd + cl
+                    }
+                }
+                if (total >= 0 && all.size() >= total) break
+            }
+            return all.toByteArray()
+        } finally { finished.set(true) }
     }
 
     private fun pipe(from: InputStream, to: OutputStream) {

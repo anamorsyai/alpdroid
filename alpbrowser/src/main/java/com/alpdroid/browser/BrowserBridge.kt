@@ -164,7 +164,11 @@ class BrowserBridge(
 
             val raw = try { rawRoute(method, path, query) } catch (e: Exception) { Raw(500, "application/json", error(e.message ?: "error").toString().toByteArray()) }
             if (raw != null) { respondRaw(sock.getOutputStream(), raw); return }
-            val (code, json) = try { route(method, path, query, body) } catch (e: Exception) { 500 to error(e.message ?: "error") }
+            val (code, json) = try { route(method, path, query, body) } catch (e: Exception) {
+                // Page commands answer 200 with {"ok":false,...} so the client can print the reason; a bare HTTP error would only show as "request failed".
+                val automation = path == "/v1/eval" || path == "/v1/act" || path == "/v1/navigate" || path == "/v1/waitnav" || path == "/v1/cookies" || path == "/v1/cdp"
+                (if (automation) 200 else 500) to error("${e.javaClass.simpleName}: ${e.message ?: "error"}")
+            }
             respond(sock.getOutputStream(), code, json)
         }
     }

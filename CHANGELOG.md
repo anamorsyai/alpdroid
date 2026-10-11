@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `browserctl eval` now works on sites with a strict Content-Security-Policy or Trusted Types (GitHub, YouTube and similar). It accepts an expression (promises and `await` included), a list of statements (the value of the last expression comes back) or statements with `return`.
+- Remote DevTools (`browserctl cdp`) answers reliably: its address responds right away instead of waiting on the browser's DevTools connection.
+- Clearer errors from `browserctl`: when AlpBrowser is running but a request fails, it says the request was rejected or took too long instead of suggesting AlpBrowser is closed, and page commands that fail always print the reason.
+
 ## 1.7.81 — Tokenless local control (AlpBrowser 0.6.1)
 
 - No more tokens between AlpDroid and AlpBrowser: programs on the phone (the agent, `browserctl`, Playwright/Puppeteer over `cdp`) control AlpBrowser directly. Web pages are still refused, and Settings → Open local access turns the token requirement back on.

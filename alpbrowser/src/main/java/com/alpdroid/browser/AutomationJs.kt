@@ -64,6 +64,38 @@ return await fn(ARGS);
             "__out=JSON.stringify({ok:true,v:(__v===undefined?null:__v)})}catch(e){__out=JSON.stringify({ok:false,error:String((e&&e.message)||e)})}" +
             "try{__alpbridge.done(__id,__out)}catch(e){}})();"
 
-    /** Body for `eval --await`: runs the script text with indirect eval and awaits whatever it evaluates to. */
-    fun evalBody(script: String): String = "return await (0,eval)(" + JSONObject.quote(script) + ");"
+    /** What a probe or an expression wrapper answers when the page accepted (compiled) the script. */
+    const val OK_MARK = "__ALP_OK__"
+
+    /** What the statement wrapper answers when the script threw (the message itself arrives through the bridge). */
+    const val ERR_MARK = "__ALP_ERR__"
+
+    private fun report(id: String) = "const __f=(o)=>{try{__alpbridge.done(" + JSONObject.quote(id) + ",o)}catch(e){}};" +
+        "const __ok=(v)=>{try{return JSON.stringify({ok:true,v:(v===undefined?null:v)})}catch(e){return JSON.stringify({ok:true,v:String(v)})}};" +
+        "const __er=(e)=>JSON.stringify({ok:false,error:String((e&&e.message)||e)});"
+
+    /**
+     * `eval` runs the user's script as page code handed straight to `evaluateJavascript` — never through `eval()`,
+     * `new Function` or an injected `<script>` — so a page's Content-Security-Policy / Trusted Types cannot refuse it.
+     * The answer to the first attempt is [OK_MARK] when the page compiled the script, which is how the cases below are told
+     * apart (a syntax error and a script that evaluates to `undefined` otherwise look the same).
+     *
+     * 1. [evalExpression]: the script is an expression (promises and `await` included); its value is reported through the bridge.
+     * 2. [evalProbe]: is it a valid list of statements at all? Compiles it inside an async function without running it.
+     * 3. statements using `return` or `await` run as an async function body ([asyncBody]);
+     * 4. other statements run directly ([evalStatements]) so the value of the last expression comes back, as eval would give it.
+     */
+    fun evalExpression(id: String, script: String): String =
+        "(()=>{" + report(id) + "Promise.resolve((async()=>(\n" + script + "\n))()).then((v)=>__f(__ok(v)),(e)=>__f(__er(e)));return '" + OK_MARK + "'})()"
+
+    fun evalProbe(script: String): String = "(async()=>{\n" + script + "\n},'" + OK_MARK + "')"
+
+    fun asyncBody(script: String): String = script
+
+    fun evalStatements(id: String, script: String): String =
+        "try{\n" + script + "\n}catch(__e){try{__alpbridge.done(" + JSONObject.quote(id) +
+            ",JSON.stringify({ok:false,error:String((__e&&__e.message)||__e)}))}catch(_){}\n'" + ERR_MARK + "'}"
+
+    /** True when [script] needs the async-function form (it uses `return` or `await`). */
+    fun needsAsyncBody(script: String): Boolean = Regex("\\b(return|await)\\b").containsMatchIn(script)
 }

@@ -259,7 +259,16 @@ class AlpBrowserApp : Application() {
             return tab.id
         }
         override fun profiles(): List<String> = onMainBlocking { Profiles.names() } ?: emptyList()
-        override fun deleteProfile(name: String): Boolean = onMainBlocking { Profiles.delete(name) } ?: false
+        override fun deleteProfile(name: String): Boolean {
+            // Only a tab that still exists can legitimately block this. A closed tab's WebView is released by the engine a
+            // moment after destroy(), so give that a few seconds (and a nudge to collect it) before reporting failure.
+            if (onMainBlocking { holder.tabs.any { it.profile == name } || name !in Profiles.names() } != false) return false
+            repeat(12) { attempt ->
+                if (onMainBlocking { Profiles.delete(name) } == true) return true
+                if (attempt < 11) { System.gc(); Thread.sleep(250) }
+            }
+            return false
+        }
         override fun switchTo(id: Int) = onMainBlocking { holder.switchTo(id) } ?: false
         override fun close(id: Int) = onMainBlocking { holder.close(id) } ?: false
     }

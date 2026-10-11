@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `browserctl profile delete` no longer reports "a tab is still using it" after the tab was closed: it waits a few seconds for the engine to release the profile before giving up.
+
 ## 1.7.88 — Per-tab profiles, cookie attributes, WebSocket and event-stream capture (AlpBrowser 0.6.8)
 
 - `browserctl tab new --profile <name>` opens a tab with its own cookies and storage, so two logins can be tested side by side; `profile list` and `profile delete` manage them, and `cookies` / `setcookie` follow the front tab's profile. If the WebView cannot provide a separate profile, no tab is opened.

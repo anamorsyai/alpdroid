@@ -1,0 +1,1 @@
+Centres the AlpBrowser icon and fixes deleting a profile after its tab was closed.

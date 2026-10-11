@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.89 — Icon centring and profile deletion fix (AlpBrowser 0.6.9)
 
 - The AlpBrowser icon is centred: the globe and its badge now sit on the middle of the icon.
 - `browserctl profile delete` no longer reports "a tab is still using it" after the tab was closed: it waits a few seconds for the engine to release the profile before giving up.

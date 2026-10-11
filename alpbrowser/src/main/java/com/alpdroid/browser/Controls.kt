@@ -19,7 +19,7 @@ interface PageControl {
     /** A screenshot of the front tab as image bytes, or an error object. */
     fun screenshot(selector: String?, fullPage: Boolean, jpeg: Boolean): Pair<ByteArray?, JSONObject?>
     fun cookies(domain: String?): JSONObject
-    fun setCookie(name: String, value: String, domain: String?, path: String?): JSONObject
+    fun setCookie(cookie: CookieSpec): JSONObject
 }
 
 /** Remote debugging (CDP) on a loopback port, gated by the control token. */

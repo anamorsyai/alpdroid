@@ -10,7 +10,7 @@
 #            click <sel> | fill <sel> <text> | type <sel> <text> [--delay ms] | press <key> | text <sel> | attr <sel> <name>
 #            exists <sel> | html [sel] | waitfor <sel> [--state visible|hidden|attached] | waitnav [--state ...]   (each takes --timeout ms)
 #            shot [--selector css] [--full-page] [--out path] [--format png|jpeg]
-#            cookies [--domain d] | setcookie <name> <value> [--domain d] [--path p]
+#            cookies [--domain d] | setcookie <name> <value> [--domain d] [--path p] [--secure] [--httponly] [--samesite Lax|Strict|None] [--expires epoch] [--max-age s]
 #            cdp [port] | cdp off | cdp --json     remote debugging for Puppeteer/Playwright (prints the WebSocket URL)
 # Capture:   capture [on|off]     route the page through the proxy (needed for decrypted History); off = fast direct browsing
 # Tabs:      tabs | tab new [url] | tab switch <id> | tab close <id>
@@ -153,7 +153,7 @@ autof() {
 }
 # Positional arguments land in A1 A2; --timeout/--delay/--state/--shift and a few more in their own variables.
 popts() {
-  A1=; A2=; TIMEOUT=; DELAY=; STATE=; WAIT=; SHIFTK=; DOMAIN=; PATHV=; OUTF=; DIR=; SEL=; FULL=; FMT=; COMPACT=; n=0; endopts=0
+  A1=; A2=; TIMEOUT=; DELAY=; STATE=; WAIT=; SHIFTK=; DOMAIN=; PATHV=; SECURE=; HTTPONLY=; SAMESITE=; EXPIRES=; MAXAGE=; OUTF=; DIR=; SEL=; FULL=; FMT=; COMPACT=; n=0; endopts=0
   while [ $# -gt 0 ]; do
     if [ $endopts -eq 0 ]; then
       case "$1" in
@@ -166,6 +166,11 @@ popts() {
         --shift) SHIFTK=1; shift; continue ;;
         --domain) DOMAIN=$2; shift 2; continue ;;
         --path) PATHV=$2; shift 2; continue ;;
+        --secure) SECURE=1; shift; continue ;;
+        --httponly) HTTPONLY=1; shift; continue ;;
+        --samesite) SAMESITE=$2; shift 2; continue ;;
+        --expires) num "$2"; EXPIRES=$2; shift 2; continue ;;
+        --max-age) num "$2"; MAXAGE=$2; shift 2; continue ;;
         --out) OUTF=$2; shift 2; continue ;;
         --dir) DIR=$2; shift 2; continue ;;
         --selector) SEL=$2; shift 2; continue ;;
@@ -301,9 +306,12 @@ case "$1" in
              case "$(head -c 12 "$target" 2>/dev/null | tr -d '\000')" in '{"ok":false'*) cat "$target" >&2; echo >&2; rm -f "${target:?}"; exit 1 ;; esac
              printf '{"ok":true,"path":%s,"bytes":%s}\n' "$(jstr "$target")" "$(wc -c < "$target" | tr -d ' ')" ;;
   cookies)   shift; popts "$@"; if [ -n "$DOMAIN" ]; then safe "$DOMAIN"; get "/cookies?domain=$DOMAIN"; else get "/cookies"; fi ;;
-  setcookie) shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl setcookie <name> <value> [--domain d] [--path p]"
+  setcookie) shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl setcookie <name> <value> [--domain d] [--path p] [--secure] [--httponly] [--samesite Lax|Strict|None] [--expires epoch-seconds] [--max-age seconds]"
              J="{\"name\":$(jstr "$A1"),\"value\":$(jstr "$A2")"
              [ -n "$DOMAIN" ] && J="$J,\"domain\":$(jstr "$DOMAIN")"; [ -n "$PATHV" ] && J="$J,\"path\":$(jstr "$PATHV")"
+             [ -n "$SECURE" ] && J="$J,\"secure\":true"; [ -n "$HTTPONLY" ] && J="$J,\"httpOnly\":true"
+             [ -n "$SAMESITE" ] && J="$J,\"sameSite\":$(jstr "$SAMESITE")"
+             [ -n "$EXPIRES" ] && J="$J,\"expires\":$EXPIRES"; [ -n "$MAXAGE" ] && J="$J,\"maxAge\":$MAXAGE"
              auto "/cookies" "$J}" ;;
   cdp)       shift; port=; raw=0; off=0
              for a in "$@"; do case "$a" in off) off=1 ;; --json) raw=1 ;; *[!0-9]*|'') die "usage: browserctl cdp [port] | cdp off | cdp --json" ;; *) port=$a ;; esac; done

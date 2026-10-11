@@ -256,7 +256,12 @@ class BrowserBridge(
             path == "/v1/cookies" && method == "POST" -> {
                 val pc = page ?: return 404 to error("page control is not available")
                 val name = body.optString("name"); if (name.isBlank()) return 400 to error("name required")
-                return 200 to pc.setCookie(name, body.optString("value"), body.optStringOrNull("domain")?.takeIf { it.isNotBlank() }, body.optStringOrNull("path")?.takeIf { it.isNotBlank() })
+                return 200 to pc.setCookie(CookieSpec(
+                    name = name, value = body.optString("value"),
+                    domain = body.optStringOrNull("domain")?.takeIf { it.isNotBlank() }, path = body.optStringOrNull("path")?.takeIf { it.isNotBlank() },
+                    secure = body.optBoolean("secure"), httpOnly = body.optBoolean("httpOnly"), sameSite = body.optStringOrNull("sameSite")?.takeIf { it.isNotBlank() },
+                    expires = if (body.has("expires")) body.optLong("expires") else null, maxAge = if (body.has("maxAge")) body.optLong("maxAge") else null,
+                ))
             }
             path == "/v1/cdp" && method == "GET" -> {
                 val c = cdp ?: return 404 to error("cdp is not available")

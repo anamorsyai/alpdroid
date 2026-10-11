@@ -36,7 +36,7 @@ class BrowserBridgeTest {
             return if (selector == "#missing") null to JSONObject().put("ok", false).put("error", "no element matches #missing") else byteArrayOf(1, 2, 3) to null
         }
         override fun cookies(domain: String?) = JSONObject().put("ok", true).put("cookies", org.json.JSONArray()).put("domain", domain ?: JSONObject.NULL)
-        override fun setCookie(name: String, value: String, domain: String?, path: String?): JSONObject { pageCalls += "cookie:$name=$value:$domain:$path"; return JSONObject().put("ok", true) }
+        override fun setCookie(cookie: CookieSpec): JSONObject { pageCalls += "cookie:${cookie.name}=${cookie.value}:${cookie.domain}:${cookie.path}"; return JSONObject().put("ok", true) }
     }
     private val fakeCdp = object : CdpControl {
         override fun status() = JSONObject().put("ok", true).put("enabled", true).put("port", 9222)

@@ -258,17 +258,14 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
             .put("note", "Android lists name and value only; path, expiry and HttpOnly are not exposed. Without --domain, the hosts seen in History and open tabs are checked.")
     }
 
-    override fun setCookie(name: String, value: String, domain: String?, path: String?): JSONObject {
-        val host = domain?.removePrefix(".") ?: app.browserWebViewHolder.active?.url?.let { runCatching { java.net.URI(it).host }.getOrNull() }
+    override fun setCookie(cookie: CookieSpec): JSONObject {
+        val host = cookie.domain?.removePrefix(".") ?: app.browserWebViewHolder.active?.url?.let { runCatching { java.net.URI(it).host }.getOrNull() }
             ?: return fail("no domain given and no page is open")
-        val attrs = buildString {
-            append("$name=$value")
-            append("; Path=").append(path ?: "/")
-            if (domain != null) append("; Domain=").append(domain)
-        }
+        val attrs = CookieHeader.build(cookie).getOrElse { return fail(it.message ?: "invalid cookie") }
         val cm = CookieManager.getInstance()
+        // A Secure cookie needs an https URL to be accepted; the rest go to the scheme of the open page, https by default.
         cm.setCookie("https://$host", attrs)
         cm.flush()
-        return JSONObject().put("ok", true).put("domain", host).put("name", name)
+        return JSONObject().put("ok", true).put("domain", host).put("name", cookie.name)
     }
 }

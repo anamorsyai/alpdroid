@@ -31,6 +31,7 @@ class BrowserctlIntegrationTest {
     private var scope: List<String> = emptyList()
     private val pageArgs = ArrayList<JSONObject>()
     private val evaluated = ArrayList<String>()
+    private val cookies = ArrayList<CookieSpec>()
     private val openedTabs = ArrayList<Triple<String, Boolean, Long>>()
 
     private val script: File = listOf("../app/src/main/assets/browserctl", "app/src/main/assets/browserctl", "../../app/src/main/assets/browserctl")
@@ -52,7 +53,7 @@ class BrowserctlIntegrationTest {
             if (selector == "#missing") null to JSONObject().put("error", "no element matches #missing").put("ok", false)
             else byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0, 1, 2, 3, 0xff.toByte(), 0xfe.toByte()) to null
         override fun cookies(domain: String?) = JSONObject().put("cookies", JSONArray().put(JSONObject().put("name", "sid").put("value", "1"))).put("ok", true)
-        override fun setCookie(name: String, value: String, domain: String?, path: String?) = JSONObject().put("name", name).put("ok", true)
+        override fun setCookie(cookie: CookieSpec): JSONObject { cookies += cookie; return JSONObject().put("name", cookie.name).put("ok", true) }
     }
 
     @Before fun setUp() {
@@ -206,6 +207,10 @@ class BrowserctlIntegrationTest {
         assertEquals("0", ctl("cdp", "off").out.trim())
         assertTrue(ctl("cookies", "--domain", "api.test").out.contains("sid"))
         assertEquals(0, ctl("setcookie", "sid", "9", "--domain", "api.test").code)
+        assertEquals(0, ctl("setcookie", "tok", "v1", "--domain", "api.test", "--path", "/app", "--secure", "--httponly", "--samesite", "Strict", "--max-age", "60", "--expires", "1900000000").code)
+        val c = cookies.last()
+        assertEquals(listOf("tok", "v1", "api.test", "/app"), listOf(c.name, c.value, c.domain, c.path))
+        assertTrue(c.secure && c.httpOnly); assertEquals("Strict", c.sameSite); assertEquals(60L, c.maxAge); assertEquals(1900000000L, c.expires)
     }
 
     private fun rawStatus(vararg headers: String): Int {

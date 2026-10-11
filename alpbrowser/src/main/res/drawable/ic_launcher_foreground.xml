@@ -9,6 +9,8 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- Globe and badge are scaled and placed so the pair as a whole sits on the canvas centre (54,54). -->
+    <group android:pivotX="48" android:pivotY="50" android:scaleX="1.083" android:scaleY="1.083" android:translateX="2">
     <!-- Globe disc (deep teal) so the grid reads against the dark background -->
     <path
         android:fillColor="#0E2E29"
@@ -26,6 +28,8 @@
     <!-- Globe outline, drawn last so it sits cleanly over the grid -->
     <path android:strokeColor="#3ED0B8" android:strokeWidth="5"
         android:pathData="M24,50 a24,24 0 1,0 48,0 a24,24 0 1,0 -48,0 Z" />
+    </group>
+    <group android:pivotX="76" android:pivotY="76" android:scaleX="0.93" android:scaleY="0.93" android:translateX="-5" android:translateY="-5">
     <!-- Separation ring: punch a dark disc so the badge stands off the globe edge -->
     <path
         android:fillColor="#12161C"
@@ -36,4 +40,5 @@
     <!-- AlpDroid mountain inside the badge -->
     <path android:fillColor="#3ED0B8" android:pathData="M78,69 L85,82 L71,82 Z" />
     <path android:fillColor="#EAFBF6" android:pathData="M78,69 L80.5,73.5 L75.5,73.5 Z" />
+    </group>
 </vector>

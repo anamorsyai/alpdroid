@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.84 — eval answers again (AlpBrowser 0.6.4)
 
 - Fixes `browserctl eval` answering nothing at all: the reply used a helper that exists in the library the tests run on but not on Android. Any unexpected internal error in the control API now produces an error message instead of a silent drop, and a check keeps such calls out of the code.
 

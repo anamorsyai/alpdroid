@@ -1,0 +1,1 @@
+Fixes browserctl eval, which stopped answering in recent versions.

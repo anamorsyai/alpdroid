@@ -220,7 +220,7 @@ class BrowserBridge(
 
     private fun route(method: String, path: String, q: Map<String, String>, body: JSONObject): Pair<Int, JSONObject> {
         when {
-            path == "/v1/ping" -> return 200 to JSONObject().put("ok", true).put("app", "AlpBrowser").put("proxyPort", proxyPort())
+            path == "/v1/ping" -> return 200 to JSONObject().put("ok", true).put("app", "AlpBrowser").put("version", appVersion).put("proxyPort", proxyPort())
             path == "/v1/ca" && method == "GET" -> return 200 to JSONObject().put("pem", caPem() ?: "")
             path == "/v1/history" && method == "GET" -> return 200 to historyList(q)
             path.startsWith("/v1/history/") && method == "GET" -> return historyOne(path.removePrefix("/v1/history/"))

@@ -78,10 +78,17 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
         val (tab, wv) = front() ?: return@runBlocking fail("no page is open")
         val seq0 = tab.navSeq
         val host = object : EvalHost {
-            override suspend fun raw(script: String): String? = withTimeoutOrNull(timeoutMs) {
-                withContext(Dispatchers.Main) {
-                    suspendCancellableCoroutine<String?> { c -> wv.evaluateJavascript(script) { r -> if (c.isActive) c.resume(r) } }
-                }
+            override suspend fun send(script: String) {
+                withContext(Dispatchers.Main) { wv.evaluateJavascript(script, null) }
+            }
+            override suspend fun raw(script: String, timeoutMs: Long): Pair<Boolean, String?> {
+                var value: String? = null
+                val answered = withTimeoutOrNull(timeoutMs) {
+                    withContext(Dispatchers.Main) {
+                        suspendCancellableCoroutine<Unit> { c -> wv.evaluateJavascript(script) { r -> value = r; if (c.isActive) c.resume(Unit) } }
+                    }
+                } != null
+                return answered to value
             }
             override fun newId(): String {
                 val id = ByteArray(12).also { random.nextBytes(it) }.joinToString("") { "%02x".format(it) }

@@ -64,9 +64,6 @@ return await fn(ARGS);
             "__out=JSON.stringify({ok:true,v:(__v===undefined?null:__v)})}catch(e){__out=JSON.stringify({ok:false,error:String((e&&e.message)||e)})}" +
             "try{__alpbridge.done(__id,__out)}catch(e){}})();"
 
-    /** What a probe or an expression wrapper answers when the page accepted (compiled) the script. */
-    const val OK_MARK = "__ALP_OK__"
-
     /** What the statement wrapper answers when the script threw (the message itself arrives through the bridge). */
     const val ERR_MARK = "__ALP_ERR__"
 
@@ -74,21 +71,28 @@ return await fn(ARGS);
         "const __ok=(v)=>{try{return JSON.stringify({ok:true,v:(v===undefined?null:v)})}catch(e){return JSON.stringify({ok:true,v:String(v)})}};" +
         "const __er=(e)=>JSON.stringify({ok:false,error:String((e&&e.message)||e)});"
 
+    private fun ack(id: String) = "try{__alpbridge.done(" + JSONObject.quote(id) + ",'1')}catch(e){}"
+
     /**
      * `eval` runs the user's script as page code handed straight to `evaluateJavascript` — never through `eval()`,
      * `new Function` or an injected `<script>` — so a page's Content-Security-Policy / Trusted Types cannot refuse it.
-     * The answer to the first attempt is [OK_MARK] when the page compiled the script, which is how the cases below are told
-     * apart (a syntax error and a script that evaluates to `undefined` otherwise look the same).
+     * Which form the script is in is learned from the bridge, not from `evaluateJavascript`'s return value: each wrapper
+     * first reports an acknowledgement id, and a wrapper whose script does not compile never runs, so its id never arrives.
      *
      * 1. [evalExpression]: the script is an expression (promises and `await` included); its value is reported through the bridge.
-     * 2. [evalProbe]: is it a valid list of statements at all? Compiles it inside an async function without running it.
+     * 2. [evalProbe]: sent right behind it, only compiles the script as an async function body (statements) and acknowledges.
+     *    Scripts run in order, so the expression's acknowledgement, if there is one, is already there when the probe's arrives.
      * 3. statements using `return` or `await` run as an async function body ([asyncBody]);
      * 4. other statements run directly ([evalStatements]) so the value of the last expression comes back, as eval would give it.
      */
-    fun evalExpression(id: String, script: String): String =
-        "(()=>{" + report(id) + "Promise.resolve((async()=>(\n" + script + "\n))()).then((v)=>__f(__ok(v)),(e)=>__f(__er(e)));return '" + OK_MARK + "'})()"
+    fun evalExpression(id: String, ackId: String, script: String): String =
+        "(()=>{" + report(id) + ack(ackId) + "Promise.resolve((async()=>(\n" + script + "\n))()).then((v)=>__f(__ok(v)),(e)=>__f(__er(e)))})()"
 
-    fun evalProbe(script: String): String = "(async()=>{\n" + script + "\n},'" + OK_MARK + "')"
+    fun evalProbe(ackId: String, script: String): String =
+        "(()=>{" + ack(ackId) + "return async()=>{\n" + script + "\n}})()"
+
+    /** A script that only says the page is alive, to tell "syntax error" from "page not answering". */
+    fun ping(ackId: String): String = "(()=>{" + ack(ackId) + "})()"
 
     fun asyncBody(script: String): String = script
 

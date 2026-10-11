@@ -40,7 +40,7 @@ setTimeout(()=>{process.stdout.write(JSON.stringify({res:res,reports:reports}))}
     }
 
     private val host = object : EvalHost {
-        override suspend fun raw(script: String): String? {
+        private fun exec(script: String): String? {
             val p = ProcessBuilder("node", harness.absolutePath).start()
             p.outputStream.use { it.write(script.toByteArray()) }
             val out = p.inputStream.readBytes().toString(Charsets.UTF_8)
@@ -50,11 +50,13 @@ setTimeout(()=>{process.stdout.write(JSON.stringify({res:res,reports:reports}))}
             for (i in 0 until r.length()) reports[r.getJSONArray(i).getString(0)] = r.getJSONArray(i).getString(1)
             return if (j.isNull("res")) null else j.getString("res")
         }
+        override suspend fun send(script: String) { exec(script) }
+        override suspend fun raw(script: String, timeoutMs: Long) = true to exec(script)
         override fun newId() = "id${n++}"
         override suspend fun report(id: String, timeoutMs: Long) = reports[id]
         override suspend fun asyncBody(body: String, timeoutMs: Long): JSONObject {
             val id = newId()
-            raw(AutomationJs.asyncWrapper(id, body))
+            send(AutomationJs.asyncWrapper(id, body))
             val j = JSONObject(reports[id] ?: return JSONObject().put("ok", false).put("error", "no answer"))
             return if (j.optBoolean("ok")) JSONObject().put("ok", true).put("result", if (j.isNull("v")) JSONObject.NULL else j.get("v"))
             else JSONObject().put("ok", false).put("error", j.getString("error"))
@@ -106,7 +108,7 @@ setTimeout(()=>{process.stdout.write(JSON.stringify({res:res,reports:reports}))}
     }
 
     @Test fun `the plan never uses eval or Function`() {
-        for (s in listOf(AutomationJs.evalExpression("x", "1"), AutomationJs.evalProbe("1"), AutomationJs.evalStatements("x", "1"))) {
+        for (s in listOf(AutomationJs.evalExpression("x", "y", "1"), AutomationJs.evalProbe("y", "1"), AutomationJs.evalStatements("x", "1"))) {
             assertFalse(s, Regex("\\beval\\b|\\bFunction\\b|createElement").containsMatchIn(s))
         }
     }

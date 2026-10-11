@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `browserctl eval` is more robust: it no longer depends on the page returning a value to the browser, only on the same confirmation channel the element commands use, and it names the stage that failed (syntax error, page not answering, page navigated).
+- `browserctl ping` now reports AlpBrowser's version, and a failed request includes the server's own error message.
+
 ## 1.7.82 — Smaller updates, and eval that works on strict sites (AlpBrowser 0.6.2)
 
 - Updates download only what changed. Each release now carries small patch files for the last few earlier versions; AlpDroid applies the one that matches what you have installed, checks the result against the release's checksum, and installs it. A typical AlpDroid update drops from about 2.4 MB to about 0.7 MB, and an AlpBrowser update from about 14 MB to about 3.7 MB. If no patch fits (you skipped several versions) or anything doesn't check out, it downloads the full file exactly as before. The first update after this one still downloads in full.

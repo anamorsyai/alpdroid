@@ -5,8 +5,11 @@ import org.json.JSONTokener
 
 /** What [EvalPlanner] needs from the page; the real one is backed by a WebView, tests use a JavaScript engine. */
 interface EvalHost {
-    /** Hands [script] to `evaluateJavascript`; returns its JSON result, or null when it threw or the page did not answer. */
-    suspend fun raw(script: String): String?
+    /** Hands [script] to `evaluateJavascript` and does not wait for its return value. */
+    suspend fun send(script: String)
+
+    /** Hands [script] to `evaluateJavascript` and waits for its return value: (answered, JSON text or null). */
+    suspend fun raw(script: String, timeoutMs: Long): Pair<Boolean, String?>
 
     /** A fresh call id whose report ([report]) can arrive at any time after it is issued. */
     fun newId(): String
@@ -24,20 +27,26 @@ interface EvalHost {
 /** Chooses how to run an `eval` script so that it works whatever the page's Content-Security-Policy says. See [AutomationJs.evalExpression]. */
 class EvalPlanner(private val host: EvalHost) {
     suspend fun run(script: String, timeoutMs: Long): JSONObject {
-        // 1. An expression, possibly a promise.
-        val id = host.newId()
-        if (host.raw(AutomationJs.evalExpression(id, script)) == MARK) return settle(host.report(id, timeoutMs), timeoutMs)
-
-        // 2. Not an expression: is it statements at all?
-        if (host.raw(AutomationJs.evalProbe(script)) != MARK) {
-            return fail("the script could not be parsed (syntax error), or the page is not ready to run scripts: wait for it with `browserctl waitnav` and check the code")
+        val id = host.newId(); val ack1 = host.newId(); val ack2 = host.newId()
+        // 1 + 2. Send the expression form and, right behind it, the statements probe.
+        host.send(AutomationJs.evalExpression(id, ack1, script))
+        host.send(AutomationJs.evalProbe(ack2, script))
+        if (host.report(ack2, ACK_MS) == null) {
+            // Neither compiled, or the page did not answer at all: a ping tells the two apart.
+            val ping = host.newId()
+            host.send(AutomationJs.ping(ping))
+            return if (host.report(ping, ACK_MS) != null) fail("the script could not be parsed (syntax error): check the code")
+            else fail("the page did not answer within ${ACK_MS}ms: it may still be loading, or has no script access. Wait with `browserctl waitnav`, then retry")
         }
+        if (host.report(ack1, 300) != null) return settle(host.report(id, timeoutMs), timeoutMs)
+
         // 3. Statements that return or await a value.
         if (AutomationJs.needsAsyncBody(script)) return host.asyncBody(AutomationJs.asyncBody(script), timeoutMs)
 
         // 4. Plain statements: the value of the last expression, as eval gives it.
         val sid = host.newId()
-        val r = host.raw(AutomationJs.evalStatements(sid, script))
+        val (answered, r) = host.raw(AutomationJs.evalStatements(sid, script), minOf(timeoutMs, 10_000))
+        if (!answered) return fail("the page ran the script but returned no value (it may have navigated): retry after `browserctl waitnav`")
         if (r == "\"${AutomationJs.ERR_MARK}\"") return settle(host.report(sid, 2_000), 2_000)
         return JSONObject().put("ok", true).put("result", value(r))
     }
@@ -58,5 +67,5 @@ class EvalPlanner(private val host: EvalHost) {
 
     private fun fail(message: String) = JSONObject().put("ok", false).put("error", message)
 
-    private companion object { val MARK = "\"${AutomationJs.OK_MARK}\"" }
+    private companion object { const val ACK_MS = 3_000L }
 }

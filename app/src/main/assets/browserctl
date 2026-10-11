@@ -50,25 +50,30 @@ if [ -n "$TOK" ]; then H="Authorization: Bearer $TOK"; else H="X-Client: browser
 
 die() { echo "browserctl: $*" >&2; exit 2; }
 
+# wget's own complaint (for example "server returned error: HTTP/1.1 500") is kept for the failure message below.
+ERRF="${TMPDIR:-/tmp}/browserctl.$$.err"
+trap 'rm -f -- "${ERRF:?}"' EXIT
+
 # ---- HTTP ----------------------------------------------------------------------------------------------------
 # wget's own exit status is preserved and returned (the trailing `echo` that gives a readable trailing newline
 # would otherwise reset $? to 0 on every call, silently turning every failed request into an apparent success).
 # Says what is actually wrong: if AlpBrowser answers a ping it IS running, so the failure was this request (rejected or timed out).
 fail_hint() {
   if wget -qO- -T 5 --header "$H" "$BASE/ping" >/dev/null 2>&1; then
-    echo "browserctl: the request failed (exit $1) although AlpBrowser is running: it was rejected or took too long. Wait for the page (browserctl waitnav) and retry." >&2
+    why=$(tail -n 1 "$ERRF" 2>/dev/null)
+    echo "browserctl: the request failed (exit $1) although AlpBrowser is running: it was rejected or took too long${why:+ (wget: $why)}. Wait for the page (browserctl waitnav) and retry." >&2
   else
     echo "browserctl: no usable answer from AlpBrowser (exit $1): it may be closed, or it requires the control token (Open local access is off) — open it once, then try: browserctl ping" >&2
   fi
 }
 get() {
-  wget -qO- --header "$H" "$BASE$1" 2>/dev/null
+  wget -qO- --header "$H" "$BASE$1" 2>"$ERRF"
   st=$?
   [ $st -eq 0 ] && echo || fail_hint $st
   return $st
 }
 post() {
-  wget -qO- --header "$H" --header "Content-Type: application/json" --post-data "$2" "$BASE$1" 2>/dev/null
+  wget -qO- --header "$H" --header "Content-Type: application/json" --post-data "$2" "$BASE$1" 2>"$ERRF"
   st=$?
   [ $st -eq 0 ] && echo || fail_hint $st
   return $st
@@ -92,7 +97,7 @@ jstr() {
 # The control API returns the PEM inside a JSON string. Android's org.json escapes EVERY "/" as "\/" (and base64
 # is full of them), so undo "\/" as well as "\n" — leaving "\/" in would silently corrupt the certificate.
 ca_pem() {
-  raw=$(wget -qO- --header "$H" "$BASE/ca" 2>/dev/null) || return 1
+  raw=$(wget -qO- --header "$H" "$BASE/ca" 2>"$ERRF") || return 1
   printf '%s' "$raw" | sed -n 's/.*"pem":"\([^"]*\)".*/\1/p' | sed -e 's#\\/#/#g' -e 's/\\n/\
 /g'
 }
@@ -132,7 +137,7 @@ urlenc() { printf '%s' "$1" | LC_ALL=C od -An -tx1 | tr ' ' '%' | tr -d '\n'; }
 # Like post(), but for commands that report their own failure: an {"ok":false,...} answer is printed on stderr and the
 # exit status is 1, so a failed click or a timed-out wait can never look like success.
 auto() {
-  out=$(wget -qO- --header "$H" --header "Content-Type: application/json" --post-data "$2" "$BASE$1" 2>/dev/null)
+  out=$(wget -qO- --header "$H" --header "Content-Type: application/json" --post-data "$2" "$BASE$1" 2>"$ERRF")
   st=$?
   [ $st -eq 0 ] || { fail_hint $st; return $st; }
   case "$out" in '{"ok":false'*) printf '%s\n' "$out" >&2; return 1 ;; esac
@@ -140,7 +145,7 @@ auto() {
 }
 # The same, with the request body in a file (a script too big to pass as one command-line argument).
 autof() {
-  out=$(wget -qO- --header "$H" --header "Content-Type: application/json" --post-file "$2" "$BASE$1" 2>/dev/null)
+  out=$(wget -qO- --header "$H" --header "Content-Type: application/json" --post-file "$2" "$BASE$1" 2>"$ERRF")
   st=$?
   [ $st -eq 0 ] || { fail_hint $st; return $st; }
   case "$out" in '{"ok":false'*) printf '%s\n' "$out" >&2; return 1 ;; esac
@@ -291,7 +296,7 @@ case "$1" in
              fmt=${FMT:-png}; case "$fmt" in png|jpeg|jpg) ;; *) die "--format must be png or jpeg" ;; esac
              ext=$fmt; [ "$fmt" = jpeg ] && ext=jpg; target=${OUTF:-shot.$ext}
              q="format=$fmt"; [ -n "$SEL" ] && q="$q&selector=$(urlenc "$SEL")"; [ "$FULL" = 1 ] && q="$q&fullPage=1"
-             wget -qO "$target" --header "$H" "$BASE/shot?$q" 2>/dev/null; st=$?
+             wget -qO "$target" --header "$H" "$BASE/shot?$q" 2>"$ERRF"; st=$?
              [ $st -eq 0 ] || { rm -f "${target:?}"; fail_hint $st; exit $st; }
              case "$(head -c 12 "$target" 2>/dev/null | tr -d '\000')" in '{"ok":false'*) cat "$target" >&2; echo >&2; rm -f "${target:?}"; exit 1 ;; esac
              printf '{"ok":true,"path":%s,"bytes":%s}\n' "$(jstr "$target")" "$(wc -c < "$target" | tr -d ' ')" ;;
@@ -304,7 +309,7 @@ case "$1" in
              for a in "$@"; do case "$a" in off) off=1 ;; --json) raw=1 ;; *[!0-9]*|'') die "usage: browserctl cdp [port] | cdp off | cdp --json" ;; *) port=$a ;; esac; done
              if [ $off -eq 1 ]; then post "/cdp" '{"enabled":false}' >/dev/null; echo 0; exit 0; fi
              J='{"enabled":true'; [ -n "$port" ] && J="$J,\"port\":$port"
-             res=$(wget -qO- --header "$H" --header "Content-Type: application/json" --post-data "$J}" "$BASE/cdp" 2>/dev/null) || { fail_hint $?; exit 1; }
+             res=$(wget -qO- --header "$H" --header "Content-Type: application/json" --post-data "$J}" "$BASE/cdp" 2>"$ERRF") || { fail_hint $?; exit 1; }
              [ $raw -eq 1 ] && { printf '%s\n' "$res"; exit 0; }
              url=$(printf '%s' "$res" | sed -n 's/.*"webSocketDebuggerUrl":"\([^"]*\)".*/\1/p' | sed 's#\\/#/#g')
              if [ -n "$url" ]; then printf '%s\n' "$url"; else echo 0; printf '%s\n' "$res" >&2; exit 1; fi ;;
@@ -313,24 +318,24 @@ case "$1" in
                mkdir -p "$DIR" || die "cannot create $DIR"
                for part in request response meta; do
                  f=$part.txt; [ $part = meta ] && f=meta.json
-                 wget -qO "$DIR/$f" --header "$H" "$BASE/history/$A1/$part" 2>/dev/null || { fail_hint $?; exit 1; }
+                 wget -qO "$DIR/$f" --header "$H" "$BASE/history/$A1/$part" 2>"$ERRF" || { fail_hint $?; exit 1; }
                done
                for part in request response; do
-                 wget -qO "$DIR/$part.body" --header "$H" "$BASE/history/$A1/body/$part" 2>/dev/null || { fail_hint $?; exit 1; }
+                 wget -qO "$DIR/$part.body" --header "$H" "$BASE/history/$A1/body/$part" 2>"$ERRF" || { fail_hint $?; exit 1; }
                  [ -s "$DIR/$part.body" ] || rm -f "${DIR:?}/${part:?}.body"
                done
                printf '{"ok":true,"dir":%s}\n' "$(jstr "$DIR")"
              elif [ -n "$OUTF" ]; then
-               { wget -qO- --header "$H" "$BASE/history/$A1/request" 2>/dev/null && printf '\n\n' && wget -qO- --header "$H" "$BASE/history/$A1/response" 2>/dev/null; } > "$OUTF" || { rm -f "${OUTF:?}"; fail_hint $?; exit 1; }
+               { wget -qO- --header "$H" "$BASE/history/$A1/request" 2>"$ERRF" && printf '\n\n' && wget -qO- --header "$H" "$BASE/history/$A1/response" 2>"$ERRF"; } > "$OUTF" || { rm -f "${OUTF:?}"; fail_hint $?; exit 1; }
                printf '{"ok":true,"path":%s}\n' "$(jstr "$OUTF")"
              else die "usage: browserctl save <id> --dir <dir> | --out <file>"; fi ;;
   har)       shift; OUTF=; rest=
              while [ $# -gt 0 ]; do case "$1" in --out) OUTF=$2; shift 2 ;; *) rest="$rest $1"; shift ;; esac; done
              set -f; set -- $rest; set +f; hquery "$@"
              if [ -n "$OUTF" ]; then
-               wget -qO "$OUTF" --header "$H" "$BASE/har?$Q" 2>/dev/null || { rm -f "${OUTF:?}"; fail_hint $?; exit 1; }
+               wget -qO "$OUTF" --header "$H" "$BASE/har?$Q" 2>"$ERRF" || { rm -f "${OUTF:?}"; fail_hint $?; exit 1; }
                printf '{"ok":true,"path":%s,"bytes":%s}\n' "$(jstr "$OUTF")" "$(wc -c < "$OUTF" | tr -d ' ')"
-             else wget -qO- --header "$H" "$BASE/har?$Q" 2>/dev/null || { fail_hint $?; exit 1; }; echo; fi ;;
+             else wget -qO- --header "$H" "$BASE/har?$Q" 2>"$ERRF" || { fail_hint $?; exit 1; }; echo; fi ;;
   clear)     case "${2:-all}" in cookies|cache|storage|all) post "/clear" "{\"what\":\"${2:-all}\"}" ;; *) die "clear takes cookies|cache|storage|all" ;; esac ;;
   history)   shift; hquery "$@"
              if [ -n "$Q" ]; then get "/history?$Q"; else get "/history"; fi ;;

@@ -44,10 +44,22 @@ internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: Browser
         wv.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                 tab.url = url
+                tab.loading = true
+                tab.lastError = null
+                tab.navSeq++
+            }
+
+            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: android.webkit.WebResourceError) {
+                if (request.isForMainFrame) tab.lastError = error.description?.toString() ?: "load failed"
+            }
+
+            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
+                if (request.isForMainFrame) tab.httpStatus = errorResponse.statusCode
             }
 
             override fun onPageFinished(view: WebView, url: String) {
                 tab.url = url
+                tab.loading = false
                 tab.canGoBack = view.canGoBack()
                 tab.canGoForward = view.canGoForward()
                 holder.persist()
@@ -65,6 +77,7 @@ internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: Browser
                     app.adBlocker.blockedCount.incrementAndGet()
                     return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
                 }
+                app.lastRequestAt = System.currentTimeMillis()
                 if (!app.proxyActive()) app.recordDirect(request.url, request.method ?: "GET", request.requestHeaders ?: emptyMap())
                 return null
             }
@@ -100,6 +113,7 @@ internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: Browser
                 holder.tabs.firstOrNull { it.webView === window }?.let { holder.close(it.id) }
             }
         }
+        wv.addJavascriptInterface(app.pageAutomation.jsBridge, "__alpbridge")
         app.applyProxyMode()
         app.extensionInjector.registerNow(wv)
         if (tab.url.isNotEmpty()) wv.loadUrl(normalizeUrl(tab.url))

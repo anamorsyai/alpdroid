@@ -1,0 +1,1 @@
+Drive AlpBrowser from the agent without Playwright: element commands, waits, screenshots, a token-protected DevTools port, saving and HAR export of captured traffic.

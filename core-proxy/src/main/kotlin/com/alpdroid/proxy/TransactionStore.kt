@@ -14,6 +14,11 @@ import kotlinx.coroutines.flow.update
  */
 class TransactionStore(private val maxSize: Int = 500, private val maxBytes: Long = 64L * 1024 * 1024) {
     private val _transactions = MutableStateFlow<List<HttpTransaction>>(emptyList())
+
+    /** The most entries kept, and how many older ones have been dropped to stay within it (or the memory budget). */
+    val capacity: Int get() = maxSize
+    private val dropped = java.util.concurrent.atomic.AtomicLong()
+    val droppedCount: Long get() = dropped.get()
     val transactions: StateFlow<List<HttpTransaction>> = _transactions.asStateFlow()
 
     fun record(tx: HttpTransaction) {
@@ -23,7 +28,9 @@ class TransactionStore(private val maxSize: Int = 500, private val maxBytes: Lon
             // keeping the "dropped" entries (and their body bytes) reachable — toList()
             // forces a real copy so they're actually eligible for GC.
             val counted = if (next.size > maxSize) next.subList(next.size - maxSize, next.size).toList() else next
-            trimToBudget(counted)
+            val kept = trimToBudget(counted)
+            dropped.addAndGet((next.size - kept.size).toLong())
+            kept
         }
     }
 

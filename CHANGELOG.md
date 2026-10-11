@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.7.80 — Drive AlpBrowser without Playwright (AlpBrowser 0.6.0)
+
+- The agent can now drive pages from `browserctl` alone: `click`, `fill`, `type`, `press`, `text`, `attr`,
+  `html`, `exists`, `waitfor` and `waitnav`, each waiting for its element and failing with a clear message
+  (and a non-zero exit) if it never shows up.
+- `navigate --wait` blocks until the page has loaded and reports where it ended up; `tab new` now waits for
+  the page too.
+- `shot` takes screenshots (the visible page, one element, or the whole page).
+- `cdp` exposes the browser's DevTools on a loopback port, protected by the control token, so tools such as
+  Puppeteer or Playwright can attach to the very page AlpBrowser is capturing.
+- `eval` takes a script from a file or from stdin, handles very large scripts and non-English text, and can
+  wait for a promise (`--await`).
+- Captured traffic can be saved to disk (`save`), exported as HAR (`har`), filtered and paged
+  (`history --method/--status/--since/--limit/--page/--compact`), and cookies can be listed and set.
+
 ## 1.7.79 — A new look for AlpBrowser, and real traffic numbers (AlpBrowser 0.5.0)
 
 - AlpBrowser has a new look across the whole app: a warm dark theme with an orange accent, compact type and

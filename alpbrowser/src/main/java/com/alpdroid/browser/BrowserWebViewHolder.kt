@@ -19,9 +19,17 @@ class BrowserTab(val id: Int, initialUrl: String) {
     var progress by mutableIntStateOf(100)
     var canGoBack by mutableStateOf(false)
     var canGoForward by mutableStateOf(false)
+
+    // Load state for the control API (read from other threads, so plain volatiles rather than Compose state).
+    @Volatile var loading: Boolean = false
+    /** Counts navigations started in this tab, so a caller can tell "the one I just asked for" from an earlier one. */
+    @Volatile var navSeq: Int = 0
+    @Volatile var httpStatus: Int = 0
+    @Volatile var lastError: String? = null
+    @Volatile var lastActiveAt: Long = System.currentTimeMillis()
 }
 
-data class TabInfo(val id: Int, val title: String, val url: String, val active: Boolean)
+data class TabInfo(val id: Int, val title: String, val url: String, val active: Boolean, val loading: Boolean = false, val lastActiveAt: Long = 0L)
 
 /**
  * Owns the browser's tabs and their WebViews for the whole app process, instead of one per visit to the Browser
@@ -44,7 +52,7 @@ class BrowserWebViewHolder(private val appContext: Context) {
 
     val allWebViews: List<WebView> get() = tabs.mapNotNull { it.webView }
 
-    fun info(): List<TabInfo> = tabs.map { TabInfo(it.id, it.title.ifEmpty { it.url }, it.url, it.id == activeId) }
+    fun info(): List<TabInfo> = tabs.map { TabInfo(it.id, it.title.ifEmpty { it.url }, it.url, it.id == activeId, it.loading, it.lastActiveAt) }
 
     /** Adds a tab (and brings it to the front unless [activate] is false). Null when [MAX_TABS] is reached. */
     fun open(url: String, activate: Boolean = true): BrowserTab? {
@@ -57,7 +65,8 @@ class BrowserWebViewHolder(private val appContext: Context) {
     }
 
     fun switchTo(id: Int): Boolean {
-        if (tabs.none { it.id == id }) return false
+        val t = tabs.firstOrNull { it.id == id } ?: return false
+        t.lastActiveAt = System.currentTimeMillis()
         activeId = id
         persist()
         return true

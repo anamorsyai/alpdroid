@@ -4,10 +4,19 @@
 # normally just run `browserctl ping`. If it says AlpBrowser is not linked, open the AlpBrowser app once, then start a
 # new shell (or retry).
 #
-# General:   ping | ca | trust | mode [bugbounty|webdev] | navigate <url> | eval '<js>' | clear [cookies|cache|storage|all]
+# General:   ping | ca | trust | mode [bugbounty|webdev] | clear [cookies|cache|storage|all]
+# Page:      navigate <url> [--wait] [--state load|domcontentloaded|networkidle] [--timeout ms]
+#            eval '<js>' | eval --file <path> | eval --stdin   [--await] [--timeout ms]
+#            click <sel> | fill <sel> <text> | type <sel> <text> [--delay ms] | press <key> | text <sel> | attr <sel> <name>
+#            exists <sel> | html [sel] | waitfor <sel> [--state visible|hidden|attached] | waitnav [--state ...]   (each takes --timeout ms)
+#            shot [--selector css] [--full-page] [--out path] [--format png|jpeg]
+#            cookies [--domain d] | setcookie <name> <value> [--domain d] [--path p]
+#            cdp [port] | cdp off | cdp --json     remote debugging for Puppeteer/Playwright (prints the WebSocket URL)
 # Capture:   capture [on|off]     route the page through the proxy (needed for decrypted History); off = fast direct browsing
 # Tabs:      tabs | tab new [url] | tab switch <id> | tab close <id>
-# History:   history [host] | get <id>
+# History:   history [host] [--host h] [--method M] [--status N] [--since ISO] [--limit n] [--page n] [--compact] | get <id>
+#            save <id> --dir <dir> | save <id> --out <file>      raw request/response with decoded bodies, saved to disk
+#            har [--out file] [history filters]                  all captured traffic as HAR 1.2
 # Bug bounty: scope [<pattern> ...] | intercept on [hostFilter] [--responses] [--all-assets] | intercept off | pending | resolve <holdId> [forward|drop]
 #             resolve <holdId> edit [--method M] [--target PATH] [--status N] [--header 'Name: v']... [--body TEXT]
 #             rule add <REQ_HEADER|REQ_BODY|RES_HEADER|RES_BODY> <find> <replace> [host] | rules | rule del <id>
@@ -112,6 +121,80 @@ trust_ca() {
   echo "CA appended to the Alpine bundle"
 }
 
+# ---- automation helpers -------------------------------------------------------------------------------------
+num() { case "$1" in ''|*[!0-9]*) die "'$1' is not a number" ;; esac; }
+# Percent-encode every byte: safe for any selector or value in a query string.
+urlenc() { printf '%s' "$1" | LC_ALL=C od -An -tx1 | tr ' ' '%' | tr -d '\n'; }
+# Like post(), but for commands that report their own failure: an {"ok":false,...} answer is printed on stderr and the
+# exit status is 1, so a failed click or a timed-out wait can never look like success.
+auto() {
+  out=$(wget -qO- --header "$H" --header "Content-Type: application/json" --post-data "$2" "$BASE$1" 2>/dev/null)
+  st=$?
+  [ $st -eq 0 ] || { fail_hint $st; return $st; }
+  case "$out" in '{"ok":false'*) printf '%s\n' "$out" >&2; return 1 ;; esac
+  printf '%s\n' "$out"
+}
+# The same, with the request body in a file (a script too big to pass as one command-line argument).
+autof() {
+  out=$(wget -qO- --header "$H" --header "Content-Type: application/json" --post-file "$2" "$BASE$1" 2>/dev/null)
+  st=$?
+  [ $st -eq 0 ] || { fail_hint $st; return $st; }
+  case "$out" in '{"ok":false'*) printf '%s\n' "$out" >&2; return 1 ;; esac
+  printf '%s\n' "$out"
+}
+# Positional arguments land in A1 A2; --timeout/--delay/--state/--shift and a few more in their own variables.
+popts() {
+  A1=; A2=; TIMEOUT=; DELAY=; STATE=; WAIT=; SHIFTK=; DOMAIN=; PATHV=; OUTF=; DIR=; SEL=; FULL=; FMT=; COMPACT=; n=0; endopts=0
+  while [ $# -gt 0 ]; do
+    if [ $endopts -eq 0 ]; then
+      case "$1" in
+        --) endopts=1; shift; continue ;;
+        --timeout) num "$2"; TIMEOUT=$2; shift 2; continue ;;
+        --delay) num "$2"; DELAY=$2; shift 2; continue ;;
+        --state) STATE=$2; shift 2; continue ;;
+        --wait) WAIT=1; shift; continue ;;
+        --no-wait) WAIT=0; shift; continue ;;
+        --shift) SHIFTK=1; shift; continue ;;
+        --domain) DOMAIN=$2; shift 2; continue ;;
+        --path) PATHV=$2; shift 2; continue ;;
+        --out) OUTF=$2; shift 2; continue ;;
+        --dir) DIR=$2; shift 2; continue ;;
+        --selector) SEL=$2; shift 2; continue ;;
+        --full-page) FULL=1; shift; continue ;;
+        --format) FMT=$2; shift 2; continue ;;
+        --compact) COMPACT=1; shift; continue ;;
+        --*) die "unknown option $1" ;;
+      esac
+    fi
+    n=$((n+1))
+    if [ $n -eq 1 ]; then A1=$1; elif [ $n -eq 2 ]; then A2=$1; else die "too many arguments"; fi
+    shift
+  done
+}
+# An element command: act <cmd> [selector] [text|name|key] [field]
+act() {
+  J="{\"cmd\":\"$1\",\"selector\":$(jstr "$2")"
+  [ -n "$TIMEOUT" ] && J="$J,\"timeout\":$TIMEOUT"
+  [ -n "$DELAY" ] && J="$J,\"delay\":$DELAY"
+  [ -n "$STATE" ] && case "$STATE" in visible|hidden|attached) J="$J,\"state\":\"$STATE\"" ;; *) die "--state must be visible, hidden or attached" ;; esac
+  [ -n "$3" ] && J="$J,\"$4\":$(jstr "$3")"
+  [ -n "$SHIFTK" ] && J="$J,\"shift\":true"
+  auto "/act" "$J}"
+}
+# History filters as a query string.
+hquery() {
+  Q=
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --host|--method|--status|--since|--limit|--page|--contains) safe "$2"; Q="$Q&${1#--}=$2"; shift 2 ;;
+      --compact) Q="$Q&fmt=lines"; shift ;;
+      --out) shift 2 ;;
+      *) safe "$1"; Q="$Q&host=$1"; shift ;;
+    esac
+  done
+  Q=${Q#&}
+}
+
 # ---- argument checks -----------------------------------------------------------------------------------------
 # Anything that goes into a URL path/query is restricted to a safe alphabet; enums are matched exactly.
 safe() { case "$1" in ''|*[!A-Za-z0-9._*:-]*) die "unsupported characters in '$1'" ;; esac; }
@@ -154,17 +237,97 @@ case "$1" in
              esac ;;
   tabs)      get "/tabs" ;;
   tab)       case "$2" in
-               new)    post "/tabs" "{\"action\":\"new\",\"url\":$(jstr "${3:-}")}" ;;
+               new)    shift 2; w=true; u=; for a in "$@"; do case "$a" in --no-wait) w=false ;; *) u=$a ;; esac; done
+                       post "/tabs" "{\"action\":\"new\",\"url\":$(jstr "$u"),\"wait\":$w}" ;;
                switch|close) case "$3" in ''|*[!0-9]*) die "usage: browserctl tab $2 <id>" ;; esac
                        post "/tabs" "{\"action\":\"$2\",\"id\":$3}" ;;
                *)      die "usage: browserctl tab new [url] | tab switch <id> | tab close <id>" ;;
              esac ;;
-  navigate)  [ -n "$2" ] || die "usage: browserctl navigate <url>"
-             post "/navigate" "{\"url\":$(jstr "$2")}" ;;
-  eval)      [ -n "$2" ] || die "usage: browserctl eval '<js>'"
-             post "/eval" "{\"js\":$(jstr "$2")}" ;;
+  navigate)  shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl navigate <url> [--wait] [--state S] [--timeout ms]"
+             J="{\"url\":$(jstr "$A1")"
+             [ "$WAIT" = 1 ] && J="$J,\"wait\":true"
+             [ -n "$STATE" ] && case "$STATE" in load|domcontentloaded|networkidle) J="$J,\"state\":\"$STATE\"" ;; *) die "--state must be load, domcontentloaded or networkidle" ;; esac
+             [ -n "$TIMEOUT" ] && J="$J,\"timeout\":$TIMEOUT"
+             if [ "$WAIT" = 1 ]; then auto "/navigate" "$J}"; else post "/navigate" "$J}"; fi ;;
+  waitnav)   shift; popts "$@"
+             J="{\"state\":\"${STATE:-load}\""; [ -n "$TIMEOUT" ] && J="$J,\"timeout\":$TIMEOUT"
+             auto "/waitnav" "$J}" ;;
+  eval)      shift; src=; mode=arg; EX=; ev_done=0
+             while [ $# -gt 0 ]; do
+               case "$1" in
+                 --file) [ -r "$2" ] || die "cannot read $2"; mode=file; src=$2; shift 2 ;;
+                 --stdin) mode=stdin; shift ;;
+                 --await) EX="$EX,\"await\":true"; shift ;;
+                 --timeout) num "$2"; EX="$EX,\"timeout\":$2"; shift 2 ;;
+                 *) [ "$ev_done" = 0 ] || die "too many arguments"; src=$1; ev_done=1; shift ;;
+               esac
+             done
+             case "$mode" in
+               file) body=$(cat "$src") ;;
+               stdin) body=$(cat) ;;
+               *) body=$src ;;
+             esac
+             [ -n "$body" ] || die "usage: browserctl eval '<js>' | --file <path> | --stdin"
+             T=$(mktemp "${TMPDIR:-/tmp}/browserctl.XXXXXX") || die "cannot create a temporary file"
+             { printf '{"js":'; jstr "$body"; printf '%s}' "$EX"; } > "$T"
+             autof "/eval" "$T"; rc=$?; rm -f "${T:?}"; exit $rc ;;
+  click)     shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl click <selector> [--timeout ms]"; act click "$A1" ;;
+  fill)      shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl fill <selector> <text> [--timeout ms]"; act fill "$A1" "$A2" text ;;
+  type)      shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl type <selector> <text> [--delay ms]"; act type "$A1" "$A2" text ;;
+  press)     shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl press <key>  (Enter, Tab, Escape, ...)"; act press "" "$A1" key ;;
+  text)      shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl text <selector>"; act text "$A1" ;;
+  attr)      shift; popts "$@"; [ -n "$A1" ] && [ -n "$A2" ] || die "usage: browserctl attr <selector> <name>"; act attr "$A1" "$A2" name ;;
+  html)      shift; popts "$@"; act html "$A1" ;;
+  waitfor)   shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl waitfor <selector> [--state visible|hidden|attached] [--timeout ms]"; act waitfor "$A1" ;;
+  exists)    shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl exists <selector>"
+             res=$(act exists "$A1") || exit 1
+             printf '%s\n' "$res"
+             case "$res" in *'"exists":true'*) exit 0 ;; *) exit 1 ;; esac ;;
+  shot)      shift; popts "$@"
+             fmt=${FMT:-png}; case "$fmt" in png|jpeg|jpg) ;; *) die "--format must be png or jpeg" ;; esac
+             ext=$fmt; [ "$fmt" = jpeg ] && ext=jpg; target=${OUTF:-shot.$ext}
+             q="format=$fmt"; [ -n "$SEL" ] && q="$q&selector=$(urlenc "$SEL")"; [ "$FULL" = 1 ] && q="$q&fullPage=1"
+             wget -qO "$target" --header "$H" "$BASE/shot?$q" 2>/dev/null; st=$?
+             [ $st -eq 0 ] || { rm -f "${target:?}"; fail_hint $st; exit $st; }
+             case "$(head -c 12 "$target" 2>/dev/null | tr -d '\000')" in '{"ok":false'*) cat "$target" >&2; echo >&2; rm -f "${target:?}"; exit 1 ;; esac
+             printf '{"ok":true,"path":%s,"bytes":%s}\n' "$(jstr "$target")" "$(wc -c < "$target" | tr -d ' ')" ;;
+  cookies)   shift; popts "$@"; if [ -n "$DOMAIN" ]; then safe "$DOMAIN"; get "/cookies?domain=$DOMAIN"; else get "/cookies"; fi ;;
+  setcookie) shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl setcookie <name> <value> [--domain d] [--path p]"
+             J="{\"name\":$(jstr "$A1"),\"value\":$(jstr "$A2")"
+             [ -n "$DOMAIN" ] && J="$J,\"domain\":$(jstr "$DOMAIN")"; [ -n "$PATHV" ] && J="$J,\"path\":$(jstr "$PATHV")"
+             auto "/cookies" "$J}" ;;
+  cdp)       shift; port=; raw=0; off=0
+             for a in "$@"; do case "$a" in off) off=1 ;; --json) raw=1 ;; *[!0-9]*|'') die "usage: browserctl cdp [port] | cdp off | cdp --json" ;; *) port=$a ;; esac; done
+             if [ $off -eq 1 ]; then post "/cdp" '{"enabled":false}' >/dev/null; echo 0; exit 0; fi
+             J='{"enabled":true'; [ -n "$port" ] && J="$J,\"port\":$port"
+             res=$(wget -qO- --header "$H" --header "Content-Type: application/json" --post-data "$J}" "$BASE/cdp" 2>/dev/null) || { fail_hint $?; exit 1; }
+             [ $raw -eq 1 ] && { printf '%s\n' "$res"; exit 0; }
+             url=$(printf '%s' "$res" | sed -n 's/.*"webSocketDebuggerUrl":"\([^"]*\)".*/\1/p' | sed 's#\\/#/#g')
+             if [ -n "$url" ]; then printf '%s\n' "$url"; else echo 0; printf '%s\n' "$res" >&2; exit 1; fi ;;
+  save)      shift; popts "$@"; safe "$A1"
+             if [ -n "$DIR" ]; then
+               mkdir -p "$DIR" || die "cannot create $DIR"
+               for part in request response meta; do
+                 f=$part.txt; [ $part = meta ] && f=meta.json
+                 wget -qO "$DIR/$f" --header "$H" "$BASE/history/$A1/$part" 2>/dev/null || { fail_hint $?; exit 1; }
+               done
+               for part in request response; do
+                 wget -qO "$DIR/$part.body" --header "$H" "$BASE/history/$A1/body/$part" 2>/dev/null || { fail_hint $?; exit 1; }
+                 [ -s "$DIR/$part.body" ] || rm -f "${DIR:?}/${part:?}.body"
+               done
+               printf '{"ok":true,"dir":%s}\n' "$(jstr "$DIR")"
+             elif [ -n "$OUTF" ]; then
+               { wget -qO- --header "$H" "$BASE/history/$A1/request" 2>/dev/null && printf '\n\n' && wget -qO- --header "$H" "$BASE/history/$A1/response" 2>/dev/null; } > "$OUTF" || { rm -f "${OUTF:?}"; fail_hint $?; exit 1; }
+               printf '{"ok":true,"path":%s}\n' "$(jstr "$OUTF")"
+             else die "usage: browserctl save <id> --dir <dir> | --out <file>"; fi ;;
+  har)       shift; hquery "$@"; popts "$@" 2>/dev/null
+             if [ -n "$OUTF" ]; then
+               wget -qO "$OUTF" --header "$H" "$BASE/har?$Q" 2>/dev/null || { rm -f "${OUTF:?}"; fail_hint $?; exit 1; }
+               printf '{"ok":true,"path":%s,"bytes":%s}\n' "$(jstr "$OUTF")" "$(wc -c < "$OUTF" | tr -d ' ')"
+             else wget -qO- --header "$H" "$BASE/har?$Q" 2>/dev/null || { fail_hint $?; exit 1; }; echo; fi ;;
   clear)     case "${2:-all}" in cookies|cache|storage|all) post "/clear" "{\"what\":\"${2:-all}\"}" ;; *) die "clear takes cookies|cache|storage|all" ;; esac ;;
-  history)   if [ -n "$2" ]; then safe "$2"; get "/history?host=$2"; else get "/history"; fi ;;
+  history)   shift; hquery "$@"
+             if [ -n "$Q" ]; then get "/history?$Q"; else get "/history"; fi ;;
   get)       safe "$2"; get "/history/$2" ;;
   scope)     if [ -n "$2" ]; then P=""; shift; for p in "$@"; do P="$P$(jstr "$p"),"; done; post "/scope" "{\"patterns\":[${P%,}]}"; else get "/scope"; fi ;;
   intercept) case "$2" in
@@ -209,5 +372,5 @@ case "$1" in
   rules)     get "/rules" ;;
   console)   case "${2:-200}" in ''|*[!0-9]*) die "console takes a number" ;; esac
              get "/console?limit=${2:-200}" ;;
-  *) echo "usage: browserctl {ping|ca|trust|mode|capture|tabs|tab|navigate|eval|clear|history|get|scope|intercept|pending|resolve|resend|rule|rules|console}" >&2; exit 2 ;;
+  *) echo "usage: browserctl {ping|ca|trust|mode|capture|tabs|tab|navigate|waitnav|click|fill|type|press|text|attr|exists|html|waitfor|shot|cookies|setcookie|cdp|save|har|eval|clear|history|get|scope|intercept|pending|resolve|resend|rule|rules|console}" >&2; exit 2 ;;
 esac

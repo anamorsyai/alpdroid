@@ -25,10 +25,31 @@ class BrowserBridgeTest {
     private val console = ConsoleBuffer()
     private val token = "secret-token"
     private var capture = false
+    private val pageCalls = ArrayList<String>()
+    private val fakePage = object : PageControl {
+        override fun command(args: JSONObject): JSONObject { pageCalls += "act:" + args.toString(); return JSONObject().put("ok", true).put("cmd", args.optString("cmd")) }
+        override fun navigate(url: String, wait: Boolean, state: String, timeoutMs: Long): JSONObject { pageCalls += "nav:$url:$wait:$state:$timeoutMs"; return JSONObject().put("ok", true).put("url", url) }
+        override fun waitNav(state: String, timeoutMs: Long): JSONObject { pageCalls += "waitnav:$state:$timeoutMs"; return JSONObject().put("ok", true) }
+        override fun eval(js: String, await: Boolean, timeoutMs: Long): JSONObject { pageCalls += "eval:$await:$timeoutMs:${js.length}"; return JSONObject().put("ok", true).put("result", js.length) }
+        override fun screenshot(selector: String?, fullPage: Boolean, jpeg: Boolean): Pair<ByteArray?, JSONObject?> {
+            pageCalls += "shot:$selector:$fullPage:$jpeg"
+            return if (selector == "#missing") null to JSONObject().put("ok", false).put("error", "no element matches #missing") else byteArrayOf(1, 2, 3) to null
+        }
+        override fun cookies(domain: String?) = JSONObject().put("ok", true).put("cookies", org.json.JSONArray()).put("domain", domain ?: JSONObject.NULL)
+        override fun setCookie(name: String, value: String, domain: String?, path: String?): JSONObject { pageCalls += "cookie:$name=$value:$domain:$path"; return JSONObject().put("ok", true) }
+    }
+    private val fakeCdp = object : CdpControl {
+        override fun status() = JSONObject().put("ok", true).put("enabled", true).put("port", 9222)
+        override fun set(enabled: Boolean, preferredPort: Int?) = JSONObject().put("ok", true).put("enabled", enabled).put("port", preferredPort ?: 9222)
+    }
+    private val openedWait = ArrayList<Boolean>()
     private val fakeTabs = mutableListOf(TabInfo(1, "One", "https://a.test/", true))
     private val tabsHost = object : TabsHost {
         override fun list() = fakeTabs.toList()
-        override fun open(url: String): Int? = if (fakeTabs.size >= 3) null else (fakeTabs.maxOf { it.id } + 1).also { fakeTabs.add(TabInfo(it, "", url, false)) }
+        override fun open(url: String, wait: Boolean, timeoutMs: Long): Int? {
+            openedWait += wait
+            return if (fakeTabs.size >= 3) null else (fakeTabs.maxOf { it.id } + 1).also { fakeTabs.add(TabInfo(it, "", url, false)) }
+        }
         override fun switchTo(id: Int) = fakeTabs.any { it.id == id }
         override fun close(id: Int) = fakeTabs.removeAll { it.id == id }
     }
@@ -37,9 +58,18 @@ class BrowserBridgeTest {
         store = TransactionStore()
         store.record(
             HttpTransaction(
-                id = "abc", source = TrafficSource.BROWSER, timestamp = Instant.now(), method = "GET",
+                id = "abc", source = TrafficSource.BROWSER, timestamp = Instant.parse("2026-10-11T10:00:00Z"), method = "GET",
                 scheme = "https", host = "example.com", port = 443, path = "/x",
                 responseStatus = 200, responseBody = "hello".toByteArray(),
+            ),
+        )
+        store.record(
+            HttpTransaction(
+                id = "def", source = TrafficSource.BROWSER, timestamp = Instant.parse("2026-10-11T12:00:00Z"), method = "POST",
+                scheme = "https", host = "api.test", port = 443, path = "/v1/login?x=1&y=%20z",
+                requestHeaders = listOf("Content-Type" to "application/json"), requestBody = """{"user":"bunny"}""".toByteArray(),
+                responseStatus = 201, responseHeaders = listOf("Content-Type" to "application/json"), responseBody = """{"ok":true}""".toByteArray(),
+                durationMs = 42,
             ),
         )
         bridge = BrowserBridge(
@@ -55,7 +85,7 @@ class BrowserBridgeTest {
             modeSet = { mode = it },
             onClear = { cleared.add(it) },
             preferredPort = 0,
-            captureGet = { capture }, captureSet = { capture = it }, tabs = tabsHost,
+            captureGet = { capture }, captureSet = { capture = it }, tabs = tabsHost, page = fakePage, cdp = fakeCdp, appVersion = "9.9",
         )
         bridge.start()
     }
@@ -94,7 +124,7 @@ class BrowserBridgeTest {
 
     @Test fun `history lists and reads one transaction with decoded body`() {
         val (_, list) = call("GET", "/v1/history")
-        assertEquals(1, list.getJSONArray("transactions").length())
+        assertEquals(2, list.getJSONArray("transactions").length())
         val (code, full) = call("GET", "/v1/history/abc")
         assertEquals(200, code)
         assertEquals("hello", full.getString("responseBodyText"))
@@ -199,5 +229,117 @@ class BrowserBridgeTest {
         val id = call("POST", "/v1/rules", body = """{"part":"RES_BODY","find":"a","replace":"b"}""").second.getString("id")
         assertEquals(200, call("POST", "/v1/rules/enable", body = """{"id":"$id","enabled":false}""").first)
         assertEquals(404, call("POST", "/v1/rules/enable", body = """{"id":"nope"}""").first)
+    }
+
+    private fun callRaw(path: String, withToken: Boolean = true, method: String = "GET", body: ByteArray? = null): Triple<Int, String, ByteArray> {
+        Socket("127.0.0.1", bridge.boundPort).use { sock ->
+            sock.soTimeout = 5000
+            val out = sock.getOutputStream()
+            val sb = StringBuilder("$method $path HTTP/1.1\r\nHost: x\r\n")
+            if (withToken) sb.append("Authorization: Bearer $token\r\n")
+            if (body != null) sb.append("Content-Length: ${body.size}\r\n")
+            sb.append("\r\n")
+            out.write(sb.toString().toByteArray()); if (body != null) out.write(body); out.flush()
+            val all = sock.getInputStream().readBytes()
+            val split = String(all, Charsets.ISO_8859_1).indexOf("\r\n\r\n")
+            val head = String(all, 0, split, Charsets.ISO_8859_1)
+            val type = Regex("Content-Type: ([^\r]*)", RegexOption.IGNORE_CASE).find(head)?.groupValues?.get(1) ?: ""
+            return Triple(head.split(" ")[1].toInt(), type, all.copyOfRange(split + 4, all.size))
+        }
+    }
+
+    @Test fun `a script with non-ASCII text arrives intact because the body is read as bytes`() {
+        val js = "const s = `مرحبا ${'$'}{1+1} café`; // " + "ب".repeat(20_000)
+        val payload = JSONObject().put("js", js).toString().toByteArray(Charsets.UTF_8)
+        assertTrue("more bytes than characters, the case that used to hang", payload.size > payload.toString(Charsets.UTF_8).length)
+        val (code, _, bytes) = callRaw("/v1/eval", method = "POST", body = payload)
+        assertEquals(200, code)
+        assertEquals("\"evaluated:$js\"", JSONObject(String(bytes, Charsets.UTF_8)).getString("result"))
+    }
+
+    @Test fun `invalid json is rejected with a reason instead of being treated as empty`() {
+        val (code, _, bytes) = callRaw("/v1/eval", method = "POST", body = "{not json".toByteArray())
+        assertEquals(400, code)
+        assertTrue(String(bytes).contains("not valid JSON"))
+    }
+
+    @Test fun `element commands, waits and cookies reach the page controller`() {
+        assertEquals(200, call("POST", "/v1/act", body = """{"cmd":"click","selector":"#go","timeout":500}""").first)
+        assertEquals(400, call("POST", "/v1/act", body = """{"selector":"#go"}""").first)
+        assertEquals(200, call("POST", "/v1/navigate", body = """{"url":"https://a.test/","wait":true,"state":"networkidle","timeout":9000}""").first)
+        assertEquals(0, navigated.size) // a waiting navigation is the page controller's job, not the queued command
+        assertEquals(200, call("POST", "/v1/navigate", body = """{"url":"https://b.test/"}""").first)
+        assertEquals(listOf("https://b.test/"), navigated)
+        assertEquals(200, call("POST", "/v1/waitnav", body = """{"state":"load","timeout":4000}""").first)
+        assertEquals(200, call("POST", "/v1/cookies", body = """{"name":"sid","value":"1","domain":"a.test"}""").first)
+        assertEquals(200, call("GET", "/v1/cookies?domain=a.test").first)
+        assertTrue(pageCalls.toString(), pageCalls.any { it.startsWith("act:") && it.contains("\"click\"") })
+        assertTrue(pageCalls.contains("nav:https://a.test/:true:networkidle:9000"))
+        assertTrue(pageCalls.contains("waitnav:load:4000"))
+        assertTrue(pageCalls.contains("cookie:sid=1:a.test:null"))
+    }
+
+    @Test fun `eval with await goes through the page controller`() {
+        call("POST", "/v1/eval", body = """{"js":"await x","await":true,"timeout":1234}""")
+        assertTrue(pageCalls.toString(), pageCalls.contains("eval:true:1234:7"))
+    }
+
+    @Test fun `screenshots come back as image bytes, errors as json`() {
+        val (code, type, bytes) = callRaw("/v1/shot?fullPage=1&format=jpeg")
+        assertEquals(200, code); assertEquals("image/jpeg", type); assertEquals(listOf<Byte>(1, 2, 3), bytes.toList())
+        assertTrue(pageCalls.contains("shot:null:true:true"))
+        val (_, errType, errBytes) = callRaw("/v1/shot?selector=%23missing")
+        assertEquals("application/json", errType)
+        assertTrue(String(errBytes).startsWith("{\"ok\":false") || String(errBytes).contains("\"ok\":false"))
+        assertEquals(401, callRaw("/v1/shot", withToken = false).first)
+    }
+
+    @Test fun `a transaction can be saved as raw request, raw response, meta and body`() {
+        val (_, _, req) = callRaw("/v1/history/def/request")
+        assertEquals("POST /v1/login?x=1&y=%20z HTTP/1.1\nContent-Type: application/json\n\n{\"user\":\"bunny\"}", String(req))
+        val (_, _, res) = callRaw("/v1/history/def/response")
+        assertEquals("HTTP/1.1 201\nContent-Type: application/json\n\n{\"ok\":true}", String(res))
+        val meta = JSONObject(String(callRaw("/v1/history/def/meta").third))
+        assertEquals(201, meta.getInt("status")); assertEquals("api.test", meta.getString("host"))
+        assertEquals("""{"ok":true}""", String(callRaw("/v1/history/def/body/response").third))
+        assertEquals("""{"user":"bunny"}""", String(callRaw("/v1/history/def/body/request").third))
+        assertEquals(404, callRaw("/v1/history/nope/request").first)
+    }
+
+    @Test fun `history can be filtered, paged, summarised and its retention is reported`() {
+        val j = call("GET", "/v1/history?method=POST&limit=1&page=1").second
+        assertEquals(1, j.getJSONArray("transactions").length()); assertEquals(1, j.getInt("total"))
+        assertEquals(500, j.getInt("capacity")); assertEquals(0, j.getLong("dropped"))
+        assertEquals(1, call("GET", "/v1/history?since=2026-10-11T11:00:00Z").second.getInt("total"))
+        assertEquals(2, call("GET", "/v1/history?since=2026-10-11T09:00:00Z").second.getInt("total"))
+        val lines = String(callRaw("/v1/history?fmt=lines&status=201").third)
+        assertEquals("def POST 201 42ms api.test/v1/login?x=1&y=%20z\n", lines)
+        assertEquals(0, call("GET", "/v1/history?page=9").second.getJSONArray("transactions").length())
+    }
+
+    @Test fun `har export contains decoded entries`() {
+        val har = JSONObject(String(callRaw("/v1/har?host=api.test").third)).getJSONObject("log")
+        assertEquals("1.2", har.getString("version")); assertEquals("9.9", har.getJSONObject("creator").getString("version"))
+        val e = har.getJSONArray("entries").getJSONObject(0)
+        assertEquals("POST", e.getJSONObject("request").getString("method"))
+        assertEquals("""{"user":"bunny"}""", e.getJSONObject("request").getJSONObject("postData").getString("text"))
+        assertEquals("""{"ok":true}""", e.getJSONObject("response").getJSONObject("content").getString("text"))
+        assertEquals("y", e.getJSONObject("request").getJSONArray("queryString").getJSONObject(1).getString("name"))
+        assertEquals(" z", e.getJSONObject("request").getJSONArray("queryString").getJSONObject(1).getString("value"))
+    }
+
+    @Test fun `cdp can be turned on and asked for its status`() {
+        assertEquals(true, call("GET", "/v1/cdp").second.getBoolean("enabled"))
+        val j = call("POST", "/v1/cdp", body = """{"enabled":true,"port":9333}""").second
+        assertEquals(9333, j.getInt("port"))
+    }
+
+    @Test fun `tabs report load state and wait by default when opened`() {
+        val t = call("GET", "/v1/tabs").second.getJSONArray("tabs").getJSONObject(0)
+        assertTrue(t.has("loading") && t.has("lastActiveAt"))
+        call("POST", "/v1/tabs", body = """{"action":"new","url":"https://x.test"}""")
+        assertEquals(listOf(true), openedWait)
+        call("POST", "/v1/tabs", body = """{"action":"new","url":"https://y.test","wait":false}""")
+        assertEquals(listOf(true, false), openedWait)
     }
 }

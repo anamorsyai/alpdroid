@@ -40,6 +40,11 @@ class AlpBrowserApp : Application() {
     val browserWebViewHolder by lazy { BrowserWebViewHolder(this) }
 
     /** Installed extensions (userscripts), kept in private storage so they stay installed until removed. */
+    /** Page automation for the control API (element commands, waits, screenshots, cookies). */
+    val pageAutomation by lazy { PageAutomation(this) }
+    /** When the WebView last asked for a resource; used to decide "network idle". */
+    @Volatile var lastRequestAt: Long = 0L
+
     val extensions by lazy { ExtensionStore(java.io.File(filesDir, "extensions")) }
     val extensionInjector by lazy { ExtensionInjector(extensions) { browserWebViewHolder.allWebViews } }
 
@@ -58,7 +63,58 @@ class AlpBrowserApp : Application() {
     /** Chrome remote debugging (CDP/DevTools). OFF by default: it opens a process-wide debugging
      *  socket any local app could attach to, so it is an explicit opt-in the agent/user turns on. */
     fun devtoolsEnabled(): Boolean = prefs.getBoolean("devtools", false)
-    fun setDevtoolsEnabled(on: Boolean) = prefs.edit().putBoolean("devtools", on).apply()
+    fun setDevtoolsEnabled(on: Boolean) {
+        prefs.edit().putBoolean("devtools", on).apply()
+        main.post { runCatching { android.webkit.WebView.setWebContentsDebuggingEnabled(on) } }
+        if (on) cdpForwarder.start(CDP_PORT) else cdpForwarder.stop()
+    }
+
+    /**
+     * WebView's DevTools lives on an abstract unix socket only this app can open; this relays it to a loopback TCP
+     * port (token-gated) so a CDP client inside the proot shell can attach. See [CdpForwarder].
+     */
+    val cdpForwarder by lazy {
+        CdpForwarder(controlToken, {
+            var last: Exception? = null
+            for (name in listOf("webview_devtools_remote_${android.os.Process.myPid()}", "chrome_devtools_remote")) {
+                try {
+                    val sock = android.net.LocalSocket()
+                    sock.connect(android.net.LocalSocketAddress(name, android.net.LocalSocketAddress.Namespace.ABSTRACT))
+                    return@CdpForwarder CdpForwarder.Link(sock.inputStream, sock.outputStream, { runCatching { sock.close() } })
+                } catch (e: Exception) { last = e }
+            }
+            throw java.io.IOException("DevTools socket not found", last)
+        })
+    }
+
+    private val cdpControl = object : CdpControl {
+        override fun status(): org.json.JSONObject {
+            val on = devtoolsEnabled()
+            val out = org.json.JSONObject().put("ok", true).put("enabled", on).put("port", if (on) cdpForwarder.port else 0)
+            if (!on || cdpForwarder.port == 0) return out
+            val base = "http://127.0.0.1:${cdpForwarder.port}/$controlToken"
+            out.put("browserUrl", base)
+            // Ask DevTools (through our own forwarder) for the browser-level WebSocket URL, with the token already in it.
+            runCatching {
+                val conn = (java.net.URL("$base/json/version").openConnection() as HttpURLConnection).apply { connectTimeout = 3000; readTimeout = 5000 }
+                val text = conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+                val j = org.json.JSONObject(text)
+                out.put("webSocketDebuggerUrl", j.optString("webSocketDebuggerUrl")).put("browser", j.optString("Browser"))
+            }.onFailure { out.put("note", "DevTools is enabled but did not answer yet: open a page in AlpBrowser and retry (${it.message})") }
+            return out
+        }
+
+        override fun set(enabled: Boolean, preferredPort: Int?): org.json.JSONObject {
+            if (enabled && preferredPort != null && cdpForwarder.port == 0) {
+                prefs.edit().putBoolean("devtools", true).apply()
+                main.post { runCatching { android.webkit.WebView.setWebContentsDebuggingEnabled(true) } }
+                cdpForwarder.start(preferredPort)
+            } else setDevtoolsEnabled(enabled)
+            return status()
+        }
+    }
+
+
 
     /**
      * Capture: route the page through the intercepting proxy so History holds full, decrypted requests and responses.
@@ -167,11 +223,16 @@ class AlpBrowserApp : Application() {
     private val tabsHost = object : TabsHost {
         private val holder get() = browserWebViewHolder
         override fun list() = holder.info()
-        override fun open(url: String): Int? = onMainBlocking {
-            com.alpdroid.browser.ui.browser.openTab(
-                this@AlpBrowserApp, this@AlpBrowserApp,
-                com.alpdroid.browser.ui.browser.normalizeUrl(url.ifBlank { BrowserWebViewHolder.DEFAULT_URL }),
-            )?.id
+        override fun open(url: String, wait: Boolean, timeoutMs: Long): Int? {
+            val tab = onMainBlocking {
+                com.alpdroid.browser.ui.browser.openTab(
+                    this@AlpBrowserApp, this@AlpBrowserApp,
+                    com.alpdroid.browser.ui.browser.normalizeUrl(url.ifBlank { BrowserWebViewHolder.DEFAULT_URL }),
+                )
+            } ?: return null
+            // Returning while the tab is still blank reads as success; wait for the page unless the caller said not to.
+            if (wait && url.isNotBlank()) tab.webView?.let { pageAutomation.awaitLoad(tab, it, timeoutMs) }
+            return tab.id
         }
         override fun switchTo(id: Int) = onMainBlocking { holder.switchTo(id) } ?: false
         override fun close(id: Int) = onMainBlocking { holder.close(id) } ?: false
@@ -204,6 +265,9 @@ class AlpBrowserApp : Application() {
             captureGet = ::captureEnabled,
             captureSet = { setCaptureEnabled(it) },
             tabs = tabsHost,
+            page = pageAutomation,
+            appVersion = BuildConfig.VERSION_NAME,
+            cdp = cdpControl,
             onClear = ::clearBrowserData,
             preferredPort = CONTROL_PORT,
         )
@@ -223,6 +287,7 @@ class AlpBrowserApp : Application() {
         adBlocker.enabled = adblockEnabled()
         adBlocker.loadAsync()
         browserEngine.start(engineScope)
+        if (devtoolsEnabled()) engineScope.launch { runCatching { cdpForwarder.start(CDP_PORT) } }
         engineScope.launch { runCatching { bridge.start() } }
         Log.i(TAG, "AlpBrowser proxy on 127.0.0.1:$PROXY_PORT, control API starting on 127.0.0.1:$CONTROL_PORT")
     }
@@ -314,6 +379,7 @@ class AlpBrowserApp : Application() {
         private const val TAG = "AlpBrowser"
         const val PROXY_PORT = 8890
         const val CONTROL_PORT = 8899
+        const val CDP_PORT = 9222
         private const val MAX_RESEND_BODY = 10 * 1024 * 1024
         /** CN of our MITM root CA (see core-proxy TlsCa.selfSignedCa) — the SSL-error fallback check. */
         const val CA_CN = "Ronin Proxy CA"

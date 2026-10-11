@@ -4,8 +4,6 @@ import com.alpdroid.proxy.HttpTransaction
 import com.alpdroid.proxy.RequestAction
 import com.alpdroid.proxy.ResponseAction
 import com.alpdroid.proxy.TransactionStore
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -39,8 +37,8 @@ import org.json.JSONObject
 /** What the control API needs from the browser's tabs (implemented by the app, on the main thread). */
 interface TabsHost {
     fun list(): List<TabInfo>
-    /** Opens a tab and returns its id, or null when the tab limit is reached. */
-    fun open(url: String): Int?
+    /** Opens a tab and returns its id (after the page has loaded when [wait]), or null when the tab limit is reached. */
+    fun open(url: String, wait: Boolean = false, timeoutMs: Long = 20_000): Int?
     fun switchTo(id: Int): Boolean
     fun close(id: Int): Boolean
 }
@@ -64,6 +62,9 @@ class BrowserBridge(
     private val captureGet: () -> Boolean = { true },
     private val captureSet: (Boolean) -> Unit = {},
     private val tabs: TabsHost? = null,
+    private val page: PageControl? = null,
+    private val cdp: CdpControl? = null,
+    private val appVersion: String = "",
 ) {
     data class ResendRequest(val method: String, val url: String, val headers: List<Pair<String, String>>, val body: ByteArray?)
     data class ResendResponse(val status: Int, val headers: List<Pair<String, String>>, val body: ByteArray?, val error: String? = null)
@@ -105,26 +106,37 @@ class BrowserBridge(
         server = null
     }
 
+    /** One header/request line read as bytes (ISO-8859-1), so a body is never confused with characters. */
+    private fun readLine(input: java.io.InputStream): String? {
+        val sb = StringBuilder()
+        while (true) {
+            val b = input.read()
+            if (b < 0) return if (sb.isEmpty()) null else sb.toString()
+            if (b == '\n'.code) return sb.toString().trimEnd('\r')
+            if (sb.length > 16 * 1024) return sb.toString()
+            sb.append(b.toChar())
+        }
+    }
+
     private fun handle(sock: Socket) {
         sock.use {
             sock.soTimeout = 15_000
-            val input = sock.getInputStream()
-            val reader = BufferedReader(InputStreamReader(input, Charsets.UTF_8))
-            val requestLine = reader.readLine() ?: return
+            val input = java.io.BufferedInputStream(sock.getInputStream())
+            val requestLine = readLine(input) ?: return
             val parts = requestLine.split(' ')
             if (parts.size != 3 || (parts[0] != "GET" && parts[0] != "POST")) { respond(sock.getOutputStream(), 400, error("bad request")); return }
             val method = parts[0]
             var authHeader: String? = null
-            var contentLength = 0
+            var contentLength = 0L
             while (true) {
-                val line = reader.readLine() ?: break
+                val line = readLine(input) ?: break
                 if (line.isEmpty()) break
                 val idx = line.indexOf(':')
                 if (idx <= 0) continue
                 val name = line.substring(0, idx).trim().lowercase()
                 val value = line.substring(idx + 1).trim()
                 if (name == "authorization") authHeader = value
-                if (name == "content-length") contentLength = value.toIntOrNull() ?: 0
+                if (name == "content-length") contentLength = value.toLongOrNull() ?: 0L
             }
             val rawPath = parts[1]
             val qIdx = rawPath.indexOf('?')
@@ -135,16 +147,57 @@ class BrowserBridge(
             val presented = authHeader?.removePrefix("Bearer ")?.trim() ?: query["token"] ?: ""
             if (!tokenOk(presented)) { respond(sock.getOutputStream(), 401, error("unauthorized")); return }
 
-            val bodyText = if (contentLength in 1..(8 * 1024 * 1024)) {
-                val buf = CharArray(contentLength)
-                var read = 0
-                while (read < contentLength) { val n = reader.read(buf, read, contentLength - read); if (n < 0) break; read += n }
-                String(buf, 0, read)
-            } else ""
-            val body = runCatching { if (bodyText.isBlank()) JSONObject() else JSONObject(bodyText) }.getOrDefault(JSONObject())
+            if (contentLength > MAX_BODY_BYTES) { respond(sock.getOutputStream(), 400, error("request body too large")); return }
+            // Exactly Content-Length BYTES, decoded as UTF-8 afterwards: counting characters instead would hang on (or cut)
+            // any script containing non-ASCII text, which arrives as more bytes than characters.
+            val bodyBytes = ByteArray(contentLength.toInt())
+            var read = 0
+            while (read < bodyBytes.size) { val n = input.read(bodyBytes, read, bodyBytes.size - read); if (n < 0) break; read += n }
+            val bodyText = String(bodyBytes, 0, read, Charsets.UTF_8)
+            val body = if (bodyText.isBlank()) JSONObject() else try { JSONObject(bodyText) } catch (e: Exception) {
+                respond(sock.getOutputStream(), 400, error("body is not valid JSON: ${e.message}")); return
+            }
 
+            val raw = try { rawRoute(method, path, query) } catch (e: Exception) { Raw(500, "application/json", error(e.message ?: "error").toString().toByteArray()) }
+            if (raw != null) { respondRaw(sock.getOutputStream(), raw); return }
             val (code, json) = try { route(method, path, query, body) } catch (e: Exception) { 500 to error(e.message ?: "error") }
             respond(sock.getOutputStream(), code, json)
+        }
+    }
+
+    private class Raw(val code: Int, val type: String, val bytes: ByteArray)
+
+    private fun respondRaw(out: OutputStream, r: Raw) {
+        val head = "HTTP/1.1 ${r.code} ${reason(r.code)}\r\nContent-Type: ${r.type}\r\nContent-Length: ${r.bytes.size}\r\nConnection: close\r\n\r\n"
+        runCatching { out.write(head.toByteArray(Charsets.US_ASCII)); out.write(r.bytes); out.flush() }
+    }
+
+    private fun text(t: String) = Raw(200, "text/plain; charset=utf-8", t.toByteArray(Charsets.UTF_8))
+
+    /** Routes whose answer is not JSON: screenshots, and decoded messages / bodies saved to disk. */
+    private fun rawRoute(method: String, path: String, q: Map<String, String>): Raw? {
+        if (method != "GET") return null
+        if (path == "/v1/shot") {
+            val pc = page ?: return Raw(200, "application/json", error("page control is not available").toString().toByteArray())
+            val jpeg = q["format"].equals("jpeg", true) || q["format"].equals("jpg", true)
+            val (bytes, err) = pc.screenshot(q["selector"]?.takeIf { it.isNotBlank() }, q["fullPage"] == "1" || q["fullPage"] == "true", jpeg)
+            return if (bytes != null) Raw(200, if (jpeg) "image/jpeg" else "image/png", bytes)
+            else Raw(200, "application/json", (err ?: error("screenshot failed")).toString().toByteArray())
+        }
+        if (path == "/v1/history" && q["fmt"] == "lines") {
+            val lines = filteredHistory(q).joinToString("\n") { tx ->
+                "${tx.id} ${tx.method} ${tx.responseStatus ?: "-"} ${tx.durationMs ?: "-"}ms ${tx.host}${tx.path}"
+            }
+            return text(if (lines.isEmpty()) "" else lines + "\n")
+        }
+        if (path == "/v1/har") return Raw(200, "application/json", Har.build(filteredHistory(q).asReversed(), appVersion).toString().toByteArray(Charsets.UTF_8))
+        val m = Regex("^/v1/history/([A-Za-z0-9-]+)/(request|response|meta|body)(?:/(request|response))?$").find(path) ?: return null
+        val tx = store.transactions.value.firstOrNull { it.id == m.groupValues[1] } ?: return Raw(404, "application/json", error("no such transaction").toString().toByteArray())
+        return when (m.groupValues[2]) {
+            "request" -> text(Har.rawRequest(tx))
+            "response" -> text(Har.rawResponse(tx))
+            "meta" -> Raw(200, "application/json", Har.meta(tx).toString().toByteArray())
+            else -> Raw(200, "application/octet-stream", (if (m.groupValues[3] == "request") tx.requestBody else tx.responseBody) ?: ByteArray(0))
         }
     }
 
@@ -166,10 +219,40 @@ class BrowserBridge(
             path == "/v1/intercept/resolve" && method == "POST" -> return resolveHold(body)
             path == "/v1/navigate" && method == "POST" -> {
                 val url = body.optString("url"); if (url.isBlank()) return 400 to error("url required")
+                val pc = page
+                if (body.optBoolean("wait") && pc != null) return 200 to pc.navigate(url, true, body.optString("state", "load"), body.optLong("timeout", 30_000))
                 onNavigate(url); return 200 to ok()
+            }
+            path == "/v1/waitnav" && method == "POST" -> {
+                val pc = page ?: return 404 to error("page control is not available")
+                return 200 to pc.waitNav(body.optString("state", "load"), body.optLong("timeout", 30_000))
+            }
+            path == "/v1/act" && method == "POST" -> {
+                val pc = page ?: return 404 to error("page control is not available")
+                if (body.optString("cmd").isBlank()) return 400 to error("cmd required")
+                return 200 to pc.command(body)
+            }
+            path == "/v1/cookies" && method == "GET" -> {
+                val pc = page ?: return 404 to error("page control is not available")
+                return 200 to pc.cookies(q["domain"]?.takeIf { it.isNotBlank() })
+            }
+            path == "/v1/cookies" && method == "POST" -> {
+                val pc = page ?: return 404 to error("page control is not available")
+                val name = body.optString("name"); if (name.isBlank()) return 400 to error("name required")
+                return 200 to pc.setCookie(name, body.optString("value"), body.optStringOrNull("domain")?.takeIf { it.isNotBlank() }, body.optStringOrNull("path")?.takeIf { it.isNotBlank() })
+            }
+            path == "/v1/cdp" && method == "GET" -> {
+                val c = cdp ?: return 404 to error("cdp is not available")
+                return 200 to c.status()
+            }
+            path == "/v1/cdp" && method == "POST" -> {
+                val c = cdp ?: return 404 to error("cdp is not available")
+                return 200 to c.set(body.optBoolean("enabled", true), if (body.has("port")) body.optInt("port") else null)
             }
             path == "/v1/eval" && method == "POST" -> {
                 val js = body.optString("js"); if (js.isBlank()) return 400 to error("js required")
+                val pc = page
+                if (body.optBoolean("await") && pc != null) return 200 to pc.eval(js, true, body.optLong("timeout", 30_000))
                 return 200 to JSONObject().put("result", onEvalJs(js))
             }
             path == "/v1/resend" && method == "POST" -> return resend(body)
@@ -197,13 +280,16 @@ class BrowserBridge(
             path == "/v1/tabs" && method == "GET" -> {
                 val host = tabs ?: return 404 to error("tabs are not available")
                 val arr = JSONArray()
-                host.list().forEach { arr.put(JSONObject().put("id", it.id).put("title", it.title).put("url", it.url).put("active", it.active)) }
+                host.list().forEach {
+                    arr.put(JSONObject().put("id", it.id).put("title", it.title).put("url", it.url).put("active", it.active)
+                        .put("loading", it.loading).put("lastActiveAt", it.lastActiveAt))
+                }
                 return 200 to JSONObject().put("tabs", arr)
             }
             path == "/v1/tabs" && method == "POST" -> {
                 val host = tabs ?: return 404 to error("tabs are not available")
                 return when (body.optString("action")) {
-                    "new" -> host.open(body.optString("url")).let { id -> if (id == null) 409 to error("tab limit reached") else 200 to JSONObject().put("ok", true).put("id", id) }
+                    "new" -> host.open(body.optString("url"), body.optBoolean("wait", true), body.optLong("timeout", 20_000)).let { id -> if (id == null) 409 to error("tab limit reached") else 200 to JSONObject().put("ok", true).put("id", id) }
                     "switch" -> if (host.switchTo(body.optInt("id", -1))) 200 to ok() else 404 to error("no such tab")
                     "close" -> if (host.close(body.optInt("id", -1))) 200 to ok() else 404 to error("no such tab")
                     else -> 400 to error("action must be new, switch or close")
@@ -219,18 +305,27 @@ class BrowserBridge(
         }
     }
 
-    private fun historyList(q: Map<String, String>): JSONObject {
-        val limit = q["limit"]?.toIntOrNull()?.coerceIn(1, 1000) ?: 200
+    /** Captured traffic, newest first, narrowed by host / method / status / contains / since (ISO time). */
+    private fun filteredHistory(q: Map<String, String>): List<HttpTransaction> {
         val host = q["host"]; val m = q["method"]; val status = q["status"]?.toIntOrNull(); val contains = q["contains"]
-        val arr = JSONArray()
-        store.transactions.value.asReversed().asSequence()
+        val since = q["since"]?.let { runCatching { java.time.Instant.parse(it) }.getOrNull() }
+        return store.transactions.value.asReversed()
             .filter { host == null || it.host.contains(host, true) }
             .filter { m == null || it.method.equals(m, true) }
             .filter { status == null || it.responseStatus == status }
             .filter { contains == null || it.url.contains(contains, true) }
-            .take(limit)
-            .forEach { arr.put(summary(it)) }
-        return JSONObject().put("transactions", arr)
+            .filter { since == null || !it.timestamp.isBefore(since) }
+    }
+
+    private fun historyList(q: Map<String, String>): JSONObject {
+        val limit = q["limit"]?.toIntOrNull()?.coerceIn(1, 1000) ?: 200
+        val pageNo = (q["page"]?.toIntOrNull() ?: 1).coerceAtLeast(1)
+        val all = filteredHistory(q)
+        val arr = JSONArray()
+        all.drop((pageNo - 1) * limit).take(limit).forEach { arr.put(summary(it)) }
+        return JSONObject().put("transactions", arr).put("total", all.size).put("page", pageNo).put("limit", limit)
+            // Only the newest [capacity] transactions are kept (and a memory budget applies); older ones are discarded.
+            .put("capacity", store.capacity).put("dropped", store.droppedCount)
     }
 
     private fun historyOne(id: String): Pair<Int, JSONObject> {
@@ -417,6 +512,8 @@ class BrowserBridge(
         val head = "HTTP/1.1 $code ${reason(code)}\r\nContent-Type: application/json\r\nContent-Length: ${payload.size}\r\nConnection: close\r\n\r\n"
         runCatching { out.write(head.toByteArray(Charsets.US_ASCII)); out.write(payload); out.flush() }
     }
+
+    private val MAX_BODY_BYTES = 16L * 1024 * 1024
 
     private fun reason(code: Int) = when (code) {
         200 -> "OK"; 400 -> "Bad Request"; 401 -> "Unauthorized"; 404 -> "Not Found"; 409 -> "Conflict"; 500 -> "Error"; 502 -> "Bad Gateway"; else -> "Status"

@@ -96,4 +96,15 @@ class TransactionStoreTest {
         store.record(tx("huge", 50_000)) // the newest entry is always kept, even when it alone exceeds the budget
         assertEquals(listOf("huge"), store.transactions.value.map { it.id })
     }
+
+    @Test
+    fun `entries dropped to stay within the cap are counted`() {
+        val store = TransactionStore(maxSize = 2)
+        repeat(5) { n ->
+            store.record(HttpTransaction(n.toString(), TrafficSource.BROWSER, java.time.Instant.now(), "GET", "https", "h", 443, "/"))
+        }
+        assertEquals(2, store.capacity)
+        assertEquals(3L, store.droppedCount)
+        assertEquals(listOf("3", "4"), store.transactions.value.map { it.id })
+    }
 }

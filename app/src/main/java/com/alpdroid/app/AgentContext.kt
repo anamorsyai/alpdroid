@@ -96,16 +96,17 @@ Field types: text, number, toggle, select (with "options"). Each field reaches t
 Reach it with the `browserctl` command (loopback 127.0.0.1, token-authenticated). It is already installed and AlpDroid provisions the token for you automatically (read from AlpBrowser over a same-signature channel) — no manual token copy. Just:
   browserctl ping                        # check it is reachable
   browserctl trust                       # make Alpine's curl/python trust the intercepted HTTPS (appends the proxy CA)
-Every browserctl command exits non-zero when it did not really succeed (check the exit status, not just the text). If ping says AlpBrowser is not linked, the app is not installed yet — the user installs it from AlpDroid -> Settings -> About -> AlpBrowser. Once it is installed AlpDroid links to it automatically (within a few seconds, also in shells that are already open); `navigate`, `eval` and `clear` need a page, so if they report an error the user has to open AlpBrowser once so it has a page.
+History, rules and interception only see traffic while Capture is on; without it the page browses directly. Every browserctl command exits non-zero when it did not really succeed (check the exit status, not just the text). If ping says AlpBrowser is not linked, the app is not installed yet — the user installs it from AlpDroid -> Settings -> About -> AlpBrowser. Once it is installed AlpDroid links to it automatically (within a few seconds, also in shells that are already open); `navigate`, `eval` and `clear` need a page, so if they report an error the user has to open AlpBrowser once so it has a page.
 
 By default AlpBrowser browses directly (fast) and History lists only the URLs loaded. For decrypted requests/responses (and rules or interception) route it through the proxy first: `browserctl capture on` (`browserctl mode bugbounty` does this too; `intercept on` implies it). Turn it off again with `browserctl capture off` when you only need to browse.
 
 Two modes (set the one that fits the task): `browserctl mode bugbounty` or `browserctl mode webdev`.
 
 Both modes:
-- browserctl navigate <url>             open a page
-- browserctl eval '<js>'                run JavaScript in the live page (returns the result)
-- browserctl history [host]             captured requests; browserctl get <id> for one in full (TLS-decrypted bodies)
+- browserctl navigate <url> [--wait] [--state load|domcontentloaded|networkidle] [--timeout ms]   open a page; --wait blocks until it has loaded and reports the final URL
+- browserctl eval '<js>' | eval --file <path> | eval --stdin [--await]   run JavaScript in the live page (multi-line, backticks and non-ASCII are fine; --await waits for a promise)
+- browserctl history [host] [--method M] [--status N] [--since ISO] [--limit n] [--page n] [--compact]   captured requests (only the newest 500 are kept; the answer says how many were dropped); browserctl get <id> for one in full: bodies are base64 of the DECODED bytes (gzip already removed), with bodyText and bodyPretty alongside
+- browserctl save <id> --dir <dir>      write request.txt, response.txt, meta.json and the raw bodies to disk; browserctl har [--out file] exports HAR 1.2
 - browserctl tabs / browserctl tab new [url] | tab switch <id> | tab close <id>   several pages at once; navigate/eval act on the tab in front
 - browserctl clear [cookies|cache|storage|all]
 - browserctl ca                         print the proxy root CA (PEM)
@@ -124,6 +125,13 @@ Bug bounty (intercept & tamper):
 Web development:
 - browserctl console [limit]            read the page's console.log/warn/error and uncaught JS errors
 - Chromium remote debugging (CDP/DevTools) is enabled, so a DevTools client can also attach to the live page.
+
+Driving the page without Playwright (acts on the tab in front; every command exits non-zero on failure and prints the reason):
+- browserctl click <sel> | fill <sel> <text> | type <sel> <text> [--delay ms] | press <key> | text <sel> | attr <sel> <name> | html [sel] | exists <sel>
+- browserctl waitfor <sel> [--state visible|hidden|attached] | waitnav [--state ...]   (all element commands wait up to 10 s by default; --timeout ms changes it)
+- browserctl shot [--selector css] [--full-page] [--out file.png] [--format png|jpeg]   screenshot; the Browser screen must be on screen (open AlpBrowser)
+- browserctl cookies [--domain d] | setcookie <name> <value> [--domain d] [--path p]
+- browserctl cdp   turns remote debugging on and prints a WebSocket URL (with the control token in it) for Puppeteer/Playwright `connectOverCDP`; the page being driven is the same one the proxy is capturing. `cdp off` turns it off.
 
 Rules: only test targets the user is authorized to test; never exfiltrate captured data anywhere; treat tokens/cookies in captured traffic as secret.
 

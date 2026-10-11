@@ -25,6 +25,7 @@ class BrowserctlScriptTest {
     private lateinit var server: ServerSocket
     private lateinit var work: File
     private val posts = CopyOnWriteArrayList<Pair<String, String>>()
+    private val gets = CopyOnWriteArrayList<String>()
     private var caMode = "ok"
 
     private val pem = "-----BEGIN CERTIFICATE-----\n" +
@@ -85,6 +86,12 @@ class BrowserctlScriptTest {
         val body = if (length > 0) ByteArray(length).also { var n = 0; while (n < length) { val r = input.read(it, n, length - n); if (r < 0) break; n += r } }.toString(Charsets.UTF_8) else ""
         val path = target.substringBefore('?')
 
+        fun raw(code: Int, type: String, bytes: ByteArray) {
+            s.getOutputStream().apply {
+                write("HTTP/1.1 $code OK\r\nContent-Type: $type\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray())
+                write(bytes); flush()
+            }
+        }
         fun reply(code: Int, text: String, o: JSONObject) {
             val b = orgJson(o).toByteArray()
             s.getOutputStream().apply {
@@ -97,7 +104,24 @@ class BrowserctlScriptTest {
             val parsed = runCatching { JSONObject(body) }.getOrNull()
             if (parsed == null) { posts += path to "INVALID:$body"; return reply(400, "Bad Request", JSONObject().put("error", "bad json")) }
             posts += path to body
+            // The real API answers 200 with {"ok":false,...} (ok first) when an element command fails.
+            if (parsed.optString("selector") == "#missing") return raw(200, "application/json", "{\"ok\":false,\"error\":\"timeout after 10ms waiting for #missing to be visible\"}".toByteArray())
+            if (path == "/v1/cdp") return raw(200, "application/json", "{\"ok\":true,\"enabled\":true,\"port\":9222,\"webSocketDebuggerUrl\":\"ws:\\/\\/127.0.0.1:9222\\/tok\\/devtools\\/browser\\/abc\"}".toByteArray())
             return reply(200, "OK", JSONObject().put("ok", true).put("echo", parsed))
+        }
+        gets += target
+        if (path == "/v1/shot") {
+            return if (java.net.URLDecoder.decode(target, "UTF-8").contains("selector=#missing")) raw(200, "application/json", "{\"ok\":false,\"error\":\"no element matches #missing\"}".toByteArray())
+            else raw(200, "image/png", byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte(), 13, 10, 26, 10, 1, 2, 3, 4))
+        }
+        if (path.startsWith("/v1/history/abc/")) {
+            return when (path.removePrefix("/v1/history/abc/")) {
+                "request" -> raw(200, "text/plain", "GET /x HTTP/1.1\nHost: t\n\n".toByteArray())
+                "response" -> raw(200, "text/plain", "HTTP/1.1 200\n\nhello".toByteArray())
+                "meta" -> raw(200, "application/json", "{\"id\":\"abc\"}".toByteArray())
+                "body/response" -> raw(200, "application/octet-stream", "hello".toByteArray())
+                else -> raw(200, "application/octet-stream", ByteArray(0))
+            }
         }
         when {
             path == "/v1/ping" -> reply(200, "OK", JSONObject().put("ok", true))
@@ -115,7 +139,7 @@ class BrowserctlScriptTest {
      *  never leak into the test; [extra] adds fake tools (e.g. a recording update-ca-certificates). */
     private fun toolPath(extra: Map<String, String> = emptyMap()): String {
         val bin = File(work, "bin").apply { mkdirs() }
-        for (tool in listOf("wget", "sed", "tr", "grep", "mkdir", "cat", "base64")) {
+        for (tool in listOf("wget", "sed", "tr", "grep", "mkdir", "cat", "base64", "mktemp", "od", "head", "wc", "rm", "date")) {
             val real = listOf("/usr/bin", "/bin", "/usr/local/bin").map { File(it, tool) }.firstOrNull { it.exists() } ?: continue
             val link = File(bin, tool)
             if (!link.exists()) java.nio.file.Files.createSymbolicLink(link.toPath(), real.toPath())
@@ -337,5 +361,127 @@ class BrowserctlScriptTest {
         assertEquals(0, run("intercept", "on").code)
         assertEquals(false, lastPost("/v1/intercept").getBoolean("responses"))
         assertEquals(true, lastPost("/v1/intercept").getBoolean("skipStatic"))
+    }
+
+    // ---------------------------------------------------------------------------- automation commands
+
+    @Test fun elementCommandsSendStructuredRequestsAndExitZero() {
+        val r = run("click", "#go", "--timeout", "2500")
+        assertEquals(r.err, 0, r.code)
+        val j = lastPost("/v1/act")
+        assertEquals("click", j.getString("cmd")); assertEquals("#go", j.getString("selector")); assertEquals(2500, j.getInt("timeout"))
+
+        assertEquals(0, run("fill", "#f", "he said \"hi\"\nline2").code)
+        assertEquals("he said \"hi\"\nline2", lastPost("/v1/act").getString("text"))
+
+        assertEquals(0, run("type", "#f", "abc", "--delay", "30").code)
+        assertEquals(30, lastPost("/v1/act").getInt("delay"))
+        assertEquals(0, run("press", "Enter").code)
+        assertEquals("Enter", lastPost("/v1/act").getString("key"))
+        assertEquals(0, run("attr", "a.x", "href").code)
+        assertEquals("href", lastPost("/v1/act").getString("name"))
+        assertEquals(0, run("waitfor", "#late", "--state", "hidden", "--timeout", "500").code)
+        assertEquals("hidden", lastPost("/v1/act").getString("state"))
+    }
+
+    @Test fun aFailedElementCommandIsNeverASuccess() {
+        for (cmd in listOf(listOf("click", "#missing"), listOf("waitfor", "#missing", "--timeout", "10"), listOf("fill", "#missing", "x"), listOf("text", "#missing"))) {
+            val r = run(*cmd.toTypedArray())
+            assertEquals("$cmd must fail", 1, r.code)
+            assertTrue(r.err, r.err.contains("#missing") && r.err.contains("timeout"))
+            assertEquals("nothing on stdout that looks like success", "", r.out.trim())
+        }
+        assertEquals(2, run("click").code)
+        assertEquals(2, run("waitfor", "#x", "--timeout", "soon").code)
+    }
+
+    @Test fun existsReportsThroughItsExitStatus() {
+        // The mock echoes {"ok":true,...} without an "exists" field, i.e. "not found".
+        assertEquals(1, run("exists", "#nothing").code)
+    }
+
+    @Test fun navigateWaitsOnlyWhenAsked() {
+        assertEquals(0, run("navigate", "https://t.test/", "--wait", "--state", "networkidle", "--timeout", "9000").code)
+        val j = lastPost("/v1/navigate")
+        assertEquals(true, j.getBoolean("wait")); assertEquals("networkidle", j.getString("state")); assertEquals(9000, j.getInt("timeout"))
+        assertEquals(0, run("navigate", "https://t.test/").code)
+        assertFalse(lastPost("/v1/navigate").has("wait"))
+        assertEquals(2, run("navigate", "https://t.test/", "--state", "whenever").code)
+        assertEquals(0, run("waitnav", "--timeout", "4000").code)
+        assertEquals(4000, lastPost("/v1/waitnav").getInt("timeout"))
+    }
+
+    @Test fun evalReadsAFileWithTemplateLiteralsNonAsciiAndHugeSize() {
+        val script = File(work, "big.js")
+        val line = "const a = `value: \${1 + 1} \"q\" \\ back`; // \u0627\u0644\u0639\u0631\u0628\u064a\u0629 caf\u00e9\n"
+        script.writeText(line.repeat(4000)) // ~300 KB: far beyond one command-line argument
+        val r = run("eval", "--file", script.absolutePath)
+        assertEquals(r.err, 0, r.code)
+        assertEquals(script.readText().trimEnd('\n'), lastPost("/v1/eval").getString("js"))
+        val lines = lastPost("/v1/eval").getString("js").lines()
+        assertTrue(lines.size >= 4000 && lines[0].contains("\${1 + 1}") && lines[0].contains("\u0627\u0644\u0639\u0631\u0628\u064a\u0629"))
+    }
+
+    @Test fun evalReadsStdinAndKeepsPlainArgumentsWorking() {
+        val r = exec(listOf("/bin/sh", "-c", "printf 'let x = `a\\nb`;\\nx' | /bin/sh \"\$0\" eval --stdin --await --timeout 7000", script().absolutePath), "tok123", emptyMap())
+        assertEquals(r.err, 0, r.code)
+        val j = lastPost("/v1/eval")
+        assertEquals("let x = `a\nb`;\nx", j.getString("js")); assertEquals(true, j.getBoolean("await")); assertEquals(7000, j.getInt("timeout"))
+        assertEquals(0, run("eval", "1 + 1").code)
+        assertEquals("1 + 1", lastPost("/v1/eval").getString("js"))
+        assertEquals(2, run("eval").code)
+    }
+
+    @Test fun shotWritesTheImageAndFailsLoudlyOtherwise() {
+        val out = File(work, "a.png")
+        val r = run("shot", "--out", out.absolutePath, "--full-page")
+        assertEquals(r.err, 0, r.code)
+        assertTrue(r.out.contains("\"bytes\":12"))
+        assertEquals(0x89, out.readBytes()[0].toInt() and 0xff)
+        assertTrue(gets.any { it.contains("fullPage=1") && it.contains("format=png") })
+        val bad = run("shot", "--selector", "#missing", "--out", File(work, "b.png").absolutePath)
+        assertEquals(1, bad.code)
+        assertTrue(bad.err, bad.err.contains("no element matches"))
+        assertFalse("no half-written file is left behind", File(work, "b.png").exists())
+        assertEquals(2, run("shot", "--format", "gif").code)
+    }
+
+    @Test fun cdpPrintsTheWebSocketUrlWithTheTokenInIt() {
+        val r = run("cdp")
+        assertEquals(r.err, 0, r.code)
+        assertEquals("ws://127.0.0.1:9222/tok/devtools/browser/abc", r.out.trim())
+        assertEquals(true, lastPost("/v1/cdp").getBoolean("enabled"))
+        run("cdp", "9333"); assertEquals(9333, lastPost("/v1/cdp").getInt("port"))
+        assertEquals("0", run("cdp", "off").out.trim())
+        assertEquals(false, lastPost("/v1/cdp").getBoolean("enabled"))
+        assertEquals(2, run("cdp", "banana").code)
+    }
+
+    @Test fun saveWritesReplayableFiles() {
+        val dir = File(work, "evidence")
+        val r = run("save", "abc", "--dir", dir.absolutePath)
+        assertEquals(r.err, 0, r.code)
+        assertTrue(File(dir, "request.txt").readText().startsWith("GET /x HTTP/1.1"))
+        assertEquals("HTTP/1.1 200\n\nhello", File(dir, "response.txt").readText())
+        assertEquals("hello", File(dir, "response.body").readText())
+        assertFalse("an empty request body is not written", File(dir, "request.body").exists())
+        assertTrue(File(dir, "meta.json").readText().contains("abc"))
+        assertEquals(2, run("save", "abc").code)
+    }
+
+    @Test fun historyFiltersBecomeAQuery() {
+        assertEquals(0, run("history", "--host", "t.test", "--method", "POST", "--status", "403", "--since", "2026-10-11T10:00:00Z", "--limit", "5", "--page", "2", "--compact").code)
+        val q = gets.last()
+        for (part in listOf("host=t.test", "method=POST", "status=403", "since=2026-10-11T10:00:00Z", "limit=5", "page=2", "fmt=lines")) assertTrue("$part in $q", q.contains(part))
+        assertEquals(0, run("history", "legacy.test").code)
+        assertTrue(gets.last().contains("host=legacy.test"))
+    }
+
+    @Test fun cookiesCanBeReadAndSet() {
+        assertEquals(0, run("cookies", "--domain", "t.test").code)
+        assertTrue(gets.last().contains("domain=t.test"))
+        assertEquals(0, run("setcookie", "sid", "abc 123", "--domain", "t.test", "--path", "/app").code)
+        val j = lastPost("/v1/cookies")
+        assertEquals("sid", j.getString("name")); assertEquals("abc 123", j.getString("value")); assertEquals("/app", j.getString("path"))
     }
 }

@@ -177,7 +177,7 @@ act() {
   [ -n "$TIMEOUT" ] && J="$J,\"timeout\":$TIMEOUT"
   [ -n "$DELAY" ] && J="$J,\"delay\":$DELAY"
   [ -n "$STATE" ] && case "$STATE" in visible|hidden|attached) J="$J,\"state\":\"$STATE\"" ;; *) die "--state must be visible, hidden or attached" ;; esac
-  [ -n "$3" ] && J="$J,\"$4\":$(jstr "$3")"
+  [ -n "$4" ] && J="$J,\"$4\":$(jstr "$3")"   # the value may be empty (fill with "" clears a field)
   [ -n "$SHIFTK" ] && J="$J,\"shift\":true"
   auto "/act" "$J}"
 }
@@ -272,8 +272,8 @@ case "$1" in
              { printf '{"js":'; jstr "$body"; printf '%s}' "$EX"; } > "$T"
              autof "/eval" "$T"; rc=$?; rm -f "${T:?}"; exit $rc ;;
   click)     shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl click <selector> [--timeout ms]"; act click "$A1" ;;
-  fill)      shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl fill <selector> <text> [--timeout ms]"; act fill "$A1" "$A2" text ;;
-  type)      shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl type <selector> <text> [--delay ms]"; act type "$A1" "$A2" text ;;
+  fill)      shift; popts "$@"; [ -n "$A1" ] && [ "$n" -ge 2 ] || die "usage: browserctl fill <selector> <text> [--timeout ms]  (use '' to clear)"; act fill "$A1" "$A2" text ;;
+  type)      shift; popts "$@"; [ -n "$A1" ] && [ "$n" -ge 2 ] || die "usage: browserctl type <selector> <text> [--delay ms]"; act type "$A1" "$A2" text ;;
   press)     shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl press <key>  (Enter, Tab, Escape, ...)"; act press "" "$A1" key ;;
   text)      shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl text <selector>"; act text "$A1" ;;
   attr)      shift; popts "$@"; [ -n "$A1" ] && [ -n "$A2" ] || die "usage: browserctl attr <selector> <name>"; act attr "$A1" "$A2" name ;;
@@ -320,7 +320,9 @@ case "$1" in
                { wget -qO- --header "$H" "$BASE/history/$A1/request" 2>/dev/null && printf '\n\n' && wget -qO- --header "$H" "$BASE/history/$A1/response" 2>/dev/null; } > "$OUTF" || { rm -f "${OUTF:?}"; fail_hint $?; exit 1; }
                printf '{"ok":true,"path":%s}\n' "$(jstr "$OUTF")"
              else die "usage: browserctl save <id> --dir <dir> | --out <file>"; fi ;;
-  har)       shift; hquery "$@"; popts "$@" 2>/dev/null
+  har)       shift; OUTF=; rest=
+             while [ $# -gt 0 ]; do case "$1" in --out) OUTF=$2; shift 2 ;; *) rest="$rest $1"; shift ;; esac; done
+             set -f; set -- $rest; set +f; hquery "$@"
              if [ -n "$OUTF" ]; then
                wget -qO "$OUTF" --header "$H" "$BASE/har?$Q" 2>/dev/null || { rm -f "${OUTF:?}"; fail_hint $?; exit 1; }
                printf '{"ok":true,"path":%s,"bytes":%s}\n' "$(jstr "$OUTF")" "$(wc -c < "$OUTF" | tr -d ' ')"

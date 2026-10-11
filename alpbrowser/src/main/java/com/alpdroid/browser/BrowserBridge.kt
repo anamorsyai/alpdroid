@@ -182,7 +182,7 @@ class BrowserBridge(
             val jpeg = q["format"].equals("jpeg", true) || q["format"].equals("jpg", true)
             val (bytes, err) = pc.screenshot(q["selector"]?.takeIf { it.isNotBlank() }, q["fullPage"] == "1" || q["fullPage"] == "true", jpeg)
             return if (bytes != null) Raw(200, if (jpeg) "image/jpeg" else "image/png", bytes)
-            else Raw(200, "application/json", (err ?: error("screenshot failed")).toString().toByteArray())
+            else Raw(200, "application/json", render(err ?: error("screenshot failed")).toByteArray())
         }
         if (path == "/v1/history" && q["fmt"] == "lines") {
             val lines = filteredHistory(q).joinToString("\n") { tx ->
@@ -507,8 +507,19 @@ class BrowserBridge(
             java.net.URLDecoder.decode(it.substring(0, i), "UTF-8") to java.net.URLDecoder.decode(it.substring(i + 1), "UTF-8")
     }.toMap()
 
+    /**
+     * The JSON text with "ok" first when there is one. The CLI tells a failed command from a successful one by the
+     * answer starting `{"ok":false`, and JSON objects do not promise any key order (the JVM's does not keep one).
+     */
+    private fun render(json: JSONObject): String {
+        if (!json.has("ok")) return json.toString()
+        val rest = JSONObject(json.toString()).also { it.remove("ok") }
+        val tail = rest.toString()
+        return "{\"ok\":" + json.get("ok") + (if (tail.length > 2) "," + tail.substring(1) else "}")
+    }
+
     private fun respond(out: OutputStream, code: Int, json: JSONObject) {
-        val payload = json.toString().toByteArray(Charsets.UTF_8)
+        val payload = render(json).toByteArray(Charsets.UTF_8)
         val head = "HTTP/1.1 $code ${reason(code)}\r\nContent-Type: application/json\r\nContent-Length: ${payload.size}\r\nConnection: close\r\n\r\n"
         runCatching { out.write(head.toByteArray(Charsets.US_ASCII)); out.write(payload); out.flush() }
     }

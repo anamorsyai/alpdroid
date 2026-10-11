@@ -287,7 +287,11 @@ class AlpBrowserApp : Application() {
         adBlocker.enabled = adblockEnabled()
         adBlocker.loadAsync()
         browserEngine.start(engineScope)
-        if (devtoolsEnabled()) engineScope.launch { runCatching { cdpForwarder.start(CDP_PORT) } }
+        if (devtoolsEnabled()) {
+            // The flag is per process and starts false, so a restart must re-apply what the user left switched on.
+            main.post { runCatching { android.webkit.WebView.setWebContentsDebuggingEnabled(true) } }
+            engineScope.launch { runCatching { cdpForwarder.start(CDP_PORT) } }
+        }
         engineScope.launch { runCatching { bridge.start() } }
         Log.i(TAG, "AlpBrowser proxy on 127.0.0.1:$PROXY_PORT, control API starting on 127.0.0.1:$CONTROL_PORT")
     }

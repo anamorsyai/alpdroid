@@ -59,7 +59,13 @@ class AlpBrowserApp : Application() {
         if (m == "webdev") intercept.enabled = false // web dev watches, it does not pause traffic
     }
 
-    private var scopePatterns: List<String> = runCatching { prefs.getString("scope", "")!!.split("\n").filter { it.isNotBlank() } }.getOrDefault(emptyList())
+    // Loaded on first use, not in the constructor: SharedPreferences is unavailable before the Application has a
+    // base context, which used to make the saved scope silently come back empty on every start.
+    @Volatile private var loadedScope: List<String>? = null
+    private var scopePatterns: List<String>
+        get() = loadedScope ?: runCatching { prefs.getString("scope", "")!!.split("\n").filter { it.isNotBlank() } }
+            .getOrDefault(emptyList()).also { loadedScope = it }
+        set(value) { loadedScope = value }
     fun scope(): List<String> = scopePatterns
     fun setScope(list: List<String>) {
         scopePatterns = list

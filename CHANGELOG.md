@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.7.75 — Faster, steadier updates, terminals and browser proxy (AlpBrowser 0.3.0)
+
+- Opening a terminal tab is faster and no longer waits behind cleanup work: old temporary files are
+  cleared in the background and the cleanup adapts to how much space is in use.
+- Update checks and downloads run on their own, so they never hold up the terminal or backups; when
+  GitHub is rate-limiting you get a clear message and a short pause before retrying.
+- `browserctl` is more robust: values with quotes, tabs, newlines or non-English text are sent
+  correctly, `trust` is safe to run repeatedly, and every command reports a clear exit status.
+- AlpDroid links to AlpBrowser without ever blocking a shell, and refreshes the link after
+  AlpBrowser is updated.
+- The built-in proxy handles more kinds of traffic correctly: HEAD and 204/304 replies, `Expect:
+  100-continue` uploads, interim 1xx replies and WebSocket upgrades through HTTPS. Responses or
+  uploads too large to inspect now return a clear error instead of a truncated file, and a
+  misbehaving server can no longer stall or stop the proxy.
+- AlpBrowser remembers the capture scope you set across restarts.
+
 ## 1.7.74 — AlpBrowser stays reachable in the background, and other fixes (AlpBrowser 0.2.2)
 
 - AlpBrowser now keeps running when you switch away to drive the agent from AlpDroid — you no longer

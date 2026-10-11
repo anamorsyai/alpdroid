@@ -1,0 +1,1 @@
+Faster terminal start and updates, sturdier browserctl and AlpBrowser proxy (HEAD, uploads, WebSockets, large files), and AlpBrowser now remembers its capture scope.

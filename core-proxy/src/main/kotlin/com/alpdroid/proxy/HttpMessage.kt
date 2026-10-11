@@ -18,15 +18,21 @@ internal fun readLine(input: InputStream): String? {
         if (b == '\n'.code) {
             return buffer.toAsciiString().removeSuffix("\r")
         }
+        // A hostile peer could stream bytes forever without a newline and grow this buffer without bound.
+        if (buffer.length >= MAX_LINE_BYTES) throw java.io.IOException("HTTP line too long")
         buffer.append(b)
     }
 }
+
+internal const val MAX_LINE_BYTES = 64 * 1024
+internal const val MAX_HEADER_COUNT = 256
 
 internal fun readHeaders(input: InputStream): List<Pair<String, String>> {
     val headers = mutableListOf<Pair<String, String>>()
     while (true) {
         val line = readLine(input) ?: break
         if (line.isEmpty()) break
+        if (headers.size >= MAX_HEADER_COUNT) throw java.io.IOException("too many HTTP headers")
         val idx = line.indexOf(':')
         if (idx == -1) continue
         headers += line.substring(0, idx).trim() to line.substring(idx + 1).trim()
@@ -97,11 +103,17 @@ internal fun readMessageBody(input: InputStream, headers: List<Pair<String, Stri
     if (cl != null) {
         if (cl <= 0L) return BodyResult(null, false)
         val keep = minOf(cl, cap.toLong()).toInt()
-        val buf = ByteArray(keep)
+        // Grow with what actually arrives: a lying Content-Length must not pre-allocate the whole cap per connection.
+        val out = java.io.ByteArrayOutputStream(minOf(keep, 64 * 1024))
+        val buf = ByteArray(8192)
         var read = 0
-        while (read < keep) { val n = input.read(buf, read, keep - read); if (n < 0) break; read += n }
-        val bytes = if (read == keep) buf else buf.copyOf(read)
-        return BodyResult(bytes, cl > keep.toLong())
+        while (read < keep) {
+            val n = input.read(buf, 0, minOf(buf.size, keep - read))
+            if (n < 0) break
+            out.write(buf, 0, n)
+            read += n
+        }
+        return BodyResult(out.toByteArray(), cl > keep.toLong())
     }
     if (!allowEofBody) return BodyResult(null, false)
     return readToEof(input, cap)
@@ -178,5 +190,11 @@ private class ByteArrayBuilder {
         bytes[size++] = b.toByte()
     }
 
+    val length: Int get() = size
+
     fun toAsciiString(): String = String(bytes, 0, size, Charsets.US_ASCII)
 }
+
+/** Responses that never carry a body whatever their headers say (RFC 9110 §6.4.1): reading one would block. */
+internal fun responseHasNoBody(requestMethod: String, status: Int?): Boolean =
+    requestMethod.equals("HEAD", ignoreCase = true) || status == 204 || status == 304 || (status != null && status in 100..199)

@@ -19,6 +19,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -30,17 +33,12 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -52,16 +50,32 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.alpdroid.browser.AlpBrowserApp
 import com.alpdroid.browser.BrowserTab
 import com.alpdroid.browser.BrowserWebViewHolder
-import com.alpdroid.browser.ui.theme.RoninMono
+import com.alpdroid.browser.ui.kit.AppButton
+import com.alpdroid.browser.ui.kit.AppCard
+import com.alpdroid.browser.ui.kit.Kind
+import com.alpdroid.browser.ui.kit.MonoStyle
+import com.alpdroid.browser.ui.kit.ScreenPad
+import com.alpdroid.browser.ui.theme.Accent
+import com.alpdroid.browser.ui.theme.Ground
+import com.alpdroid.browser.ui.theme.Method
+import com.alpdroid.browser.ui.theme.SheetBg
+import com.alpdroid.browser.ui.theme.StatusOk
+import com.alpdroid.browser.ui.theme.Surface1
+import com.alpdroid.browser.ui.theme.TextFaint
+import com.alpdroid.browser.ui.theme.TextMain
+import com.alpdroid.browser.ui.theme.TextMuted
+import com.alpdroid.browser.ui.theme.TextSoft
 import com.alpdroid.proxy.BrowserCommand
 
 /**
@@ -111,62 +125,53 @@ fun BrowserScreen(onOpenControlInfo: () -> Unit) {
     LaunchedEffect(tab.url, editing) { if (!editing) urlField = tab.url }
     val secure = tab.url.startsWith("https://")
 
-    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
+    Column(modifier = Modifier.fillMaxSize().background(Ground)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            NavIcon(Icons.AutoMirrored.Filled.ArrowBack, "Back", enabled = tab.canGoBack) { webView?.goBack() }
+            NavIcon(Icons.AutoMirrored.Filled.ArrowForward, "Forward", enabled = tab.canGoForward) { webView?.goForward() }
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                Modifier.weight(1f).height(40.dp).padding(horizontal = 4.dp).background(Surface1, RoundedCornerShape(12.dp)).padding(start = 10.dp, end = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                NavIcon(Icons.AutoMirrored.Filled.ArrowBack, "Back", enabled = tab.canGoBack) { webView?.goBack() }
-                NavIcon(Icons.AutoMirrored.Filled.ArrowForward, "Forward", enabled = tab.canGoForward) { webView?.goForward() }
-                OutlinedTextField(
+                Icon(
+                    if (secure) Icons.Default.Lock else Icons.Default.LockOpen,
+                    contentDescription = if (secure) "Secure" else "Not secure",
+                    tint = if (secure) StatusOk else Method, modifier = Modifier.size(14.dp),
+                )
+                BasicTextField(
                     value = urlField,
                     onValueChange = { urlField = it; editing = true },
-                    modifier = Modifier.weight(1f).height(50.dp).padding(horizontal = 4.dp),
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                     singleLine = true,
-                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = RoninMono),
-                    shape = RoundedCornerShape(25.dp),
-                    leadingIcon = {
-                        Icon(
-                            if (secure) Icons.Default.Lock else Icons.Default.LockOpen,
-                            contentDescription = if (secure) "Secure" else "Not secure",
-                            tint = if (secure) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    },
-                    trailingIcon = {
-                        IconButton(onClick = { webView?.reload() }, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Refresh, "Reload", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                    ),
+                    textStyle = MonoStyle.copy(fontSize = 12.sp, color = TextMain),
+                    cursorBrush = SolidColor(Accent),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(onGo = {
                         editing = false
                         webView?.loadUrl(normalizeUrl(urlField))
                     }),
                 )
-                TabsButton(holder.tabs.size) { showTabs = true }
-                NavIcon(Icons.Default.MoreVert, "Menu") { showSettings = true }
+                IconButton(onClick = { webView?.reload() }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.Refresh, "Reload", modifier = Modifier.size(16.dp), tint = TextMuted)
+                }
             }
+            if (app.proxyActive()) Box(Modifier.size(8.dp).background(Accent, CircleShape)) // the page is going through the proxy
+            TabsButton(holder.tabs.size) { showTabs = true }
+            NavIcon(Icons.Default.MoreVert, "Menu") { showSettings = true }
         }
 
         if (tab.progress in 1..99) {
             LinearProgressIndicator(
                 progress = { tab.progress / 100f },
                 modifier = Modifier.fillMaxWidth().height(2.dp),
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.surface,
+                color = Accent,
+                trackColor = Ground,
             )
-        }
+        } else Box(Modifier.fillMaxWidth().height(2.dp))
 
         // Hosts whichever tab's WebView is in front; swapping tabs swaps the child.
         AndroidView(
@@ -222,62 +227,43 @@ fun BrowserScreen(onOpenControlInfo: () -> Unit) {
 @Composable
 private fun TabsSheet(holder: BrowserWebViewHolder, onNew: () -> Unit, onDismiss: () -> Unit) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = MaterialTheme.colorScheme.surface) {
-        Column(Modifier.padding(horizontal = 16.dp).padding(bottom = 16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Tabs (${holder.tabs.size}/${BrowserWebViewHolder.MAX_TABS})", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                Button(onClick = onNew, enabled = holder.tabs.size < BrowserWebViewHolder.MAX_TABS) {
-                    Icon(Icons.Default.Add, null, Modifier.size(18.dp)); Text(" New tab")
-                }
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = SheetBg, shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)) {
+        Column(Modifier.padding(bottom = 16.dp)) {
+            Row(Modifier.padding(horizontal = ScreenPad).padding(bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Tabs  ${holder.tabs.size}/${BrowserWebViewHolder.MAX_TABS}", style = MaterialTheme.typography.titleMedium, color = TextMain, modifier = Modifier.weight(1f))
+                AppButton("New tab", onNew, kind = Kind.Primary, compact = true, enabled = holder.tabs.size < BrowserWebViewHolder.MAX_TABS)
             }
-            LazyColumn(Modifier.padding(top = 8.dp)) {
+            LazyColumn {
                 items(holder.tabs.toList(), key = { it.id }) { t ->
-                    TabRow(t, active = t.id == holder.activeId, onSelect = { holder.switchTo(t.id); onDismiss() }, onClose = { holder.close(t.id) })
-                    HorizontalDivider()
+                    AppCard(onClick = { holder.switchTo(t.id); onDismiss() }, selected = t.id == holder.activeId) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(t.title.ifEmpty { "New tab" }, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall, color = TextMain)
+                                Text(t.url, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MonoStyle.copy(fontSize = 11.sp, color = TextMuted))
+                            }
+                            IconButton(onClick = { holder.close(t.id) }, modifier = Modifier.size(36.dp)) { Icon(Icons.Default.Close, "Close tab", tint = TextMuted) }
+                        }
+                    }
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun TabRow(t: BrowserTab, active: Boolean, onSelect: () -> Unit, onClose: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onSelect).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                t.title.ifEmpty { "New tab" }, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            )
-            Text(t.url, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall.copy(fontFamily = RoninMono),
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        IconButton(onClick = onClose) { Icon(Icons.Default.Close, "Close tab") }
     }
 }
 
 /** The tab-count button next to the address bar, shaped like the one in every mobile browser. */
 @Composable
 private fun TabsButton(count: Int, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier.size(40.dp).padding(8.dp).clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Surface(
-            shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.onSurface), modifier = Modifier.size(22.dp),
-        ) {
-            Box(contentAlignment = Alignment.Center) { Text(count.toString(), style = MaterialTheme.typography.labelSmall) }
-        }
+    Box(modifier = Modifier.size(40.dp).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier.size(22.dp).border(1.5.dp, TextSoft, RoundedCornerShape(6.dp)),
+            contentAlignment = Alignment.Center,
+        ) { Text(count.toString(), style = MonoStyle.copy(fontSize = 11.sp, color = TextMain)) }
     }
 }
 
 @Composable
 private fun NavIcon(icon: ImageVector, contentDescription: String, enabled: Boolean = true, onClick: () -> Unit) {
     IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(40.dp)) {
-        Icon(
-            icon, contentDescription = contentDescription, modifier = Modifier.size(22.dp),
-            tint = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline,
-        )
+        Icon(icon, contentDescription = contentDescription, modifier = Modifier.size(22.dp), tint = if (enabled) TextMain else TextFaint)
     }
 }

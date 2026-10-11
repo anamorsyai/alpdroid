@@ -210,4 +210,16 @@ class ProxyHardeningTest {
         assertTrue(narrowAcceptEncoding(listOf("Accept-Encoding" to "br")).isEmpty())
         assertTrue(narrowAcceptEncoding(emptyList()).isEmpty())
     }
+
+    @Test fun `the proxy counts the bytes it really moved`() {
+        val o = origin { "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n".toByteArray() + ByteArray(1000) { 'x'.code.toByte() } }
+        val stats = ProxyStats()
+        val e = ProxyEngine(0, TrafficSource.BROWSER, TransactionStore(), ScopeFilter(), respectScope = false, stats = stats)
+        e.start(scope); Thread.sleep(150)
+        roundTrip(e.boundPort, "GET", o)
+        Thread.sleep(100)
+        assertTrue(stats.bytesDown.get() in 1000..1300, "down=${stats.bytesDown.get()}")
+        assertTrue(stats.bytesUp.get() in 50..400, "up=${stats.bytesUp.get()}")
+        assertEquals(1, stats.requests.get().toInt())
+    }
 }

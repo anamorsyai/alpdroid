@@ -1,0 +1,1 @@
+A new look for AlpBrowser (sheets, compact grouped History, a steady Repeater send bar) and a real traffic counter in Proxy options.

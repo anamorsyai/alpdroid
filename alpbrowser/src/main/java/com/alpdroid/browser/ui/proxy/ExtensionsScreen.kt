@@ -11,13 +11,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,10 +24,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.alpdroid.browser.AlpBrowserApp
 import com.alpdroid.browser.ExtensionStore
 import com.alpdroid.browser.UserScript
+import com.alpdroid.browser.ui.kit.AppButton
+import com.alpdroid.browser.ui.kit.AppCard
+import com.alpdroid.browser.ui.kit.Field
+import com.alpdroid.browser.ui.kit.Kind
+import com.alpdroid.browser.ui.kit.ScreenHeader
+import com.alpdroid.browser.ui.kit.ScreenPad
+import com.alpdroid.browser.ui.theme.Accent
+import com.alpdroid.browser.ui.theme.OnAccent
+import com.alpdroid.browser.ui.theme.SecondaryBg
+import com.alpdroid.browser.ui.theme.SheetBg
+import com.alpdroid.browser.ui.theme.TextMain
+import com.alpdroid.browser.ui.theme.TextMuted
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
@@ -79,33 +89,27 @@ fun ExtensionsScreen(app: AlpBrowserApp, modifier: Modifier = Modifier) {
         }
     }
 
-    Column(modifier.fillMaxSize().padding(horizontal = ScreenPadding, vertical = 10.dp)) {
-        Text("Extensions", style = MaterialTheme.typography.titleMedium)
+    Column(modifier.fillMaxSize()) {
+        ScreenHeader("Extensions", status = if (scripts.isEmpty()) "None installed" else "${scripts.size} installed · ${scripts.count { it.enabled }} on", statusOn = scripts.any { it.enabled })
         Text(
-            "Add userscripts (.user.js — the Tampermonkey format). They stay installed and enabled until you remove them, " +
-                "and run on every page that matches. Chrome (.crx) and Firefox (.xpi) packages can't run in Android's WebView.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(vertical = 6.dp),
+            "Userscripts (.user.js, the Tampermonkey format). They stay installed and enabled until you remove them, and run on every page that matches. Chrome (.crx) and Firefox (.xpi) packages can't run in Android's WebView.",
+            style = MaterialTheme.typography.bodySmall, color = TextMuted, modifier = Modifier.padding(horizontal = ScreenPad).padding(bottom = 12.dp),
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { dialog = "paste" }) { Text("Paste") }
-            OutlinedButton(onClick = { dialog = "url" }) { Text("From URL") }
-            OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }) { Text("From file") }
+        Row(Modifier.fillMaxWidth().padding(horizontal = ScreenPad), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            AppButton("Paste", { dialog = "paste" }, Modifier.weight(1f), kind = Kind.Primary, compact = true)
+            AppButton("From URL", { dialog = "url" }, Modifier.weight(1f), compact = true)
+            AppButton("From file", { picker.launch(arrayOf("*/*")) }, Modifier.weight(1f), compact = true)
         }
-        if (message.isNotEmpty()) Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary, modifier = Modifier.padding(top = 6.dp))
-        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-
-        if (scripts.isEmpty()) {
-            Text("No extensions installed yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        } else LazyColumn {
+        if (message.isNotEmpty()) Text(message, style = MaterialTheme.typography.bodySmall, color = Accent, modifier = Modifier.padding(horizontal = ScreenPad).padding(top = 10.dp))
+        LazyColumn(Modifier.weight(1f).padding(top = 10.dp)) {
+            if (scripts.isEmpty()) item { Text("No extensions installed yet.", style = MaterialTheme.typography.bodyMedium, color = TextMuted, modifier = Modifier.padding(horizontal = ScreenPad, vertical = 8.dp)) }
             items(scripts, key = { it.id }) { s ->
-                ScriptRow(
+                ScriptCard(
                     s,
                     onToggle = { app.extensions.setEnabled(s.id, it); reload() },
                     onRemove = { app.extensions.remove(s.id); message = "Removed ${s.name}"; reload() },
                     onUpdate = s.sourceUrl?.let { u -> { installFromUrl(u) } },
                 )
-                HorizontalDivider()
             }
         }
     }
@@ -123,22 +127,28 @@ fun ExtensionsScreen(app: AlpBrowserApp, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ScriptRow(s: UserScript, onToggle: (Boolean) -> Unit, onRemove: () -> Unit, onUpdate: (() -> Unit)?) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(s.name + if (s.version.isNotEmpty()) "  v${s.version}" else "", style = MaterialTheme.typography.titleSmall)
-                if (s.description.isNotEmpty()) Text(s.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(
-                    (if (s.matches.isEmpty()) "all pages" else s.matches.take(3).joinToString(", ") + if (s.matches.size > 3) " …" else "") + " · ${s.runAt}",
-                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline,
+private fun ScriptCard(s: UserScript, onToggle: (Boolean) -> Unit, onRemove: () -> Unit, onUpdate: (() -> Unit)?) {
+    AppCard {
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text(s.name + if (s.version.isNotEmpty()) "  v${s.version}" else "", style = MaterialTheme.typography.titleSmall, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (s.description.isNotEmpty()) Text(s.description, style = MaterialTheme.typography.bodySmall, color = TextMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        (if (s.matches.isEmpty()) "all pages" else s.matches.take(2).joinToString(", ") + if (s.matches.size > 2) " …" else "") + " · ${s.runAt}",
+                        style = MaterialTheme.typography.labelSmall, color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Switch(
+                    checked = s.enabled, onCheckedChange = onToggle,
+                    colors = SwitchDefaults.colors(checkedThumbColor = OnAccent, checkedTrackColor = Accent, checkedBorderColor = Accent,
+                        uncheckedThumbColor = TextMuted, uncheckedTrackColor = SecondaryBg, uncheckedBorderColor = SecondaryBg),
                 )
             }
-            Switch(checked = s.enabled, onCheckedChange = onToggle)
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            TextButton(onClick = onRemove) { Text("Remove") }
-            if (onUpdate != null) TextButton(onClick = onUpdate) { Text("Update") }
+            Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (onUpdate != null) AppButton("Update", onUpdate, kind = Kind.Ghost, compact = true)
+                AppButton("Remove", onRemove, kind = Kind.Danger, compact = true)
+            }
         }
     }
 }
@@ -148,10 +158,11 @@ private fun TextInputDialog(title: String, hint: String, multiline: Boolean, onD
     var text by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = { MonoField(text, { text = it }, hint, singleLine = !multiline, minLines = if (multiline) 8 else 1) },
-        confirmButton = { TextButton(enabled = text.isNotBlank(), onClick = { onConfirm(text) }) { Text("Install") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        containerColor = SheetBg,
+        title = { Text(title, style = MaterialTheme.typography.titleMedium, color = TextMain) },
+        text = { Field(text, { text = it }, placeholder = hint, singleLine = !multiline, minLines = if (multiline) 8 else 1) },
+        confirmButton = { AppButton("Install", { onConfirm(text) }, kind = Kind.Primary, compact = true, enabled = text.isNotBlank()) },
+        dismissButton = { AppButton("Cancel", onDismiss, kind = Kind.Ghost, compact = true) },
     )
 }
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.7.79 — A new look for AlpBrowser, and real traffic numbers (AlpBrowser 0.5.0)
+
+- AlpBrowser has a new look across the whole app: a warm dark theme with an orange accent, compact type and
+  controls sized for one-handed use, a new bottom bar, and a redesigned browser toolbar and tab list.
+- Proxy is rebuilt around sheets: tap a paused request to edit it in a sheet with big Drop / Repeater /
+  Forward buttons. History is grouped by site with compact rows, and Filter opens from a button. Options
+  (response interception, skipping static files, Capture, host filter) have their own tab.
+- The Repeater has Request / Response / History views and a Send bar that stays in place.
+- AlpBrowser now shows how much traffic it has really carried through the proxy this session (Proxy →
+  Options), and a dot beside the address bar shows when pages are going through the proxy. While Capture is
+  on, a speed meter that also reads the phone's loopback interface counts the browser-to-proxy leg too, so it
+  can read roughly double; with Capture off, browsing is direct and that does not happen.
+
 ## 1.7.78 — AlpBrowser scope you can see, a tidier Proxy and Repeater (AlpBrowser 0.4.2)
 
 - New Scope tab in the Proxy screen. A scope limits History to the hosts you list, and until now it

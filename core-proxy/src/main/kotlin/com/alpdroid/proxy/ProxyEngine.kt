@@ -55,6 +55,8 @@ class ProxyEngine(
      * byte-for-byte unchanged — exactly how it behaved before interception existed.
      */
     private val interceptor: ProxyInterceptor? = null,
+    /** Bytes this engine has actually moved, so the UI can show the real figure (see [ProxyStats]). */
+    val stats: ProxyStats = ProxyStats(),
 ) {
     private var serverSocket: ServerSocket? = null
     private var job: Job? = null
@@ -170,8 +172,8 @@ class ProxyEngine(
     private suspend fun bridge(
         clientIn: InputStream, clientOut: OutputStream, upIn: InputStream, upOut: OutputStream, closeAll: () -> Unit,
     ) = withContext(connDispatcher) {
-        val toUpstream = launch { pump(clientIn, upOut) }
-        val toClient = launch { pump(upIn, clientOut) }
+        val toUpstream = launch { pump(clientIn, upOut, stats.bytesUp) }
+        val toClient = launch { pump(upIn, clientOut, stats.bytesDown) }
         val tearDown: (Throwable?) -> Unit = { closeAll() }
         toUpstream.invokeOnCompletion(tearDown)
         toClient.invokeOnCompletion(tearDown)
@@ -337,6 +339,7 @@ class ProxyEngine(
                 req.body?.let { reqBytes.write(it) }
                 upOut.write(reqBytes.toByteArray())
                 upOut.flush()
+                stats.bytesUp.addAndGet(reqBytes.size().toLong())
                 head = readResponseHead(upIn) ?: throw IOException("connection closed")
             } catch (e: IOException) {
                 upstream.close()
@@ -426,6 +429,8 @@ class ProxyEngine(
         clientOut.write(respHead.toByteArray())
         if (outBody != null && outBody.size > 64 * 1024) clientOut.write(outBody)
         clientOut.flush()
+        stats.bytesDown.addAndGet(respHead.size().toLong() + (if (outBody != null && outBody.size > 64 * 1024) outBody.size else 0))
+        stats.requests.incrementAndGet()
 
         recordIfInScope(
             HttpTransaction(
@@ -533,7 +538,7 @@ class ProxyEngine(
         return if (connectionClose) h + ("Connection" to "close") else h
     }
 
-    private suspend fun pump(from: InputStream, to: OutputStream) = withContext(connDispatcher) {
+    private suspend fun pump(from: InputStream, to: OutputStream, counter: java.util.concurrent.atomic.AtomicLong) = withContext(connDispatcher) {
         val buffer = ByteArray(8192)
         try {
             while (isActive) {
@@ -541,6 +546,7 @@ class ProxyEngine(
                 if (n == -1) break
                 to.write(buffer, 0, n)
                 to.flush()
+                counter.addAndGet(n.toLong())
             }
         } catch (e: IOException) {
             // Either side closed; end of tunnel.

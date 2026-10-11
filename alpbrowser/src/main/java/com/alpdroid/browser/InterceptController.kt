@@ -26,7 +26,10 @@ class InterceptController {
     val rules = RuleEngine()
     /** Master switch: hold matching REQUESTS. Switching it also tells the app to route the page through the proxy. */
     @Volatile var enabled = false
-        set(value) { if (field != value) { field = value; onEnabledChange?.invoke(value) } }
+        set(value) { if (field != value) { field = value; _enabledFlow.value = value; onEnabledChange?.invoke(value) } }
+    private val _enabledFlow = MutableStateFlow(false)
+    /** [enabled] as an observable, so a switch in the UI follows a change made by the agent. */
+    val enabledFlow: StateFlow<Boolean> = _enabledFlow.asStateFlow()
     @Volatile var onEnabledChange: ((Boolean) -> Unit)? = null
     /** Also hold RESPONSES (as in Burp, off by default: a request and its response would otherwise both stop every page). */
     @Volatile var interceptResponses = false

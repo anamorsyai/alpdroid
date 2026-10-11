@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.83 — A sturdier eval and clearer errors (AlpBrowser 0.6.3)
 
 - `browserctl eval` is more robust: it no longer depends on the page returning a value to the browser, only on the same confirmation channel the element commands use, and it names the stage that failed (syntax error, page not answering, page navigated).
 - `browserctl ping` now reports AlpBrowser's version, and a failed request includes the server's own error message.

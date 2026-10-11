@@ -1,0 +1,1 @@
+browserctl eval is more robust and errors explain what went wrong; ping shows the AlpBrowser version.

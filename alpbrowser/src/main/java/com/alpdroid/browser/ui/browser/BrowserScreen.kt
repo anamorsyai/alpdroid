@@ -95,12 +95,22 @@ fun BrowserScreen(proxyPort: Int, onOpenControlInfo: () -> Unit) {
             // is opt-in (default off). The agent/user turns it on from the settings sheet.
             WebView.setWebContentsDebuggingEnabled(app.devtoolsEnabled())
             webView = app.browserWebViewHolder.getOrCreate { wv ->
+                // The default WebView surface is opaque white until the page's own CSS background
+                // paints — on a dark-themed app that reads as a jarring white flash on every
+                // navigation, not just first load. Matching our background removes that flash; the
+                // page's real background still shows through the instant it has one.
+                wv.setBackgroundColor(0xFF0B0C10.toInt())
                 wv.settings.javaScriptEnabled = app.jsEnabled()
                 wv.settings.domStorageEnabled = true
                 wv.settings.safeBrowsingEnabled = false // never block a pentest target
                 wv.settings.useWideViewPort = true
                 wv.settings.loadWithOverviewMode = true
-                if (app.desktopMode()) wv.settings.userAgentString = DESKTOP_UA
+                // Pinch-to-zoom: on by default in a real browser. builtInZoomControls draws Android's
+                // own +/- controls too, which displayZoomControls=false hides (pinch alone drives it).
+                wv.settings.setSupportZoom(true)
+                wv.settings.builtInZoomControls = true
+                wv.settings.displayZoomControls = false
+                if (app.desktopMode()) wv.settings.userAgentString = DESKTOP_UA else wv.settings.userAgentString = defaultUserAgent(context)
                 wv.webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView, url: String) {
                         urlField = url
@@ -137,6 +147,11 @@ fun BrowserScreen(proxyPort: Int, onOpenControlInfo: () -> Unit) {
                 }
                 wv.loadUrl(normalizeUrl(app.browserWebViewHolder.lastUrl))
             }
+            // Keep the process (proxy, control bridge, this WebView's JS timers) alive once there is
+            // something to keep alive — so switching to AlpDroid to drive the agent doesn't freeze
+            // the page or stall network capture. A plain background Activity gets throttled/killed by
+            // Android without this.
+            startKeepAlive(context)
         }
     }
     val currentWebView = webView
@@ -232,7 +247,15 @@ fun BrowserScreen(proxyPort: Int, onOpenControlInfo: () -> Unit) {
             onHome = { currentWebView.loadUrl(HOME_URL) },
             onReload = { currentWebView.reload() },
             onApplyJs = { currentWebView.settings.javaScriptEnabled = it; currentWebView.reload() },
-            onApplyDesktop = { currentWebView.settings.userAgentString = if (it) DESKTOP_UA else null; currentWebView.reload() },
+            onApplyDesktop = {
+                // Explicit mobile UA on the way back (not null): a null userAgentString doesn't
+                // reliably restore WebView's real mobile default on every OEM build. Also reset the
+                // text zoom some sites' desktop CSS leaves oversized, and re-request layout so the
+                // wide viewport actually re-measures instead of only reloading with the old metrics.
+                currentWebView.settings.userAgentString = if (it) DESKTOP_UA else defaultUserAgent(context)
+                currentWebView.settings.textZoom = 100
+                currentWebView.reload()
+            },
             onOpenControlInfo = onOpenControlInfo,
             onDismiss = { showSettings = false },
         )
@@ -272,3 +295,18 @@ private fun installProxyOverride(proxyPort: Int) {
 
 private fun normalizeUrl(input: String): String =
     if (input.startsWith("http://") || input.startsWith("https://")) input else "https://$input"
+
+/** The real mobile UA this WebView build would use — queried fresh rather than cached, so turning
+ *  desktop mode back off restores exactly what the device actually ships, not a guessed string. */
+private fun defaultUserAgent(context: android.content.Context): String =
+    runCatching { android.webkit.WebSettings.getDefaultUserAgent(context) }.getOrDefault("")
+
+/** Starts [com.alpdroid.browser.BrowserKeepAliveService] so the process stays at foreground
+ *  priority once there's a live page — safe to call repeatedly (a running foreground service is a
+ *  no-op restart). */
+private fun startKeepAlive(context: android.content.Context) {
+    runCatching {
+        val intent = android.content.Intent(context, com.alpdroid.browser.BrowserKeepAliveService::class.java)
+        androidx.core.content.ContextCompat.startForegroundService(context, intent)
+    }
+}

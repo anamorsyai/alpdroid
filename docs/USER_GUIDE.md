@@ -105,6 +105,8 @@ Long-running servers run **in the background** — no dedicated tab. Each one in
 
 **How the agent drives it.** From a tab, the AlpDroid agent talks to AlpBrowser over a local (127.0.0.1) control API — it is wired up automatically: AlpDroid reads the connection token straight from AlpBrowser (both apps are signed with the same key, so nothing else on the phone can do this) and installs the `browserctl` client for you. Just install AlpBrowser, open it once, and the agent can reach it on the next shell — no token to copy. Coding agents learn the commands on their own from the built-in notes AlpDroid keeps in your home directory.
 
+**Switching back to AlpDroid.** Once a page is open, AlpBrowser keeps running — proxy, control API and the page itself — even after you switch to AlpDroid to talk to the agent, so you don't have to keep the browser screen open. A small notification shows while it's running; tap **Stop** there when you're done with it.
+
 **Please note.** Only test sites you own or are authorised to test. Anything AlpBrowser captures (including tokens or cookies in the traffic) stays on your phone — treat it as sensitive and don't share it.
 
 ## 11. Devices

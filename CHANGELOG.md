@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.7.74 — AlpBrowser stays reachable in the background, and other fixes (AlpBrowser 0.2.2)
+
+- AlpBrowser now keeps running when you switch away to drive the agent from AlpDroid — you no longer
+  have to leave the browser screen open for the agent to control it.
+- Fixed: `browserctl trust` could report success even when it hadn't actually added anything — it now
+  only reports success once the certificate is genuinely in place, and fails clearly otherwise (as do
+  other `browserctl` commands when AlpBrowser isn't reachable).
+- Fixed: pinch-to-zoom now works in AlpBrowser, and Desktop site mode renders correctly.
+- Fixed: pages no longer flash white while loading.
+- Fixed: AlpBrowser could fail to show up in the app drawer after installing.
+
 ## 1.7.73 — browserctl is wired up automatically (AlpBrowser 0.2.1)
 
 - The agent's `browserctl` tool is now installed automatically — no setup needed.

@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!-- Only an app signed with the same key (AlpDroid) may read the control token from the provider below. -->
     <permission
@@ -31,6 +33,7 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 
@@ -40,5 +43,15 @@
             android:authorities="com.alpdroid.browser.control"
             android:exported="true"
             android:permission="com.alpdroid.browser.permission.CONTROL" />
+
+        <!-- Keeps the process (proxy + control bridge + WebView) alive while the user is in another app. -->
+        <service
+            android:name=".BrowserKeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the agent-controlled browser (proxy, control API, live page) reachable while the user is in another app" />
+        </service>
     </application>
 </manifest>

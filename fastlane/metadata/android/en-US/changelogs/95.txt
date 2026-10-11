@@ -1,0 +1,1 @@
+AlpBrowser now keeps running in the background while the agent controls it, fixes pinch-zoom, desktop site mode, a white loading flash, and a trust-related reporting bug.

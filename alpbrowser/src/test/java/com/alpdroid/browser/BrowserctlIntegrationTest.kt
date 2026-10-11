@@ -237,4 +237,28 @@ class BrowserctlIntegrationTest {
         assertEquals(401, rawStatus("Host: 127.0.0.1:${bridge.boundPort}"))
         assertEquals(0, ctl("ping").code)
     }
+
+    @Test fun `frames lists the messages of a websocket and the events of a stream`() {
+        store.record(HttpTransaction("w1", TrafficSource.BROWSER, Instant.parse("2026-10-11T13:00:00Z"), "GET", "wss", "ws.test", 443, "/live", responseStatus = 101, durationMs = 5))
+        val ws = store.webSockets.open("w1", "websocket")
+        ws.add(false, 1, true, 7, "welcome".toByteArray(), false)
+        ws.add(true, 1, true, 4, "ping\nx".toByteArray(), false)
+        ws.add(false, 2, true, 3, byteArrayOf(1, 2, 3), false)
+
+        val json = JSONObject(ctl("frames", "w1").out)
+        assertEquals("websocket", json.getString("kind")); assertEquals(3, json.getInt("total"))
+        val f = json.getJSONArray("frames")
+        assertEquals(listOf("server", "client", "server"), (0 until 3).map { f.getJSONObject(it).getString("dir") })
+        assertEquals("welcome", f.getJSONObject(0).getString("text"))
+        assertTrue(f.getJSONObject(2).isNull("text") && f.getJSONObject(2).getString("base64") == "AQID")
+
+        val lines = ctl("frames", "w1", "--compact").out.trim().lines()
+        assertEquals(listOf("0 <- text 7B welcome", "1 -> text 4B ping\\nx", "2 <- binary 3B <3B>"), lines)
+        assertEquals(1, ctl("frames", "w1", "--from", "2", "--compact").out.trim().lines().size)
+        assertEquals(1, JSONObject(ctl("frames", "w1", "--limit", "1").out).getJSONArray("frames").length())
+
+        assertTrue(ctl("history", "--host", "ws.test", "--compact").out.contains("[websocket 3]"))
+        assertEquals("websocket", JSONObject(ctl("history", "--host", "ws.test").out).getJSONArray("transactions").getJSONObject(0).getString("kind"))
+        assertTrue(ctl("frames", "t1").code != 0)   // an ordinary request has none
+    }
 }

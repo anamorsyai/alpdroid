@@ -14,6 +14,7 @@
 #            cdp [port] | cdp off | cdp --json     remote debugging for Puppeteer/Playwright (prints the WebSocket URL)
 # Capture:   capture [on|off]     route the page through the proxy (needed for decrypted History); off = fast direct browsing
 # Tabs:      tabs | tab new [url] | tab switch <id> | tab close <id>
+# Sockets:   frames <id> [--from n] [--limit n] [--compact]    the frames of a WebSocket, or the events of an event stream, from History
 # History:   history [host] [--host h] [--method M] [--status N] [--since ISO] [--limit n] [--page n] [--compact] | get <id>
 #            save <id> --dir <dir> | save <id> --out <file>      raw request/response with decoded bodies, saved to disk
 #            har [--out file] [history filters]                  all captured traffic as HAR 1.2
@@ -348,6 +349,16 @@ case "$1" in
   history)   shift; hquery "$@"
              if [ -n "$Q" ]; then get "/history?$Q"; else get "/history"; fi ;;
   get)       safe "$2"; get "/history/$2" ;;
+  frames)    shift; safe "${1:-}"; fid=$1; shift; fq=
+             while [ $# -gt 0 ]; do
+               case "$1" in
+                 --from) num "$2"; fq="$fq&from=$2"; shift 2 ;;
+                 --limit) num "$2"; fq="$fq&limit=$2"; shift 2 ;;
+                 --compact) fq="$fq&fmt=lines"; shift ;;
+                 *) die "usage: browserctl frames <id> [--from n] [--limit n] [--compact]" ;;
+               esac
+             done
+             get "/frames/$fid?${fq#&}" ;;
   scope)     if [ -n "$2" ]; then P=""; shift; for p in "$@"; do P="$P$(jstr "$p"),"; done; post "/scope" "{\"patterns\":[${P%,}]}"; else get "/scope"; fi ;;
   intercept) case "$2" in
                on)  shift 2; ihost=; iresp=false; iskip=true

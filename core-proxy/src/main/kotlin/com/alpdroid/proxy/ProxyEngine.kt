@@ -170,10 +170,12 @@ class ProxyEngine(
 
     /** Copies both directions until either ends, then tears both sockets down so the other blocking read returns. */
     private suspend fun bridge(
-        clientIn: InputStream, clientOut: OutputStream, upIn: InputStream, upOut: OutputStream, closeAll: () -> Unit,
+        clientIn: InputStream, clientOut: OutputStream, upIn: InputStream, upOut: OutputStream,
+        tapUp: ((ByteArray, Int, Int) -> Unit)? = null, tapDown: ((ByteArray, Int, Int) -> Unit)? = null,
+        closeAll: () -> Unit,
     ) = withContext(connDispatcher) {
-        val toUpstream = launch { pump(clientIn, upOut, stats.bytesUp) }
-        val toClient = launch { pump(upIn, clientOut, stats.bytesDown) }
+        val toUpstream = launch { pump(clientIn, upOut, stats.bytesUp, tapUp) }
+        val toClient = launch { pump(upIn, clientOut, stats.bytesDown, tapDown) }
         val tearDown: (Throwable?) -> Unit = { closeAll() }
         toUpstream.invokeOnCompletion(tearDown)
         toClient.invokeOnCompletion(tearDown)
@@ -321,7 +323,9 @@ class ProxyEngine(
         }
 
         // Only gzip/deflate are asked for (we can decode those for capture and rules; br/zstd we could not).
-        val outHeaders = if (wantsUpgrade) req.headers else narrowAcceptEncoding(req.headers)
+        // A WebSocket upgrade is sent without the compression extension, so the frames that pass can be read; the server then
+        // simply does not compress them (the extension is optional, the connection works the same).
+        val outHeaders = if (wantsUpgrade) req.headers.filterNot { it.first.equals("Sec-WebSocket-Extensions", ignoreCase = true) } else narrowAcceptEncoding(req.headers)
 
         // Send, and read the head of the answer. A connection reused from an earlier exchange may have been closed by
         // the server while idle; that shows up as a failed write/read, and is retried once on a fresh connection.
@@ -369,7 +373,19 @@ class ProxyEngine(
             )
             runCatching { clientSocket.soTimeout = 0 }
             upstream.setTimeout(0)
-            bridge(clientIn, clientOut, upIn, upOut) { upstream.close(); try { clientSocket.close() } catch (_: IOException) { } }
+            // Record the frames in both directions (WebSocket only; anything else that upgrades is just relayed).
+            val isWebSocket = headerValue(requestHeaders, "Upgrade")?.equals("websocket", ignoreCase = true) == true
+            val frames = if (isWebSocket && (!respectScope || scope.matches(target.host))) store.webSockets.open(txId, "websocket") else null
+            val up = frames?.let { f -> WsFrameParser(true) { f.add(true, it.opcode, it.fin, it.length, it.payload, it.truncated) } }
+            val down = frames?.let { f -> WsFrameParser(false) { f.add(false, it.opcode, it.fin, it.length, it.payload, it.truncated) } }
+            bridge(clientIn, clientOut, upIn, upOut, up?.let { p -> { b, o, l -> p.feed(b, o, l) } }, down?.let { p -> { b, o, l -> p.feed(b, o, l) } }) { upstream.close(); try { clientSocket.close() } catch (_: IOException) { } }
+            return false
+        }
+
+        // A Server-Sent Events stream never ends, so it cannot be buffered like an ordinary answer (the page would never see an
+        // event): it is passed on as it arrives, and each event is kept in History. Not paused or edited by the interceptor.
+        if (head.status in 200..299 && headerValue(head.headers, "Content-Type")?.lowercase()?.startsWith("text/event-stream") == true) {
+            streamEvents(clientSocket, clientOut, upstream, upIn, head, txId, start, req, scheme, target)
             return false
         }
 
@@ -452,6 +468,74 @@ class ProxyEngine(
             target.host,
         )
         return keepClient
+    }
+
+    /** Relays a `text/event-stream` answer chunk by chunk, recording each event as it passes. The client connection ends with the stream. */
+    private fun streamEvents(
+        clientSocket: Socket, clientOut: OutputStream, upstream: Upstream, upIn: InputStream, head: ResponseHead,
+        txId: String, start: Instant, req: ReqEdit, scheme: String, target: Target,
+    ) {
+        runCatching { clientSocket.soTimeout = 0 }
+        upstream.setTimeout(0)
+        val inScope = !respectScope || scope.matches(target.host)
+        val events = if (inScope) store.webSockets.open(txId, "sse") else null
+        val sse = SseParser { text, truncated, length -> events?.add(false, 1, true, length, text.toByteArray(Charsets.UTF_8), truncated) }
+        val chunked = headerValue(head.headers, "Transfer-Encoding")?.contains("chunked", ignoreCase = true) == true
+        val outHeaders = head.headers.filterNot { it.first.equals("Connection", ignoreCase = true) } + ("Connection" to "close")
+        val respHead = java.io.ByteArrayOutputStream(1024)
+        respHead.write("${head.statusLine}\r\n".toByteArray(Charsets.US_ASCII))
+        writeHeaders(respHead, outHeaders)
+        try {
+            clientOut.write(respHead.toByteArray()); clientOut.flush()
+            recordIfInScope(
+                HttpTransaction(
+                    id = txId, source = source, timestamp = start, method = req.method, scheme = scheme,
+                    host = target.host, port = target.port, path = req.target, requestHeaders = req.headers,
+                    requestBody = req.body?.take(maxCapturedBodyBytes),
+                    responseStatus = head.status, responseHeaders = head.headers,
+                    durationMs = Instant.now().toEpochMilli() - start.toEpochMilli(),
+                ),
+                target.host,
+            )
+            stats.requests.incrementAndGet()
+            val buf = ByteArray(8192)
+            if (chunked) {
+                // Forward each chunk as it is (size line, data, CRLF) and feed only the data to the event reader.
+                while (true) {
+                    val sizeLine = readLine(upIn) ?: break
+                    clientOut.write((sizeLine + "\r\n").toByteArray(Charsets.ISO_8859_1)); clientOut.flush()
+                    var remaining = sizeLine.substringBefore(';').trim().toLongOrNull(16) ?: break
+                    if (remaining == 0L) {
+                        // Trailers (usually none) up to the blank line, then the stream is over.
+                        while (true) { val t = readLine(upIn) ?: break; clientOut.write((t + "\r\n").toByteArray(Charsets.ISO_8859_1)); if (t.isEmpty()) break }
+                        clientOut.flush()
+                        break
+                    }
+                    while (remaining > 0) {
+                        val n = upIn.read(buf, 0, minOf(buf.size.toLong(), remaining).toInt())
+                        if (n < 0) return
+                        clientOut.write(buf, 0, n); clientOut.flush()
+                        stats.bytesDown.addAndGet(n.toLong())
+                        runCatching { sse.feed(buf, 0, n) }
+                        remaining -= n
+                    }
+                    readLine(upIn)?.let { clientOut.write("\r\n".toByteArray()); clientOut.flush() } // the CRLF after the data
+                }
+            } else {
+                while (true) {
+                    val n = upIn.read(buf)
+                    if (n < 0) break
+                    clientOut.write(buf, 0, n); clientOut.flush()
+                    stats.bytesDown.addAndGet(n.toLong())
+                    runCatching { sse.feed(buf, 0, n) }
+                }
+            }
+        } catch (_: IOException) {
+            // Either side went away: the stream is over.
+        } finally {
+            upstream.close()
+            runCatching { clientSocket.close() }
+        }
     }
 
     private fun sendError(out: OutputStream, code: Int, reason: String, message: String) {
@@ -538,7 +622,9 @@ class ProxyEngine(
         return if (connectionClose) h + ("Connection" to "close") else h
     }
 
-    private suspend fun pump(from: InputStream, to: OutputStream, counter: java.util.concurrent.atomic.AtomicLong) = withContext(connDispatcher) {
+    private suspend fun pump(
+        from: InputStream, to: OutputStream, counter: java.util.concurrent.atomic.AtomicLong, tap: ((ByteArray, Int, Int) -> Unit)? = null,
+    ) = withContext(connDispatcher) {
         val buffer = ByteArray(8192)
         try {
             while (isActive) {
@@ -547,6 +633,8 @@ class ProxyEngine(
                 to.write(buffer, 0, n)
                 to.flush()
                 counter.addAndGet(n.toLong())
+                // Looking at the bytes must never be able to break the relay.
+                if (tap != null) runCatching { tap(buffer, 0, n) }
             }
         } catch (e: IOException) {
             // Either side closed; end of tunnel.

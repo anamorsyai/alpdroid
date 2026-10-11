@@ -209,7 +209,17 @@ class BrowserBridge(
             val lim = q["limit"]?.toIntOrNull()?.coerceIn(1, 1000) ?: Int.MAX_VALUE
             val skip = ((q["page"]?.toIntOrNull() ?: 1).coerceAtLeast(1) - 1).toLong() * (if (lim == Int.MAX_VALUE) 0 else lim)
             val lines = filteredHistory(q).drop(skip.toInt()).take(lim).joinToString("\n") { tx ->
-                "${tx.id} ${tx.method} ${tx.responseStatus ?: "-"} ${tx.durationMs ?: "-"}ms ${tx.host}${tx.path}"
+                "${tx.id} ${tx.method} ${tx.responseStatus ?: "-"} ${tx.durationMs ?: "-"}ms ${tx.host}${tx.path}" +
+                    (store.webSockets[tx.id]?.let { " [${it.kind} ${it.total}]" } ?: "")
+            }
+            return text(if (lines.isEmpty()) "" else lines + "\n")
+        }
+        if (path.startsWith("/v1/frames/") && q["fmt"] == "lines") {
+            val log = store.webSockets[path.removePrefix("/v1/frames/")] ?: return Raw(404, "application/json", error("no frames recorded for that entry").toString().toByteArray())
+            val lim = q["limit"]?.toIntOrNull()?.coerceIn(1, 1000) ?: 200
+            val lines = log.snapshot(q["from"]?.toIntOrNull() ?: 0, lim).joinToString("\n") { f ->
+                val body = if (f.opcode == 1 || f.opcode == 0) textOrNull(f.payload)?.replace("\n", "\\n") ?: "<binary>" else if (f.payload.isEmpty()) "" else "<${f.payload.size}B>"
+                "${f.index} ${if (f.fromClient) "->" else "<-"} ${f.opcodeName} ${f.length}B ${body.take(200)}"
             }
             return text(if (lines.isEmpty()) "" else lines + "\n")
         }
@@ -237,6 +247,7 @@ class BrowserBridge(
             path == "/v1/ca" && method == "GET" -> return 200 to JSONObject().put("pem", caPem() ?: "")
             path == "/v1/history" && method == "GET" -> return 200 to historyList(q)
             path.startsWith("/v1/history/") && method == "GET" -> return historyOne(path.removePrefix("/v1/history/"))
+            path.startsWith("/v1/frames/") && method == "GET" -> return framesOf(path.removePrefix("/v1/frames/"), q)
             path == "/v1/intercept" && method == "GET" -> return 200 to interceptState()
             path == "/v1/intercept" && method == "POST" -> return setIntercept(body)
             path == "/v1/intercept/resolve" && method == "POST" -> return resolveHold(body)
@@ -361,6 +372,22 @@ class BrowserBridge(
         return JSONObject().put("transactions", arr).put("total", all.size).put("page", pageNo).put("limit", limit)
             // Only the newest [capacity] transactions are kept (and a memory budget applies); older ones are discarded.
             .put("capacity", store.capacity).put("dropped", store.droppedCount)
+    }
+
+    /** The frames of a WebSocket (or the events of an event stream) recorded for History entry [id]. */
+    private fun framesOf(id: String, q: Map<String, String>): Pair<Int, JSONObject> {
+        val log = store.webSockets[id] ?: return 404 to error("no WebSocket or event-stream frames recorded for that entry (Capture must be on while the connection runs)")
+        val since = q["from"]?.toIntOrNull() ?: 0
+        val limit = q["limit"]?.toIntOrNull()?.coerceIn(1, 1000) ?: 200
+        val arr = JSONArray()
+        log.snapshot(since, limit).forEach { f ->
+            val text = if (f.opcode == 1 || f.opcode == 0) textOrNull(f.payload) else null
+            arr.put(JSONObject().put("n", f.index).put("dir", if (f.fromClient) "client" else "server").put("ts", f.timestampMs)
+                .put("opcode", f.opcodeName).put("fin", f.fin).put("length", f.length).put("truncated", f.truncated)
+                .put("text", text ?: JSONObject.NULL)
+                .put("base64", if (text == null) Base64.getEncoder().encodeToString(f.payload) else JSONObject.NULL))
+        }
+        return 200 to JSONObject().put("ok", true).put("id", id).put("kind", log.kind).put("total", log.total).put("frames", arr)
     }
 
     private fun historyOne(id: String): Pair<Int, JSONObject> {
@@ -496,6 +523,8 @@ class BrowserBridge(
         .put("status", tx.responseStatus ?: JSONObject.NULL).put("opaque", tx.opaque)
         .put("reqLen", tx.requestBody?.size ?: 0).put("resLen", tx.responseBody?.size ?: 0)
         .put("durationMs", tx.durationMs ?: JSONObject.NULL)
+        // A WebSocket or an event stream: its frames / events are read with `frames <id>`.
+        .also { j -> store.webSockets[tx.id]?.let { j.put("kind", it.kind).put("frames", it.total) } }
 
     private fun full(tx: HttpTransaction) = summary(tx)
         .put("host", tx.host).put("port", tx.port).put("scheme", tx.scheme).put("path", tx.path)

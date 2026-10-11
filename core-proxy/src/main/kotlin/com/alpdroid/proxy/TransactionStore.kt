@@ -15,6 +15,9 @@ import kotlinx.coroutines.flow.update
 class TransactionStore(private val maxSize: Int = 500, private val maxBytes: Long = 64L * 1024 * 1024) {
     private val _transactions = MutableStateFlow<List<HttpTransaction>>(emptyList())
 
+    /** The frames of WebSocket connections and the events of SSE streams seen through the proxy, by History id. */
+    val webSockets = WebSocketRegistry()
+
     /** The most entries kept, and how many older ones have been dropped to stay within it (or the memory budget). */
     val capacity: Int get() = maxSize
     private val dropped = java.util.concurrent.atomic.AtomicLong()
@@ -48,10 +51,12 @@ class TransactionStore(private val maxSize: Int = 500, private val maxBytes: Lon
 
     fun clear() {
         _transactions.value = emptyList()
+        webSockets.clear()
     }
 
     /** Removes one entry by id — no-op if it's already gone (already dropped by the cap, e.g.). */
     fun delete(id: String) {
+        webSockets.remove(id)
         _transactions.update { current -> current.filterNot { it.id == id } }
     }
 

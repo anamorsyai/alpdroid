@@ -56,6 +56,11 @@ The Proxy screen has these tabs:
 | **Scope** | Choose which hosts are recorded. |
 | **Options** | Intercept switches (pause responses too, skip images/CSS/JS, only pause hosts containing…), the Capture switch, and live counters of the data that really went through the proxy. |
 
+WebSockets and event streams (SSE) are captured too: the handshake is one History entry and every message is kept (up to 2,000 per
+connection, in both directions); read them with `browserctl frames <id>`. To make WebSocket messages readable, the browser's request for
+the optional compression extension is not forwarded, so the server sends them uncompressed. Event streams are passed on live and are not
+paused by Intercept. Editing or injecting a WebSocket message is not supported.
+
 History keeps the most recent 500 requests within a memory budget; older ones are discarded. Use **Save**
 (`browserctl save`) or **HAR** export to keep what matters.
 
@@ -160,6 +165,7 @@ Selectors are standard CSS selectors. Time values are in milliseconds. Every com
 | `get <id>` | One request and response in full (bodies decoded, with a formatted version alongside). |
 | `save <id> --dir <dir>` | Write an evidence folder: `meta.json`, `request.txt`, `request.body`, `response.txt`, `response.body`. `--out <file>` writes request and response into one file. |
 | `har [--out file] [history filters]` | Export captured traffic as a HAR 1.2 file. |
+| `frames <id> [--from n] [--limit n] [--compact]` | The messages of a **WebSocket** (both directions, with timestamps, text or base64) or the events of a **Server-Sent Events** stream, for a History entry. `history` marks such entries with `kind` (`websocket` or `sse`); `--compact` shows `[websocket 12]` next to them. Needs Capture to have been on while the connection ran. |
 | `resend <METHOD> <url> [--header 'Name: v']… [--body TEXT]` | Send a request and print the response. |
 
 ### Bug bounty

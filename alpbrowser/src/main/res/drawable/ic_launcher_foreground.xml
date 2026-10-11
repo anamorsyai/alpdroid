@@ -9,8 +9,8 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Globe and badge are scaled and placed so the pair as a whole sits on the canvas centre (54,54). -->
-    <group android:pivotX="48" android:pivotY="50" android:scaleX="1.083" android:scaleY="1.083" android:translateX="2">
+    <!-- The globe sits exactly on the canvas centre (54,54); the badge is a small corner mark tucked against its lower-right edge, inside the 72dp safe zone. -->
+    <group android:pivotX="48" android:pivotY="50" android:scaleX="1.04" android:scaleY="1.04" android:translateX="6" android:translateY="4">
     <!-- Globe disc (deep teal) so the grid reads against the dark background -->
     <path
         android:fillColor="#0E2E29"
@@ -29,7 +29,7 @@
     <path android:strokeColor="#3ED0B8" android:strokeWidth="5"
         android:pathData="M24,50 a24,24 0 1,0 48,0 a24,24 0 1,0 -48,0 Z" />
     </group>
-    <group android:pivotX="76" android:pivotY="76" android:scaleX="0.93" android:scaleY="0.93" android:translateX="-5" android:translateY="-5">
+    <group android:pivotX="76" android:pivotY="76" android:scaleX="0.93" android:scaleY="0.93" android:translateX="1" android:translateY="1">
     <!-- Separation ring: punch a dark disc so the badge stands off the globe edge -->
     <path
         android:fillColor="#12161C"

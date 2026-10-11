@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The AlpBrowser icon: the globe now sits exactly in the middle, with the AlpDroid badge as a small mark on its lower-right edge.
+
 ## 1.7.92 — Proxy and browser reliability fixes (AlpBrowser 0.6.11)
 
 - Proxy: a response that the server cuts short is now reported as an error instead of being passed on as a complete download; response trailers no longer corrupt the next response on a reused connection; `ws://` upgrades keep their `Connection: Upgrade` header; non-ASCII bytes in headers are forwarded unchanged; a HEAD request to an event-stream URL no longer hangs.

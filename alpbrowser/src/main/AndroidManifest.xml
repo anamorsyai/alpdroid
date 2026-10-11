@@ -7,6 +7,11 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Only an app signed with the same key (AlpDroid) may read the control token from the provider below. -->
+    <permission
+        android:name="com.alpdroid.browser.permission.CONTROL"
+        android:protectionLevel="signature" />
+
     <application
         android:name=".AlpBrowserApp"
         android:allowBackup="false"
@@ -28,5 +33,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Signature-gated: hands AlpDroid the control token + bound ports so it can set up browserctl. -->
+        <provider
+            android:name=".BrowserControlProvider"
+            android:authorities="com.alpdroid.browser.control"
+            android:exported="true"
+            android:permission="com.alpdroid.browser.permission.CONTROL" />
     </application>
 </manifest>

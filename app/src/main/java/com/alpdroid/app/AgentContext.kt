@@ -93,10 +93,10 @@ Field types: text, number, toggle, select (with "options"). Each field reaches t
 
     private const val BROWSER = """AlpDroid has a companion app, AlpBrowser (a separate app you may need the user to install). It is a real Chromium WebView whose traffic goes through an in-app HTTPS intercepting proxy, and it is fully controllable from here over a loopback control API — so you can browse, read and rewrite decrypted HTTPS, and automate the page for the user's own web development or authorized bug-bounty testing on targets they are permitted to test.
 
-Reach it with the `browserctl` command (loopback 127.0.0.1, token-authenticated). First time, ask the user to open AlpBrowser -> tap the gear "Agent control" and read you the token, then:
-  export ALPBROWSER_TOKEN=<token>        # (ALPBROWSER_PORT optional, default 8899)
-  browserctl trust                       # make Alpine's curl/python trust the intercepted HTTPS (appends the proxy CA)
+Reach it with the `browserctl` command (loopback 127.0.0.1, token-authenticated). It is already installed and AlpDroid provisions the token for you automatically (read from AlpBrowser over a same-signature channel) — no manual token copy. Just:
   browserctl ping                        # check it is reachable
+  browserctl trust                       # make Alpine's curl/python trust the intercepted HTTPS (appends the proxy CA)
+If ping says AlpBrowser is not linked, the app isn't installed yet — the user installs it from AlpDroid -> Settings -> About -> AlpBrowser, opens it once, then it links on the next shell.
 
 Two modes (set the one that fits the task): `browserctl mode bugbounty` or `browserctl mode webdev`.
 

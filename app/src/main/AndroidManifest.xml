@@ -21,6 +21,16 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- Read AlpBrowser's control token from its signature-protected provider (both apps share our key),
+         so the agent's browserctl is wired up automatically with no manual token copy. -->
+    <uses-permission android:name="com.alpdroid.browser.permission.CONTROL" />
+
+    <!-- Android 11+ package visibility: needed to reach AlpBrowser's content provider. -->
+    <queries>
+        <package android:name="com.alpdroid.browser" />
+        <provider android:authorities="com.alpdroid.browser.control" />
+    </queries>
+
     <!-- Legacy scoped-storage fallback for API 24-29; superseded on 30+ by the
          MANAGE_EXTERNAL_STORAGE grant requested at runtime from Settings (StorageAccess.kt). -->
     <uses-permission

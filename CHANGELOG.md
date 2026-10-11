@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.73 — browserctl is wired up automatically (AlpBrowser 0.2.1)
+
+- The agent's `browserctl` tool is now installed automatically — no setup needed.
+- AlpDroid links to AlpBrowser and reads its connection token directly from the app, so you never
+  have to open AlpBrowser and copy a token by hand. Just install AlpBrowser, open it once, and the
+  agent can reach it on the next shell.
+- The link is read-only and only works between AlpDroid and AlpBrowser themselves (they are signed
+  with the same key) — no other app on the phone can obtain the token this way.
+
 ## 1.7.72 — AlpBrowser redesign, a strong ad blocker, and in-app settings (AlpBrowser 0.2.0)
 
 - AlpBrowser has a cleaner, phone-sized interface: a compact toolbar with a secure/not-secure

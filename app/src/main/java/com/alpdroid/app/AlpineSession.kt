@@ -486,6 +486,26 @@ ctl.!default { type null }
                 gitconfig.writeText("# alpdroid\n[credential \"https://github.com\"]\n\thelper = alpdroid\n")
             }
             val dir = File(root, "etc/alpdroid").apply { mkdirs() }
+            // browserctl: installed for the agent and pointed at AlpBrowser automatically. The script ships
+            // in our assets; the token + live ports are read from AlpBrowser's signature-protected provider
+            // (same signing key) and written to an env file browserctl sources — so the agent never has to
+            // copy the token by hand. Refreshed every session start; removed when AlpBrowser isn't reachable.
+            runCatching {
+                val script = context.assets.open("browserctl").bufferedReader().use { it.readText() }
+                val f = File(bin, "browserctl")
+                if (writeIfDifferent(f, script)) f.setExecutable(true, false)
+                val envFile = File(dir, "alpbrowser.env")
+                if (BrowserInstall.isInstalled(context)) {
+                    // Only query when the companion is installed (a plain PackageManager check that does not
+                    // start it). A transient null (e.g. still starting) leaves any existing good file in place.
+                    BrowserLink.query(context)?.let { info ->
+                        envFile.writeText("ALPBROWSER_TOKEN=${info.token}\nALPBROWSER_PORT=${info.controlPort}\nALPBROWSER_PROXY=${info.proxyPort}\n")
+                        envFile.setReadable(true, true); envFile.setWritable(true, true)
+                    }
+                } else {
+                    envFile.delete()
+                }
+            }
             conf = File(dir, "bridge")
             val settings = SettingsStore(context)
             AgentContext.sync(root, AgentContext.appVersion(context), settings.agentAccessEnabled, settings.agentContextFiles)

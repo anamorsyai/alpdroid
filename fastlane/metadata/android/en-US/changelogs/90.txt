@@ -1,0 +1,1 @@
+Fixes runaway "cache" growth: the guest /tmp used to grow without limit (a reported 65 GB), filling the phone. It is now wiped on start and kept trimmed while you work.

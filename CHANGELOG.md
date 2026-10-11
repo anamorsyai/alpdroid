@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.7.69 — stop the guest /tmp from filling the phone
+
+A user hit 65 GB of app "cache" with the phone out of space. The cause: the guest `/tmp` (where
+opencode, bun, npm, pip and compilers drop download and build scratch) was never cleared. On a real
+Linux box `/tmp` is wiped on every boot; AlpDroid's process can run for days, so it only ever grew.
+
+- Fixed (runaway cache): the shared guest `/tmp` is now wiped on every app start — nothing can be
+  using it yet, and `/tmp` is never meant to persist — so the junk that had built up is reclaimed on
+  the next launch.
+- Added (stays bounded while you work): the resource manager now trims `/tmp` during a long session.
+  Once it passes ~3 GB it removes the oldest scratch back down to ~1 GB, but never touches anything
+  modified in the last 15 minutes, so an in-progress download or build is left completely alone.
+- Settings now shows the current guest `/tmp` size under Sessions & Background.
+
 ## 1.7.68 — deeper review: fewer syscalls, a memory-leak fix, background-service and reflow bugs
 
 Found by a full review of threads, CPU, memory and the native bridge.

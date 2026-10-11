@@ -185,8 +185,37 @@ class ResourceManager(private val app: AlpineTermApp) {
         }
     }
 
+    /** When guest /tmp was last size-checked (a full tree walk, so throttled well below the tick). */
+    private var lastTmpReapAtMs = 0L
+
+    /** Guest /tmp size at the last check, for the Settings status line. */
+    @Volatile private var lastTmpSizeBytes = 0L
+
+    /**
+     * Keeps the guest `/tmp` from filling the phone (see [TmpReaper]). Walking the tree is far
+     * heavier than the per-tick /proc read, so it runs at most once every [TMP_REAP_SECONDS] and
+     * only while a session could be writing there (tabs or background services alive) — with
+     * nothing running there is nothing adding to it, and the next cold start wipes it anyway. The
+     * second walk inside reap() only happens on the rare tick that is actually over budget.
+     */
+    private fun maybeReapTmp(now: Long) {
+        if (now - lastTmpReapAtMs < TMP_REAP_SECONDS * 1000) return
+        lastTmpReapAtMs = now
+        if (app.tabs.isEmpty() && app.services.list().isEmpty()) return
+        val dir = File(app.cacheDir, "guest-tmp")
+        val size = runCatching { TmpReaper.treeSize(dir) }.getOrDefault(0L)
+        if (size > TmpReaper.HIGH_WATER_BYTES) {
+            val freed = runCatching { TmpReaper.reap(dir, now = now) }.getOrDefault(0L)
+            if (freed > 0) Log.i(TAG, "trimmed guest /tmp: freed ${freed / (1024 * 1024)} MB of stale scratch")
+            lastTmpSizeBytes = (size - freed).coerceAtLeast(0L)
+        } else {
+            lastTmpSizeBytes = size
+        }
+    }
+
     private fun tick() {
         refreshEnabled()
+        maybeReapTmp(System.currentTimeMillis())
         if (appVisible) {
             recomputeMode()
             updateRenderLine()
@@ -338,6 +367,10 @@ class ResourceManager(private val app: AlpineTermApp) {
             sb.append("\n").append(label).append(" (background): ").append(line)
         }
         if (usage.isEmpty() && serviceUsage.isEmpty()) sb.append("\nNo sessions running.")
+        if (lastTmpSizeBytes > 0) {
+            sb.append("\nGuest /tmp: ").append(lastTmpSizeBytes / (1024 * 1024)).append(" MB")
+            if (lastTmpSizeBytes > TmpReaper.HIGH_WATER_BYTES) sb.append(" — trimming stale scratch")
+        }
         return sb.toString()
     }
 
@@ -350,6 +383,7 @@ class ResourceManager(private val app: AlpineTermApp) {
         const val TAG = "AlpDroid/Resources"
         const val TICK_SECONDS = 15L
         const val QUIET_TICK_SECONDS = 45L
+        const val TMP_REAP_SECONDS = 120L
         const val BUSY_CPU = 25.0
         const val UNCAPPED_FRAME_MS = 8L
         // android.content.ComponentCallbacks2.TRIM_MEMORY_*

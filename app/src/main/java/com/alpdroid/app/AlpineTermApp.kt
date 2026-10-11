@@ -1,6 +1,7 @@
 package com.alpdroid.app
 
 import android.app.Application
+import java.io.File
 import java.util.concurrent.Executors
 
 class AlpineTermApp : Application() {
@@ -13,6 +14,11 @@ class AlpineTermApp : Application() {
         backgroundExecutor.execute {
             OperationNotifications.clearStale(this)
             sweepStaleProotScratch()
+            // Wipe the shared guest /tmp: /tmp is never meant to survive a "boot", and on a real
+            // Linux box it wouldn't. Nothing can be using it yet — every guest session is a child
+            // of this just-started process — and leaving stale build/download junk here is exactly
+            // how it grew to tens of GB of "cache". The resource tick keeps it bounded afterward.
+            runCatching { TmpReaper.wipe(File(cacheDir, "guest-tmp")) }
         }
         pluginJobs.start()
         resourceManager.start()

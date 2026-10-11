@@ -152,7 +152,8 @@ Selectors are standard CSS selectors. Time values are in milliseconds. Every com
 | `waitfor <sel> [--state visible\|hidden\|attached] [--timeout ms]` | Wait for an element. |
 | `eval '<js>'` · `eval --file <path>` · `eval --stdin` `[--timeout ms]` | Run JavaScript in the page and print its value. Works on sites with a strict Content-Security-Policy. The script can be an expression (a promise or `await` is waited for), a list of statements (the value of the last expression is printed), or statements that `return` a value. Long, multi-line scripts and any language are supported. |
 | `shot [--selector css] [--full-page] [--out path] [--format png\|jpeg]` | Screenshot of the visible page, one element, or the whole page. Needs the Browser screen to be on screen. |
-| `cookies [--domain d]` · `setcookie <name> <value> [--domain d] [--path p]` | Read or set cookies. Android exposes name and value only. |
+| `cookies [--domain d]` | Read cookies. By default Android gives name and value only; while Remote DevTools is on (`browserctl cdp`) every attribute is listed: domain, path, expiry, `httpOnly`, `secure`, `sameSite` and whether it is a session cookie. |
+| `setcookie <name> <value> [--domain d] [--path p] [--secure] [--httponly] [--samesite Lax\|Strict\|None] [--expires epoch] [--max-age s]` | Set a cookie with its attributes. |
 | `cdp [port]` · `cdp off` · `cdp --json` | Turn on remote debugging and print the WebSocket address for Playwright or Puppeteer. |
 | `tabs` · `tab new [url] [--no-wait]` · `tab switch <id>` · `tab close <id>` | Manage tabs. |
 | `console [limit]` | Read the page's console messages. |
@@ -234,7 +235,7 @@ nothing that can expire.
 - Android can stop background apps. Keep AlpBrowser's notification showing and allow unrestricted battery use for it, as
   you do for AlpDroid.
 - History holds the latest 500 requests; very large bodies (over 25 MiB) are not buffered.
-- Cookies read through Android include name and value only (no expiry or flags).
+- `cookies` shows name and value only unless Remote DevTools is on, in which case it lists all attributes.
 - Remote DevTools (CDP) is off by default and turns on when you run `browserctl cdp`.
 
 ## Troubleshooting

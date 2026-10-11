@@ -255,8 +255,17 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
                 if (seen.add("$name=$value@$h")) arr.put(JSONObject().put("domain", h).put("name", name).put("value", value))
             }
         }
-        return JSONObject().put("ok", true).put("cookies", arr)
-            .put("note", "Android lists name and value only; path, expiry and HttpOnly are not exposed. Without --domain, the hosts seen in History and open tabs are checked.")
+        val plain = JSONObject().put("ok", true).put("cookies", arr)
+        // With Remote DevTools on, the browser itself can list every attribute (path, expiry, HttpOnly, Secure, SameSite).
+        if (app.devtoolsEnabled()) {
+            try {
+                val full = app.cdpClient.cookies(domain)
+                return JSONObject().put("ok", true).put("attributes", true).put("cookies", full)
+            } catch (e: Exception) {
+                return plain.put("note", "DevTools did not list the attributes (${e.message}); only name and value are shown. Open a page and retry, or run `browserctl cdp` again.")
+            }
+        }
+        return plain.put("note", "Name and value only: turn on Remote DevTools (`browserctl cdp`) to also see path, expiry, HttpOnly, Secure and SameSite. Without --domain, the hosts seen in History and open tabs are checked.")
     }
 
     override fun setCookie(cookie: CookieSpec): JSONObject {

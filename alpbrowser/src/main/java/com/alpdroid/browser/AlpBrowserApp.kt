@@ -77,19 +77,23 @@ class AlpBrowserApp : Application() {
      * WebView's DevTools lives on an abstract unix socket only this app can open; this relays it to a loopback TCP
      * port (token-gated) so a CDP client inside the proot shell can attach. See [CdpForwarder].
      */
-    val cdpForwarder by lazy {
-        CdpForwarder(controlToken, {
-            var last: Exception? = null
-            for (name in listOf("webview_devtools_remote_${android.os.Process.myPid()}", "chrome_devtools_remote")) {
-                try {
-                    val sock = android.net.LocalSocket()
-                    sock.connect(android.net.LocalSocketAddress(name, android.net.LocalSocketAddress.Namespace.ABSTRACT))
-                    return@CdpForwarder CdpForwarder.Link(sock.inputStream, sock.outputStream, { runCatching { sock.close() } })
-                } catch (e: Exception) { last = e }
-            }
-            throw java.io.IOException("DevTools socket not found", last)
-        }, { openLocalAccess() })
+    val cdpForwarder by lazy { CdpForwarder(controlToken, ::openDevtoolsLink, { openLocalAccess() }) }
+
+    /** A new connection to the WebView's DevTools socket (used by the forwarder and by [cdpClient]). */
+    private fun openDevtoolsLink(): CdpForwarder.Link {
+        var last: Exception? = null
+        for (name in listOf("webview_devtools_remote_${android.os.Process.myPid()}", "chrome_devtools_remote")) {
+            try {
+                val sock = android.net.LocalSocket()
+                sock.connect(android.net.LocalSocketAddress(name, android.net.LocalSocketAddress.Namespace.ABSTRACT))
+                return CdpForwarder.Link(sock.inputStream, sock.outputStream, { runCatching { sock.close() } })
+            } catch (e: Exception) { last = e }
+        }
+        throw java.io.IOException("DevTools socket not found", last)
     }
+
+    /** Asks the browser itself for what Android's APIs do not expose (see [CdpClient]); works while Remote DevTools is on. */
+    val cdpClient by lazy { CdpClient(::openDevtoolsLink) }
 
     private val cdpControl = object : CdpControl {
         override fun status(): org.json.JSONObject {

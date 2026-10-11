@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `browserctl cookies` lists every attribute of a cookie (domain, path, expiry, HttpOnly, Secure, SameSite) while Remote DevTools is on.
 - WebSocket messages and Server-Sent Events are now captured: each connection is one History entry, and `browserctl frames <id>` lists its messages in both directions (text or base64), with timestamps. Event streams are passed on as they arrive instead of being held back until they end, so pages that use them work with Capture on.
 
 ## 1.7.87 — Screenshots of one element or the whole page (AlpBrowser 0.6.7)

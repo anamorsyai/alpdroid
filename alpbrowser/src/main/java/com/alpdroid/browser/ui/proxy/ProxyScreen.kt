@@ -347,8 +347,9 @@ private fun TxDetail(app: AlpBrowserApp, tx: HttpTransaction, onBack: () -> Unit
     }
     val request = rendered.first
     val response = rendered.second
-    val reqChunks = remember(request) { chunkText(request) }
-    val resChunks = remember(response) { chunkText(response) }
+    // Colouring walks the whole text, so it is done here off the main thread too.
+    val reqChunks by produceState(emptyList<AnnotatedString>(), request) { value = withContext(Dispatchers.Default) { chunkHighlighted(request) } }
+    val resChunks by produceState(emptyList<AnnotatedString>(), response) { value = withContext(Dispatchers.Default) { chunkHighlighted(response) } }
     LazyColumn(Modifier.fillMaxSize()) {
         item {
             Row(Modifier.fillMaxWidth().padding(horizontal = ScreenPad), horizontalArrangement = Arrangement.spacedBy(6.dp)) {

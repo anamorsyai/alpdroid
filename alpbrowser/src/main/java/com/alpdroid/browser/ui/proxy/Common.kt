@@ -34,8 +34,19 @@ fun rawMessage(firstLine: String, headers: List<Pair<String, String>>, body: Byt
  */
 fun chunkText(text: String, size: Int = 1500, maxChars: Int = 2_000_000): List<String> {
     val shown = if (text.length > maxChars) text.substring(0, maxChars) + "\n[… ${text.length - maxChars} more characters not shown — use Copy]" else text
-    if (shown.length <= size) return listOf(shown)
-    val out = ArrayList<String>(shown.length / size + 1)
+    return chunkBounds(shown, size).map { (s, e) -> shown.substring(s, e) }
+}
+
+/** The same pieces as [chunkText], but coloured: [text] is highlighted once, then cut at the same line breaks. */
+fun chunkHighlighted(text: String, size: Int = 1500, maxChars: Int = 2_000_000): List<androidx.compose.ui.text.AnnotatedString> {
+    val shown = if (text.length > maxChars) text.substring(0, maxChars) + "\n[… ${text.length - maxChars} more characters not shown — use Copy]" else text
+    val coloured = HttpHighlight.annotate(shown)
+    return chunkBounds(shown, size).map { (s, e) -> coloured.subSequence(s, e) }
+}
+
+internal fun chunkBounds(shown: String, size: Int): List<Pair<Int, Int>> {
+    if (shown.length <= size) return listOf(0 to shown.length)
+    val out = ArrayList<Pair<Int, Int>>(shown.length / size + 1)
     var i = 0
     while (i < shown.length) {
         var end = minOf(i + size, shown.length)
@@ -43,10 +54,16 @@ fun chunkText(text: String, size: Int = 1500, maxChars: Int = 2_000_000): List<S
             val nl = shown.lastIndexOf('\n', end)
             if (nl > i) end = nl + 1
         }
-        out.add(shown.substring(i, end))
+        out.add(i to end)
         i = end
     }
     return out
+}
+
+/** A coloured piece (see [chunkHighlighted]). */
+@Composable
+fun MonoChunk(text: androidx.compose.ui.text.AnnotatedString) {
+    Text(text, style = MonoStyle, modifier = Modifier.fillMaxWidth().padding(horizontal = ScreenPad).background(FieldBg).padding(horizontal = 12.dp))
 }
 
 /** One piece of a code block, to be used inside a LazyColumn via `items(chunks)`; neighbouring pieces read as one box. */

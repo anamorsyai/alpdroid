@@ -17,6 +17,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -104,7 +105,7 @@ fun RepeaterScreen(app: AlpBrowserApp, modifier: Modifier = Modifier) {
     val m = app.repeater
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
-    val chunks = remember(m.responseText) { if (m.responseText.isEmpty()) emptyList() else chunkText(m.responseText) }
+    val chunks by produceState(emptyList<AnnotatedString>(), m.responseText) { value = if (m.responseText.isEmpty()) emptyList() else withContext(Dispatchers.Default) { chunkHighlighted(m.responseText) } }
 
     fun send() {
         m.sending = true

@@ -26,6 +26,8 @@ class BrowserTab(val id: Int, initialUrl: String) {
     @Volatile var navSeq: Int = 0
     @Volatile var httpStatus: Int = 0
     @Volatile var lastError: String? = null
+    /** True while our own error page is being loaded in place of a failed page (so that load is not counted as a new navigation). */
+    @Volatile var errorPage: Boolean = false
     @Volatile var lastActiveAt: Long = System.currentTimeMillis()
 }
 

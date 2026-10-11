@@ -14,6 +14,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.alpdroid.browser.AlpBrowserApp
 import com.alpdroid.browser.BrowserTab
+import com.alpdroid.browser.ErrorPage
 import java.io.ByteArrayInputStream
 
 internal const val HOME_URL = "https://www.google.com"
@@ -28,9 +29,9 @@ internal const val DESKTOP_UA =
 internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: BrowserTab): WebView {
     val holder = app.browserWebViewHolder
     return holder.ensureWebView(tab) { wv ->
-        // The default WebView surface is opaque white until the page's own CSS paints, which reads as a jarring flash
-        // on a dark app; matching our background removes that flash.
-        wv.setBackgroundColor(0xFF0B0C10.toInt())
+        // Pages that set no background of their own (and expect the usual white canvas) must stay readable: with a dark
+        // surface their dark text vanished. The failed-load page below paints its own dark background instead.
+        wv.setBackgroundColor(android.graphics.Color.WHITE)
         wv.settings.javaScriptEnabled = app.jsEnabled()
         wv.settings.domStorageEnabled = true
         wv.settings.safeBrowsingEnabled = false // never block a pentest target
@@ -43,6 +44,7 @@ internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: Browser
         wv.settings.userAgentString = if (app.desktopMode()) DESKTOP_UA else defaultUserAgent(context)
         wv.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                if (tab.errorPage) { tab.loading = true; return } // our error page replacing a failed load, not a new navigation
                 tab.url = url
                 tab.loading = true
                 tab.lastError = null
@@ -50,7 +52,14 @@ internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: Browser
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: android.webkit.WebResourceError) {
-                if (request.isForMainFrame) tab.lastError = error.description?.toString() ?: "load failed"
+                if (!request.isForMainFrame) return
+                val why = error.description?.toString() ?: "load failed"
+                tab.lastError = why
+                // A cancelled load (a new navigation started, a download began) is not an error worth a page.
+                if (why.contains("ERR_ABORTED")) return
+                val failing = request.url.toString()
+                tab.errorPage = true
+                view.loadDataWithBaseURL(failing, ErrorPage.html(failing, why, app.captureEnabled()), "text/html", "UTF-8", failing)
             }
 
             override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
@@ -58,6 +67,7 @@ internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: Browser
             }
 
             override fun onPageFinished(view: WebView, url: String) {
+                tab.errorPage = false
                 tab.url = url
                 tab.loading = false
                 tab.canGoBack = view.canGoBack()

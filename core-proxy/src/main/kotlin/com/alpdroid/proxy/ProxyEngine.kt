@@ -30,9 +30,9 @@ import javax.net.ssl.SSLSocket
  * — or the MITM handshake fails for any reason — a CONNECT falls back to tunnelling
  * byte-for-byte, logged as an opaque entry (host:port only).
  *
- * Chunked transfer-encoding is not yet parsed — a chunked response is
- * relayed to the client correctly (raw bytes are forwarded either way) but
- * is not logged into History. This is a known v0 gap, not a silent bug.
+ * Bodies are buffered (so they can be intercepted/edited and captured): Content-Length, chunked
+ * (de-chunked and re-framed with a Content-Length) and connection-close framing are all handled,
+ * bounded by a size cap so a huge or hostile body cannot exhaust memory.
  */
 class ProxyEngine(
     private val port: Int,
@@ -149,6 +149,12 @@ class ProxyEngine(
             withContext(Dispatchers.IO) {
                 val toUpstream = launch { pump(client.getInputStream(), upstream.getOutputStream()) }
                 val toClient = launch { pump(upstream.getInputStream(), client.getOutputStream()) }
+                // When either direction ends (e.g. a server that half-closes its write side while the client
+                // keeps its side open), tear down both sockets so the other pump's blocking read returns
+                // instead of pinning both sockets and both coroutines until some unrelated timeout.
+                val tearDown: (Throwable?) -> Unit = { upstream.closeQuietly(); client.closeQuietly() }
+                toUpstream.invokeOnCompletion(tearDown)
+                toClient.invokeOnCompletion(tearDown)
                 toUpstream.join()
                 toClient.join()
             }
@@ -161,21 +167,22 @@ class ProxyEngine(
      * speaks origin-form (`GET /path`), not proxy absolute-form — the target comes from
      * the CONNECT itself, not the request line.
      */
-    private suspend fun handleMitmTunnel(client: Socket, target: Target, mitm: TlsMitm) {
-        withContext(Dispatchers.IO) {
-            client.getOutputStream().write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
-            client.getOutputStream().flush()
-        }
-        val tlsClient = withContext(Dispatchers.IO) {
-            mitm.wrapClient(client, target.host).also { it.startHandshake() }
-        }
-        val upstream = withContext(Dispatchers.IO) {
-            mitm.upstreamSocket(target.host, target.port).also { it.startHandshake() }
-        }
-        upstream.use {
-            tlsClient.use {
-                relayDecrypted(tlsClient, upstream, target)
-            }
+    private suspend fun handleMitmTunnel(client: Socket, target: Target, mitm: TlsMitm) = withContext(Dispatchers.IO) {
+        client.getOutputStream().write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
+        client.getOutputStream().flush()
+        // Create + handshake inside the try so a throw anywhere (an untrusted/rejected upstream cert, a
+        // hostname-verification failure, a handshake error) closes BOTH sockets — the old code opened the
+        // upstream SSLSocket outside any use/try, so a failed upstream handshake leaked its file descriptor.
+        val tlsClient = mitm.wrapClient(client, target.host)
+        var upstream: SSLSocket? = null
+        try {
+            tlsClient.startHandshake()
+            upstream = mitm.upstreamSocket(target.host, target.port)
+            upstream.startHandshake()
+            relayDecrypted(tlsClient, upstream, target)
+        } finally {
+            upstream?.closeQuietly()
+            tlsClient.closeQuietly()
         }
     }
 
@@ -184,7 +191,7 @@ class ProxyEngine(
         val clientInput = BufferedInputStream(clientTls.inputStream)
         val requestLine = readLine(clientInput)?.let(::parseRequestLine) ?: return
         val requestHeaders = readHeaders(clientInput)
-        val requestBody = readBodyIfPresent(clientInput, requestHeaders)
+        val requestBody = readMessageBody(clientInput, requestHeaders, BODY_BUFFER_CAP, allowEofBody = false).bytes
 
         val txId = UUID.randomUUID().toString()
         val req = ReqEdit(requestLine.method, requestLine.target.ifEmpty { "/" }, requestHeaders, requestBody)
@@ -196,10 +203,7 @@ class ProxyEngine(
 
         val upstreamOut = upstreamTls.outputStream
         writeRequestLine(upstreamOut, req.method, req.target, requestLine.version)
-        val forwardedHeaders = req.headers
-            .filterNot { it.first.equals("Proxy-Connection", ignoreCase = true) }
-            .filterNot { it.first.equals("Connection", ignoreCase = true) } + ("Connection" to "close")
-        writeHeaders(upstreamOut, forwardedHeaders)
+        writeHeaders(upstreamOut, forwardHeaders(req.headers, req.body, connectionClose = true))
         req.body?.let { upstreamOut.write(it) }
         upstreamOut.flush()
 
@@ -207,14 +211,14 @@ class ProxyEngine(
         val statusLine = readLine(upstreamInput)
         val statusCode = statusLine?.split(' ')?.getOrNull(1)?.toIntOrNull()
         val responseHeaders = readHeaders(upstreamInput)
-        val responseBody = readBodyIfPresent(upstreamInput, responseHeaders)
+        val responseBody = readMessageBody(upstreamInput, responseHeaders, BODY_BUFFER_CAP, allowEofBody = true).bytes
 
         val resp = RespEdit(statusLine, statusCode, responseHeaders, responseBody)
         applyResponseIntercept(txId, target.host, target.port, resp)
         if (!resp.drop) {
             val clientOut = clientTls.outputStream
             resp.statusLine?.let { clientOut.write("$it\r\n".toByteArray(Charsets.US_ASCII)) }
-            writeHeaders(clientOut, resp.headers)
+            writeHeaders(clientOut, forwardHeaders(resp.headers, resp.body, connectionClose = true))
             resp.body?.let { clientOut.write(it) }
             clientOut.flush()
         }
@@ -248,7 +252,7 @@ class ProxyEngine(
         target: Target,
     ) {
         val start = Instant.now()
-        val requestBody = readBodyIfPresent(clientInput, requestHeaders)
+        val requestBody = readMessageBody(clientInput, requestHeaders, BODY_BUFFER_CAP, allowEofBody = false).bytes
 
         val upstream = try {
             Socket().apply { connect(InetSocketAddress(target.host, target.port), 10_000) }
@@ -269,10 +273,7 @@ class ProxyEngine(
         upstream.use {
             val upstreamOut = upstream.getOutputStream()
             writeRequestLine(upstreamOut, req.method, req.target, requestLine.version)
-            val forwardedHeaders = req.headers
-                .filterNot { it.first.equals("Proxy-Connection", ignoreCase = true) }
-                .filterNot { it.first.equals("Connection", ignoreCase = true) } + ("Connection" to "close")
-            writeHeaders(upstreamOut, forwardedHeaders)
+            writeHeaders(upstreamOut, forwardHeaders(req.headers, req.body, connectionClose = true))
             req.body?.let { upstreamOut.write(it) }
             upstreamOut.flush()
 
@@ -280,14 +281,14 @@ class ProxyEngine(
             val statusLine = readLine(upstreamInput)
             val statusCode = statusLine?.split(' ')?.getOrNull(1)?.toIntOrNull()
             val responseHeaders = readHeaders(upstreamInput)
-            val responseBody = readBodyIfPresent(upstreamInput, responseHeaders)
+            val responseBody = readMessageBody(upstreamInput, responseHeaders, BODY_BUFFER_CAP, allowEofBody = true).bytes
 
             val resp = RespEdit(statusLine, statusCode, responseHeaders, responseBody)
             applyResponseIntercept(txId, target.host, target.port, resp)
             if (!resp.drop) {
                 val clientOut = client.getOutputStream()
                 resp.statusLine?.let { clientOut.write("$it\r\n".toByteArray(Charsets.US_ASCII)) }
-                writeHeaders(clientOut, resp.headers)
+                writeHeaders(clientOut, forwardHeaders(resp.headers, resp.body, connectionClose = true))
                 resp.body?.let { clientOut.write(it) }
                 clientOut.flush()
             }
@@ -370,17 +371,16 @@ class ProxyEngine(
         )
     }
 
-    private fun readBodyIfPresent(input: InputStream, headers: List<Pair<String, String>>): ByteArray? {
-        val length = headerValue(headers, "Content-Length")?.toIntOrNull() ?: return null
-        if (length <= 0) return null
-        val buffer = ByteArray(length)
-        var read = 0
-        while (read < length) {
-            val n = input.read(buffer, read, length - read)
-            if (n == -1) break
-            read += n
-        }
-        return if (read == length) buffer else buffer.copyOf(read)
+    /**
+     * Headers to forward: strip hop-by-hop Connection/Proxy-Connection, and — because we always buffer and may
+     * de-chunk or truncate the body — re-frame Content-Length to the bytes we will actually write and drop any
+     * stale Transfer-Encoding (so the peer never waits on chunks that won't come, and never on a length that
+     * doesn't match). A bodyless message keeps whatever framing it had.
+     */
+    private fun forwardHeaders(headers: List<Pair<String, String>>, body: ByteArray?, connectionClose: Boolean): List<Pair<String, String>> {
+        var h = headers.filterNot { it.first.equals("Proxy-Connection", ignoreCase = true) || it.first.equals("Connection", ignoreCase = true) }
+        if (body != null) h = withContentLength(h, body.size)
+        return if (connectionClose) h + ("Connection" to "close") else h
     }
 
     private suspend fun pump(from: InputStream, to: OutputStream) = withContext(Dispatchers.IO) {
@@ -401,4 +401,11 @@ class ProxyEngine(
 
     private fun Socket.closeQuietly() = try { close() } catch (e: IOException) { }
     private fun ServerSocket.closeQuietly() = try { close() } catch (e: IOException) { }
+
+    private companion object {
+        /** Largest body buffered in memory for forwarding/interception. A bigger body is truncated here rather
+         *  than risking OOM — a hostile or simply large Content-Length could otherwise allocate gigabytes.
+         *  History still keeps only maxCapturedBodyBytes of whatever is forwarded. */
+        const val BODY_BUFFER_CAP = 25 * 1024 * 1024
+    }
 }

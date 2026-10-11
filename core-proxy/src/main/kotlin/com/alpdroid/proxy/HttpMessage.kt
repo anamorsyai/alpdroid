@@ -77,6 +77,71 @@ internal fun parseTarget(method: String, raw: String): Target? {
 internal fun headerValue(headers: List<Pair<String, String>>, name: String): String? =
     headers.firstOrNull { it.first.equals(name, ignoreCase = true) }?.second
 
+/** A message body read from the wire: the bytes kept, and whether the origin had more than [BodyResult.bytes]
+ *  (because it hit the buffering cap). The caller re-frames Content-Length to the bytes actually kept. */
+internal class BodyResult(val bytes: ByteArray?, val truncated: Boolean)
+
+/**
+ * Reads a message body per its framing, buffering at most [cap] bytes:
+ *  - `Transfer-Encoding: chunked` → de-chunked (so a chunked response is forwarded as a correct fixed-length body
+ *    after the caller drops the TE header, instead of being dropped — the old Content-Length-only reader returned
+ *    null for chunked and the client hung);
+ *  - `Content-Length: n` → exactly n bytes (capped);
+ *  - neither, and [allowEofBody] (a response, since we send `Connection: close` upstream) → read until the socket closes.
+ * A request with neither framing has no body. If the body exceeds [cap], reading stops and `truncated` is true.
+ */
+internal fun readMessageBody(input: InputStream, headers: List<Pair<String, String>>, cap: Int, allowEofBody: Boolean): BodyResult {
+    val te = headerValue(headers, "Transfer-Encoding")
+    if (te != null && te.contains("chunked", ignoreCase = true)) return readChunked(input, cap)
+    val cl = headerValue(headers, "Content-Length")?.trim()?.toLongOrNull()
+    if (cl != null) {
+        if (cl <= 0L) return BodyResult(null, false)
+        val keep = minOf(cl, cap.toLong()).toInt()
+        val buf = ByteArray(keep)
+        var read = 0
+        while (read < keep) { val n = input.read(buf, read, keep - read); if (n < 0) break; read += n }
+        val bytes = if (read == keep) buf else buf.copyOf(read)
+        return BodyResult(bytes, cl > keep.toLong())
+    }
+    if (!allowEofBody) return BodyResult(null, false)
+    return readToEof(input, cap)
+}
+
+private fun readChunked(input: InputStream, cap: Int): BodyResult {
+    val out = java.io.ByteArrayOutputStream()
+    var truncated = false
+    val buf = ByteArray(8192)
+    while (true) {
+        val sizeLine = readLine(input) ?: break
+        if (sizeLine.isEmpty()) continue
+        val size = sizeLine.substringBefore(';').trim().toIntOrNull(16) ?: break
+        if (size == 0) { readLine(input); break } // final chunk; consume trailing CRLF / trailers line
+        var remaining = size
+        while (remaining > 0) {
+            val n = input.read(buf, 0, minOf(buf.size, remaining))
+            if (n < 0) break
+            remaining -= n
+            val room = cap - out.size()
+            if (room > 0) out.write(buf, 0, minOf(n, room)) else truncated = true
+        }
+        readLine(input) // CRLF after the chunk data
+        if (out.size() >= cap) { truncated = true; break }
+    }
+    return BodyResult(out.toByteArray(), truncated)
+}
+
+private fun readToEof(input: InputStream, cap: Int): BodyResult {
+    val out = java.io.ByteArrayOutputStream()
+    val buf = ByteArray(8192)
+    while (out.size() < cap) {
+        val n = input.read(buf, 0, minOf(buf.size, cap - out.size()))
+        if (n < 0) break
+        out.write(buf, 0, n)
+    }
+    val truncated = out.size() >= cap && input.read() != -1
+    return if (out.size() == 0) BodyResult(null, false) else BodyResult(out.toByteArray(), truncated)
+}
+
 /** Replaces (or adds) Content-Length to match [bodyLen] and drops any Transfer-Encoding — a fixed-length body and
  *  chunked encoding are mutually exclusive, so an edited body must carry an accurate length and no stale framing. */
 internal fun withContentLength(headers: List<Pair<String, String>>, bodyLen: Int): List<Pair<String, String>> =

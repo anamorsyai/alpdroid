@@ -21,9 +21,15 @@ class TlsMitm(val ca: CaMaterial) {
     private val serverContexts = ConcurrentHashMap<String, SSLContext>()
 
     /** Server-mode context presenting a leaf certificate for [host]. */
-    fun serverContext(host: String): SSLContext =
-        serverContexts.getOrPut(host) {
-            val leaf = TlsCa.issueLeaf(ca, host)
+    fun serverContext(host: String): SSLContext {
+        serverContexts[host]?.let { return it }
+        // Bound the cache: a very long session touching thousands of distinct hosts would otherwise
+        // keep one leaf cert + context per host forever. Past the cap, drop them all and rebuild lazily.
+        if (serverContexts.size > MAX_CONTEXTS) serverContexts.clear()
+        // computeIfAbsent (not getOrPut): atomic per key, so a burst of parallel first-hits for one new
+        // host runs the ~100ms RSA leaf keygen exactly once instead of once per connection.
+        return serverContexts.computeIfAbsent(host) { h ->
+            val leaf = TlsCa.issueLeaf(ca, h)
             val ks = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
                 load(null, null)
                 setKeyEntry("leaf", leaf.keyPair.private, CharArray(0), arrayOf(leaf.certificate, ca.certificate))
@@ -35,10 +41,24 @@ class TlsMitm(val ca: CaMaterial) {
                 init(kmf.keyManagers, null, SecureRandom())
             }
         }
+    }
 
-    /** Client-mode TLS socket to the real upstream, trusting the platform's system CAs. */
-    fun upstreamSocket(host: String, port: Int): SSLSocket =
-        SSLSocketFactory.getDefault().createSocket(host, port) as SSLSocket
+    /**
+     * Client-mode TLS socket to the real upstream. Validates the real server's certificate against the
+     * platform's system CAs AND verifies its hostname: a raw SSLSocket does NO hostname check by default
+     * (unlike HttpsURLConnection), so without `endpointIdentificationAlgorithm = "HTTPS"` a network
+     * attacker presenting any system-CA-valid cert for a different host would be silently accepted. The
+     * plain socket is connected with a timeout first so a black-holed host cannot pin a thread forever.
+     */
+    fun upstreamSocket(host: String, port: Int): SSLSocket {
+        val plain = java.net.Socket()
+        plain.connect(InetSocketAddress(host, port), UPSTREAM_CONNECT_TIMEOUT_MS)
+        val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
+        // Pass host/port so SNI and hostname verification use the real name, not the resolved IP.
+        val ssl = factory.createSocket(plain, host, port, true) as SSLSocket
+        ssl.sslParameters = ssl.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
+        return ssl
+    }
 
     /**
      * Wraps an already-connected, already-CONNECT-answered client socket in a server-mode
@@ -50,6 +70,11 @@ class TlsMitm(val ca: CaMaterial) {
         val tls = factory.createSocket(socket, socket.inetAddress.hostAddress, socket.port, true) as SSLSocket
         tls.useClientMode = false
         return tls
+    }
+
+    private companion object {
+        const val MAX_CONTEXTS = 512
+        const val UPSTREAM_CONNECT_TIMEOUT_MS = 10_000
     }
 }
 

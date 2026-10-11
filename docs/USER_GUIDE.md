@@ -96,6 +96,8 @@ Long-running servers run **in the background** — no dedicated tab. Each one in
 - Not installed yet → **Install AlpBrowser**: downloads the latest signed release behind the same filling-logo progress screen as an app update, then installs it.
 - Installed → **Open AlpBrowser** and **Check for browser updates**. AlpDroid also checks for AlpBrowser updates on its own, on the same schedule as its own updates, and offers them the same way (only once AlpBrowser is installed — it never nags you to install it). The current AlpBrowser version shows right there.
 
+**Its own settings (the ⋮ menu).** AlpBrowser has a built-in settings sheet: a **strong ad & tracker blocker** (on by default, with the number blocked this session), **JavaScript** on/off, **Desktop site**, **Remote DevTools** (off by default — turn it on only while debugging), the **Bug bounty / Web dev** mode switch, **clear cookies / cache / all**, and a shortcut to the agent-control token.
+
 **What it does.** AlpBrowser sends its own traffic through an on-device proxy, so the agent can watch and change what the page sends and receives — including decrypted HTTPS — read the page's console, run JavaScript in it, and attach Chrome DevTools. Two modes:
 
 - **Bug bounty**: set a scope (which hosts to capture), pause/modify/drop live requests, auto-rewrite traffic with match-and-replace rules, replay a request (repeater), and browse the full decrypted history.

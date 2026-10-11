@@ -11,7 +11,10 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.Base64
-import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -54,7 +57,16 @@ class BrowserBridge(
     data class ResendResponse(val status: Int, val headers: List<Pair<String, String>>, val body: ByteArray?, val error: String? = null)
 
     @Volatile private var server: ServerSocket? = null
-    private val pool = Executors.newCachedThreadPool { r -> Thread(r, "browser-bridge").apply { isDaemon = true } }
+
+    // Bounded worker pool: 127.0.0.1 is shared by every app on the device, so a hostile local app
+    // could otherwise flood the accept loop and spawn unbounded threads. Excess connections are
+    // rejected (socket closed) rather than queued without limit. The accept loop runs on its own
+    // thread so a full worker pool never stops us from accepting (and rejecting) new connections.
+    private val workers = ThreadPoolExecutor(
+        2, 16, 30, TimeUnit.SECONDS, ArrayBlockingQueue(64),
+        { r -> Thread(r, "browser-bridge").apply { isDaemon = true } },
+        ThreadPoolExecutor.AbortPolicy(),
+    )
 
     val boundPort: Int get() = server?.localPort ?: -1
 
@@ -65,12 +77,14 @@ class BrowserBridge(
         val loopback = InetAddress.getByName("127.0.0.1")
         val s = runCatching { ServerSocket(preferredPort, 64, loopback) }.getOrElse { ServerSocket(0, 64, loopback) }
         server = s
-        pool.execute {
+        Thread({
             while (!s.isClosed) {
-                val c = try { s.accept() } catch (_: Exception) { break }
-                pool.execute { runCatching { handle(c) } }
+                // Only a closed listener ends the loop; a transient per-accept error is skipped, not fatal.
+                val c = try { s.accept() } catch (e: Exception) { if (s.isClosed) break else continue }
+                try { workers.execute { runCatching { handle(c) } } }
+                catch (_: RejectedExecutionException) { runCatching { c.close() } }
             }
-        }
+        }, "browser-bridge-accept").apply { isDaemon = true }.start()
     }
 
     @Synchronized
@@ -249,6 +263,9 @@ class BrowserBridge(
 
     private fun resend(body: JSONObject): Pair<Int, JSONObject> {
         val url = body.optString("url"); if (url.isBlank()) return 400 to error("url required")
+        // The repeater speaks HTTP only — never let it be pointed at file:/content:/etc. schemes.
+        val lower = url.lowercase()
+        if (!lower.startsWith("http://") && !lower.startsWith("https://")) return 400 to error("resend url must be http(s)")
         val method = body.optString("method", "GET")
         val headers = jsonToHeaders(body.optJSONArray("headers")) ?: emptyList()
         val bodyBytes = if (body.has("body")) runCatching { Base64.getDecoder().decode(body.optString("body")) }.getOrNull() else null

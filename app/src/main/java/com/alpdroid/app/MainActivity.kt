@@ -290,18 +290,31 @@ class MainActivity : Activity() {
     }
 
     /** Newest downloaded APK newer than the installed app, if any — the resume-install source. */
+    /** A downloaded APK still worth installing: an AlpDroid APK newer than this app, or an AlpBrowser APK
+     *  newer than the installed browser (any, if it isn't installed). Channel-aware so a pending browser
+     *  install is never gated against the app's version, or shown as an app update. */
     private fun findPendingUpdateApk(): java.io.File? {
         val dir = getExternalFilesDir(null)?.let { java.io.File(it, "updates") } ?: return null
-        val (_, currentCode) = AppUpdater.currentVersion(this)
-        return dir.listFiles { f -> f.isFile && (f.name.startsWith("AlpDroid-") || f.name.startsWith("AlpineTerm-")) && f.name.endsWith(".apk") }
+        val (_, appCode) = AppUpdater.currentVersion(this)
+        val browserCode = BrowserInstall.installedVersion(this)?.second
+        return dir.listFiles { f -> f.isFile && f.name.endsWith(".apk") }
             ?.sortedByDescending { it.lastModified() }
-            ?.firstOrNull { apk -> (runCatching { AppUpdater.apkVersionCode(this, apk) }.getOrNull() ?: 0) > currentCode }
+            ?.firstOrNull { apk ->
+                val code = runCatching { AppUpdater.apkVersionCode(this, apk) }.getOrNull() ?: return@firstOrNull false
+                when {
+                    apk.name.startsWith("AlpBrowser-") -> browserCode == null || code > browserCode
+                    apk.name.startsWith("AlpDroid-") || apk.name.startsWith("AlpineTerm-") -> code > appCode
+                    else -> false
+                }
+            }
     }
 
     private fun showPendingInstallDialog(apk: java.io.File) {
+        val isBrowser = apk.name.startsWith("AlpBrowser-")
+        val note = if (isBrowser) "It installs as a separate app." else "AlpDroid will close to install — tabs and files are untouched."
         com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setTitle("Ready to install")
-            .setMessage("The update is downloaded (${apk.name}). Install now? The app will close — tabs and files are untouched.")
+            .setMessage("The download is ready (${apk.name}). Install now? $note")
             .setPositiveButton("Install") { _, _ -> AppUpdater.installApk(this, apk) }
             .setNegativeButton("Later", null)
             .setCancelable(true)
@@ -357,7 +370,10 @@ class MainActivity : Activity() {
         if (sentToInstallSettings) {
             sentToInstallSettings = false
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
-                findPendingUpdateApk()?.let { showPendingInstallDialog(it) }
+                // Prefer the exact file we were mid-install on (app or browser); fall back to a scan if
+                // the process was killed while on the Settings screen and lost that reference.
+                (pendingInstallApk?.takeIf { it.isFile } ?: findPendingUpdateApk())?.let { showPendingInstallDialog(it) }
+                pendingInstallApk = null
             } else {
                 android.widget.Toast.makeText(this, "Install permission still off — tap Update to try again", android.widget.Toast.LENGTH_LONG).show()
             }
@@ -3056,6 +3072,7 @@ class MainActivity : Activity() {
                     }
                     return@post
                 }
+                if (!manual && updateDialogShowing) return@post // don't stack on a browser-update dialog
                 showUpdateDialog(update)
             }
         }
@@ -3097,29 +3114,40 @@ class MainActivity : Activity() {
         mainHandler.postDelayed(periodicUpdateCheck, updateCheckIntervalMs)
     }
 
-    private var updateDownloadCancelled = false
-    // Set when installApk() detoured to Settings for the install permission: the downloaded
-    // APK waits on disk, and onResume() below re-offers the install on return.
+    // Set when installApk() detoured to Settings for the install permission: the exact downloaded
+    // APK (app or browser) waits on disk, and onResume() re-offers that very file on return.
     private var sentToInstallSettings = false
+    private var pendingInstallApk: java.io.File? = null
+    // True while an update dialog (app or browser) is on screen, so the two independent auto-checks
+    // never stack their dialogs on top of each other on the first open.
+    @Volatile private var updateDialogShowing = false
+
+    /** Marks [dialog] as the current update dialog and clears the flag when it goes away. */
+    private fun trackUpdateDialog(dialog: android.app.Dialog) {
+        updateDialogShowing = true
+        dialog.setOnDismissListener { updateDialogShowing = false }
+    }
 
     private fun showUpdateDialog(update: AppUpdater.Update) {
         val notes = update.notes.take(1500)
-        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
-            .setTitle("Update available: ${update.name}")
-            .setMessage(
-                "You're on AlpDroid $appVersionLabel.${if (notes.isNotBlank()) "\n\nWhat's new:\n$notes" else ""}" +
-                    "\n\nThe app will close to install — your tabs and files are untouched (sessions don't survive any app update, same as a Play Store one).",
-            )
-            .setPositiveButton("Update now") { _, _ -> downloadAndInstallUpdate(update) }
-            .setNegativeButton("Later", null)
-            .setCancelable(true)
-            .show()
+        trackUpdateDialog(
+            com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                .setTitle("Update available: ${update.name}")
+                .setMessage(
+                    "You're on AlpDroid $appVersionLabel.${if (notes.isNotBlank()) "\n\nWhat's new:\n$notes" else ""}" +
+                        "\n\nThe app will close to install — your tabs and files are untouched (sessions don't survive any app update, same as a Play Store one).",
+                )
+                .setPositiveButton("Update now") { _, _ -> downloadAndInstallUpdate(update) }
+                .setNegativeButton("Later", null)
+                .setCancelable(true)
+                .show(),
+        )
     }
 
     private fun downloadAndInstallUpdate(update: AppUpdater.Update) {
-        downloadApkWithAnimation(update) { apk ->
+        downloadApkWithAnimation(update) { apk, apkCode, cancelled ->
             if (apk == null) {
-                if (!updateDownloadCancelled) {
+                if (!cancelled) {
                     updateStatusText?.text = "Update check failed — try again later."
                     android.widget.Toast.makeText(this, "Couldn't download the update", android.widget.Toast.LENGTH_LONG).show()
                 }
@@ -3127,17 +3155,15 @@ class MainActivity : Activity() {
             }
             updateStatusText?.text = "Ready to install ${update.name}."
             val (_, currentCode) = AppUpdater.currentVersion(this)
-            val apkCode = runCatching { AppUpdater.apkVersionCode(this, apk) }.getOrNull()
             if (apkCode == null || apkCode <= currentCode) {
                 updateStatusText?.text = "Download rejected: not newer than installed."
                 android.widget.Toast.makeText(this, "Downloaded file isn't a newer app version — aborted", android.widget.Toast.LENGTH_LONG).show()
                 runCatching { apk.delete() }
                 return@downloadApkWithAnimation
             }
-            // Returns false only when install permission is missing — the user is already
-            // on their way to Settings then. Remember it: onResume() re-offers the install
-            // when they return (the old flow stranded them with no way back).
-            if (!AppUpdater.installApk(this, apk)) sentToInstallSettings = true
+            // Returns false only when install permission is missing — the user is already on their way
+            // to Settings then. Remember the exact file so onResume() re-offers this install on return.
+            if (!AppUpdater.installApk(this, apk)) { sentToInstallSettings = true; pendingInstallApk = apk }
         }
     }
 
@@ -3147,8 +3173,10 @@ class MainActivity : Activity() {
      * finished file — or null on cancel/failure — to [onReady] on the main thread. Shared by the
      * app self-update and the AlpBrowser install/update so both look and behave identically.
      */
-    private fun downloadApkWithAnimation(update: AppUpdater.Update, onReady: (java.io.File?) -> Unit) {
-        updateDownloadCancelled = false
+    private fun downloadApkWithAnimation(update: AppUpdater.Update, onReady: (apk: java.io.File?, apkCode: Long?, cancelled: Boolean) -> Unit) {
+        // A per-download cancel flag (not a shared field): two downloads must never un-cancel or
+        // cancel each other — the Cancel button here affects only this download.
+        val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
         val density = resources.displayMetrics.density
         val fill = LiquidFillView(this).apply {
             layoutParams = android.widget.LinearLayout.LayoutParams((120 * density).toInt(), (120 * density).toInt()).apply { gravity = android.view.Gravity.CENTER_HORIZONTAL }
@@ -3169,7 +3197,7 @@ class MainActivity : Activity() {
         val dialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setTitle("Downloading ${update.name}")
             .setView(body)
-            .setNegativeButton("Cancel") { _, _ -> updateDownloadCancelled = true }
+            .setNegativeButton("Cancel") { _, _ -> cancelled.set(true) }
             .setCancelable(false)
             .show()
         (application as AlpineTermApp).backgroundExecutor.execute {
@@ -3187,12 +3215,15 @@ class MainActivity : Activity() {
                             if (percent >= 0) { fill.isIndeterminate = false; fill.progress = percent }
                         }
                     }
-                }, { updateDownloadCancelled })
+                }, { cancelled.get() })
             }.getOrNull()
+            // Parse the APK's versionCode here, off the main thread (getPackageArchiveInfo reads the
+            // whole file) — the callers only post the final decision to the UI.
+            val apkCode = apk?.let { runCatching { AppUpdater.apkVersionCode(this, it) }.getOrNull() }
             mainHandler.post {
                 runCatching { dialog.dismiss() }
                 if (isFinishing || isDestroyed) return@post
-                onReady(apk)
+                onReady(apk, apkCode, cancelled.get())
             }
         }
     }
@@ -3234,6 +3265,9 @@ class MainActivity : Activity() {
                     ).show()
                     return@post
                 }
+                // Never stack on top of an app-update dialog from the parallel auto-check; the next
+                // open (or the manual button) surfaces it. A manual tap always shows.
+                if (!manual && updateDialogShowing) { browserStatusText?.text = browserStatusLine(); return@post }
                 showBrowserUpdateDialog(update)
             }
         }
@@ -3243,37 +3277,38 @@ class MainActivity : Activity() {
         val installed = BrowserInstall.isInstalled(this)
         val ver = BrowserInstall.versionFromTag(update.tag)
         val notes = update.notes.take(1200)
-        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
-            .setTitle(if (installed) "AlpBrowser update: $ver" else "Install AlpBrowser $ver")
-            .setMessage(
-                (if (installed) "A newer AlpBrowser is available." else "AlpBrowser is a separate app the AlpDroid agent fully controls — bug-bounty and web-dev.") +
-                    (if (notes.isNotBlank()) "\n\nWhat's new:\n$notes" else "") +
-                    "\n\nIt installs as its own app (com.alpdroid.browser), signed with the same key as AlpDroid.",
-            )
-            .setPositiveButton(if (installed) "Update now" else "Install") { _, _ -> downloadAndInstallBrowser(update) }
-            .setNegativeButton("Later", null)
-            .setCancelable(true)
-            .show()
+        trackUpdateDialog(
+            com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                .setTitle(if (installed) "AlpBrowser update: $ver" else "Install AlpBrowser $ver")
+                .setMessage(
+                    (if (installed) "A newer AlpBrowser is available." else "AlpBrowser is a separate app the AlpDroid agent fully controls — bug-bounty and web-dev.") +
+                        (if (notes.isNotBlank()) "\n\nWhat's new:\n$notes" else "") +
+                        "\n\nIt installs as its own app (com.alpdroid.browser), signed with the same key as AlpDroid.",
+                )
+                .setPositiveButton(if (installed) "Update now" else "Install") { _, _ -> downloadAndInstallBrowser(update) }
+                .setNegativeButton("Later", null)
+                .setCancelable(true)
+                .show(),
+        )
     }
 
     private fun downloadAndInstallBrowser(update: AppUpdater.Update) {
-        downloadApkWithAnimation(update) { apk ->
+        downloadApkWithAnimation(update) { apk, apkCode, cancelled ->
             if (apk == null) {
-                if (!updateDownloadCancelled) {
+                if (!cancelled) {
                     browserStatusText?.text = browserStatusLine()
                     android.widget.Toast.makeText(this, "Couldn't download AlpBrowser", android.widget.Toast.LENGTH_LONG).show()
                 }
                 return@downloadApkWithAnimation
             }
-            // Downgrade guard only matters when AlpBrowser is already installed; a first install has
-            // no baseline to be older than.
-            val installedCode = BrowserInstall.installedVersion(this)?.second
-            val apkCode = runCatching { AppUpdater.apkVersionCode(this, apk) }.getOrNull()
             if (apkCode == null) {
                 android.widget.Toast.makeText(this, "Downloaded file isn't a valid APK — aborted", android.widget.Toast.LENGTH_LONG).show()
                 runCatching { apk.delete() }
                 return@downloadApkWithAnimation
             }
+            // Downgrade guard only matters when AlpBrowser is already installed; a first install has
+            // no baseline to be older than.
+            val installedCode = BrowserInstall.installedVersion(this)?.second
             if (installedCode != null && apkCode <= installedCode) {
                 browserStatusText?.text = "Download rejected: not newer than installed."
                 android.widget.Toast.makeText(this, "That AlpBrowser isn't newer than the installed one — aborted", android.widget.Toast.LENGTH_LONG).show()
@@ -3281,7 +3316,7 @@ class MainActivity : Activity() {
                 return@downloadApkWithAnimation
             }
             browserStatusText?.text = "Ready to install AlpBrowser ${BrowserInstall.versionFromTag(update.tag)}."
-            if (!AppUpdater.installApk(this, apk)) sentToInstallSettings = true
+            if (!AppUpdater.installApk(this, apk)) { sentToInstallSettings = true; pendingInstallApk = apk }
         }
     }
 

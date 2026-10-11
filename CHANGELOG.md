@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.7.72 — AlpBrowser redesign, a strong ad blocker, and in-app settings (AlpBrowser 0.2.0)
+
+- AlpBrowser has a cleaner, phone-sized interface: a compact toolbar with a secure/not-secure
+  indicator, a slimmer address bar and a thin load bar.
+- Added a **strong default ad & tracker blocker** — it blocks the major ad networks, trackers and
+  analytics out of the box; the session's blocked count shows in settings.
+- Added an **in-app settings menu** (the ⋮ button): toggle the ad blocker, JavaScript, desktop
+  site and remote DevTools; switch between bug-bounty and web-dev mode; clear cookies/cache/all; and
+  jump to the agent-control token.
+- Remote DevTools is now **off by default** and an explicit opt-in, so the debugging port isn't open
+  unless you turn it on.
+- More reliable install/update of AlpBrowser from AlpDroid: the right release is found even as
+  versions pile up, each download has its own Cancel, and the correct app is re-offered after you
+  grant the install permission.
+- Under the hood, the interception proxy now relays chunked and streamed responses correctly,
+  verifies the real server's TLS hostname, and is bounded against oversized responses and leaks.
+
 ## 1.7.71 — AlpBrowser icon and a clearer Update button
 
 - AlpBrowser now has its own icon — a browser globe in AlpDroid's teal with a small AlpDroid mountain

@@ -58,6 +58,10 @@ class InterceptController {
             val d = CompletableDeferred<RequestAction>()
             reqHolds[holdId] = d
             info[holdId] = Held(holdId, "request", req.id, req.method, req.host, req.port, req.target, null, effHeaders, effBody)
+            // Race guard: if interception was switched off (setIntercept flips `enabled` then calls
+            // releaseAll) in the window between the check above and registering this hold, releaseAll's
+            // snapshot may have missed us — forward now instead of parking this request forever.
+            if (!enabled) { reqHolds.remove(holdId); info.remove(holdId); return ruleAction }
             return try {
                 // "Forward" from the agent means "send the rule-applied version", not the untouched original.
                 when (val chosen = d.await()) { RequestAction.Forward -> ruleAction; else -> chosen }
@@ -74,6 +78,8 @@ class InterceptController {
             val d = CompletableDeferred<ResponseAction>()
             resHolds[holdId] = d
             info[holdId] = Held(holdId, "response", res.id, "", res.host, res.port, "", res.status, effHeaders, effBody)
+            // Same race guard as onRequest: never leave a response parked after interception is off.
+            if (!enabled) { resHolds.remove(holdId); info.remove(holdId); return ruleAction }
             return try {
                 when (val chosen = d.await()) { ResponseAction.Forward -> ruleAction; else -> chosen }
             } finally { resHolds.remove(holdId); info.remove(holdId) }

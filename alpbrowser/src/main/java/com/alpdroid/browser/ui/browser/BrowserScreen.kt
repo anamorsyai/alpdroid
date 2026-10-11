@@ -1,10 +1,14 @@
 package com.alpdroid.browser.ui.browser
 
 import android.annotation.SuppressLint
+import android.net.http.SslCertificate
 import android.net.http.SslError
+import android.os.Build
 import android.view.ViewGroup
 import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
@@ -25,8 +29,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -34,6 +39,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -55,13 +61,19 @@ import androidx.webkit.WebViewFeature
 import com.alpdroid.browser.AlpBrowserApp
 import com.alpdroid.browser.ui.theme.RoninMono
 import com.alpdroid.proxy.BrowserCommand
+import java.io.ByteArrayInputStream
 
 private const val HOME_URL = "https://www.google.com"
+private const val DESKTOP_UA =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
 /**
- * The browser surface. Its traffic is pointed at the in-process MITM proxy via ProxyController; the single WebView is
- * owned by [com.alpdroid.browser.BrowserWebViewHolder] on the Application so it survives recomposition. Remote
- * debugging is enabled so the AlpDroid agent can also attach a CDP/DevTools client to the live page.
+ * The browser surface, sized for a phone: a single compact toolbar (back / forward / address /
+ * menu), a thin load bar, and the page. Traffic is pointed at the in-process MITM proxy via
+ * ProxyController; the single WebView is owned by [com.alpdroid.browser.BrowserWebViewHolder] on the
+ * Application so it survives recomposition. A strong ad/tracker blocker runs in
+ * shouldInterceptRequest; the in-app settings sheet (the ⋮ menu) toggles it, JavaScript, desktop
+ * mode, remote DevTools and the bug-bounty/web-dev mode, and clears browsing data.
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -73,17 +85,22 @@ fun BrowserScreen(proxyPort: Int, onOpenControlInfo: () -> Unit) {
     var loadProgress by remember { mutableIntStateOf(100) }
     var canGoBack by remember { mutableStateOf(false) }
     var canGoForward by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
 
     var webView by remember { mutableStateOf(app.browserWebViewHolder.current) }
     LaunchedEffect(Unit) {
         if (webView == null) {
             installProxyOverride(proxyPort)
-            // DevTools/CDP: lets the agent drive the live page over chrome://inspect-style remote debugging.
-            WebView.setWebContentsDebuggingEnabled(true)
+            // DevTools/CDP is a process-wide debugging socket any local app could attach to, so it
+            // is opt-in (default off). The agent/user turns it on from the settings sheet.
+            WebView.setWebContentsDebuggingEnabled(app.devtoolsEnabled())
             webView = app.browserWebViewHolder.getOrCreate { wv ->
-                wv.settings.javaScriptEnabled = true
+                wv.settings.javaScriptEnabled = app.jsEnabled()
                 wv.settings.domStorageEnabled = true
                 wv.settings.safeBrowsingEnabled = false // never block a pentest target
+                wv.settings.useWideViewPort = true
+                wv.settings.loadWithOverviewMode = true
+                if (app.desktopMode()) wv.settings.userAgentString = DESKTOP_UA
                 wv.webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView, url: String) {
                         urlField = url
@@ -92,10 +109,22 @@ fun BrowserScreen(proxyPort: Int, onOpenControlInfo: () -> Unit) {
                         canGoForward = view.canGoForward()
                     }
 
-                    // Every byte routes through our proxy, so the only untrusted cert the WebView can see is our own
-                    // leaf. Proceed on UNTRUSTED only; any other SSL error still cancels.
+                    // Strong default ad/tracker blocker: a blocked host gets an empty 200 instead of
+                    // reaching the network. Runs on the WebView's IO thread (AdBlocker is thread-safe).
+                    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                        if (app.adBlocker.shouldBlock(request.url?.host)) {
+                            app.adBlocker.blockedCount.incrementAndGet()
+                            return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+                        }
+                        return null
+                    }
+
+                    // Every byte routes through our proxy, so the only untrusted cert the WebView can
+                    // see should be a leaf our own CA signed. Proceed on UNTRUSTED *only after*
+                    // confirming the leaf actually chains to our CA; anything else cancels.
                     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-                        if (error.primaryError == SslError.SSL_UNTRUSTED) handler.proceed() else handler.cancel()
+                        if (error.primaryError == SslError.SSL_UNTRUSTED && isOurLeaf(error.certificate, app)) handler.proceed()
+                        else handler.cancel()
                     }
                 }
                 wv.webChromeClient = object : WebChromeClient() {
@@ -132,50 +161,60 @@ fun BrowserScreen(proxyPort: Int, onOpenControlInfo: () -> Unit) {
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            CompactNavIcon(Icons.AutoMirrored.Filled.ArrowBack, "Back", enabled = canGoBack) { currentWebView.goBack() }
-            CompactNavIcon(Icons.AutoMirrored.Filled.ArrowForward, "Forward", enabled = canGoForward) { currentWebView.goForward() }
-            CompactNavIcon(Icons.Default.Home, "Home") { currentWebView.loadUrl(HOME_URL) }
-            OutlinedTextField(
-                value = urlField,
-                onValueChange = { urlField = it },
-                modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
-                singleLine = true,
-                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = RoninMono),
-                shape = RoundedCornerShape(19.dp),
-                leadingIcon = {
-                    Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(start = 2.dp))
-                },
-                colors = OutlinedTextFieldDefaults.colors(
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                    focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                ),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                keyboardActions = KeyboardActions(onGo = { currentWebView.loadUrl(normalizeUrl(urlField)) }),
-            )
-            CompactNavIcon(Icons.Default.Refresh, "Reload") { currentWebView.reload() }
-            CompactNavIcon(Icons.Default.Settings, "Agent control", onClick = onOpenControlInfo)
-        }
+    val secure = urlField.startsWith("https://")
 
-        Row(
-            modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 16.dp, vertical = 6.dp),
-        ) {
-            Text("⏎ Enter navigates · ⚙ shows the agent-control token", style = MaterialTheme.typography.labelSmall.copy(fontFamily = RoninMono),
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                NavIcon(Icons.AutoMirrored.Filled.ArrowBack, "Back", enabled = canGoBack) { currentWebView.goBack() }
+                NavIcon(Icons.AutoMirrored.Filled.ArrowForward, "Forward", enabled = canGoForward) { currentWebView.goForward() }
+                OutlinedTextField(
+                    value = urlField,
+                    onValueChange = { urlField = it },
+                    modifier = Modifier.weight(1f).height(50.dp).padding(horizontal = 4.dp),
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = RoninMono),
+                    shape = RoundedCornerShape(25.dp),
+                    leadingIcon = {
+                        Icon(
+                            if (secure) Icons.Default.Lock else Icons.Default.LockOpen,
+                            contentDescription = if (secure) "Secure" else "Not secure",
+                            tint = if (secure) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { currentWebView.reload() }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Default.Refresh, "Reload", modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                    ),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                    keyboardActions = KeyboardActions(onGo = { currentWebView.loadUrl(normalizeUrl(urlField)) }),
+                )
+                NavIcon(Icons.Default.MoreVert, "Menu") { showSettings = true }
+            }
         }
 
         if (loadProgress in 1..99) {
-            LinearProgressIndicator(progress = { loadProgress / 100f }, modifier = Modifier.fillMaxWidth().height(2.dp),
-                trackColor = MaterialTheme.colorScheme.outline)
+            LinearProgressIndicator(
+                progress = { loadProgress / 100f },
+                modifier = Modifier.fillMaxWidth().height(2.dp),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.surface,
+            )
         }
 
         AndroidView(
@@ -186,13 +225,40 @@ fun BrowserScreen(proxyPort: Int, onOpenControlInfo: () -> Unit) {
             },
         )
     }
+
+    if (showSettings) {
+        BrowserSettingsSheet(
+            app = app,
+            onHome = { currentWebView.loadUrl(HOME_URL) },
+            onReload = { currentWebView.reload() },
+            onApplyJs = { currentWebView.settings.javaScriptEnabled = it; currentWebView.reload() },
+            onApplyDesktop = { currentWebView.settings.userAgentString = if (it) DESKTOP_UA else null; currentWebView.reload() },
+            onOpenControlInfo = onOpenControlInfo,
+            onDismiss = { showSettings = false },
+        )
+    }
 }
 
 @Composable
-private fun CompactNavIcon(icon: ImageVector, contentDescription: String, enabled: Boolean = true, onClick: () -> Unit) {
-    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(32.dp)) {
-        Icon(icon, contentDescription = contentDescription, modifier = Modifier.size(18.dp))
+private fun NavIcon(icon: ImageVector, contentDescription: String, enabled: Boolean = true, onClick: () -> Unit) {
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(40.dp)) {
+        Icon(
+            icon, contentDescription = contentDescription, modifier = Modifier.size(22.dp),
+            tint = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline,
+        )
     }
+}
+
+/** True when [cert] is a leaf our own MITM CA signed (API 29+: verify the signature; older: issuer CN match). */
+private fun isOurLeaf(cert: SslCertificate?, app: AlpBrowserApp): Boolean {
+    if (cert == null) return false
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val x = cert.x509Certificate
+        val pub = app.caPublicKey
+        if (x != null && pub != null) return runCatching { x.verify(pub); true }.getOrDefault(false)
+    }
+    val issuer = cert.issuedBy
+    return issuer.cName == AlpBrowserApp.CA_CN || issuer.dName.contains(AlpBrowserApp.CA_CN)
 }
 
 private fun installProxyOverride(proxyPort: Int) {

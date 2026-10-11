@@ -32,9 +32,25 @@ class AlpBrowserApp : Application() {
     val browserCommandBus = BrowserCommandBus()
     val intercept = InterceptController()
     val console = ConsoleBuffer()
+    val adBlocker by lazy { AdBlocker(this) }
     val browserWebViewHolder by lazy { BrowserWebViewHolder(this) }
 
     private val prefs by lazy { getSharedPreferences("alpbrowser", MODE_PRIVATE) }
+
+    /** User-facing browser settings, persisted. Defaults chosen for a safe, lean mobile browser. */
+    fun adblockEnabled(): Boolean = prefs.getBoolean("adblock", true)
+    fun setAdblockEnabled(on: Boolean) { prefs.edit().putBoolean("adblock", on).apply(); adBlocker.enabled = on }
+
+    fun jsEnabled(): Boolean = prefs.getBoolean("js", true)
+    fun setJsEnabled(on: Boolean) = prefs.edit().putBoolean("js", on).apply()
+
+    fun desktopMode(): Boolean = prefs.getBoolean("desktop", false)
+    fun setDesktopMode(on: Boolean) = prefs.edit().putBoolean("desktop", on).apply()
+
+    /** Chrome remote debugging (CDP/DevTools). OFF by default: it opens a process-wide debugging
+     *  socket any local app could attach to, so it is an explicit opt-in the agent/user turns on. */
+    fun devtoolsEnabled(): Boolean = prefs.getBoolean("devtools", false)
+    fun setDevtoolsEnabled(on: Boolean) = prefs.edit().putBoolean("devtools", on).apply()
 
     /** "bugbounty" (intercept + rules + scope, default) or "webdev" (console + eval + cache control). */
     fun mode(): String = prefs.getString("mode", "bugbounty") ?: "bugbounty"
@@ -65,6 +81,10 @@ class AlpBrowserApp : Application() {
 
     private val caStore by lazy { TlsCaStore(this) }
     private val tlsMitm: TlsMitm? by lazy { runCatching { TlsMitm(caStore.loadOrGenerate()) }.getOrNull() }
+
+    /** Public key of our MITM root CA — the WebView's SSL-error handler verifies that the only
+     *  "untrusted" leaf it proceeds on is actually one our own proxy signed (see BrowserScreen). */
+    val caPublicKey: java.security.PublicKey? by lazy { runCatching { caStore.loadOrGenerate().certificate.publicKey }.getOrNull() }
 
     val browserEngine by lazy {
         ProxyEngine(
@@ -105,6 +125,8 @@ class AlpBrowserApp : Application() {
     override fun onCreate() {
         super.onCreate()
         if (scopePatterns.isNotEmpty()) scopeFilter.setPatterns(scopePatterns)
+        adBlocker.enabled = adblockEnabled()
+        adBlocker.loadAsync()
         browserEngine.start(engineScope)
         engineScope.launch { runCatching { bridge.start() } }
         Log.i(TAG, "AlpBrowser proxy on 127.0.0.1:$PROXY_PORT, control API starting on 127.0.0.1:$CONTROL_PORT")
@@ -145,7 +167,8 @@ class AlpBrowserApp : Application() {
                 val code = conn.responseCode
                 val headers = conn.headerFields.entries.filter { it.key != null }.flatMap { e -> e.value.map { e.key to it } }
                 val stream = if (code >= 400) conn.errorStream else conn.inputStream
-                val body = stream?.use { it.readBytes() }
+                // Cap the replayed body so a huge response can't OOM the browser process (held in memory, base64'd to the agent).
+                val body = stream?.use { readCapped(it, MAX_RESEND_BODY) }
                 conn.disconnect()
                 BrowserBridge.ResendResponse(code, headers, body)
             }.getOrElse { BrowserBridge.ResendResponse(0, emptyList(), null, error = it.message ?: "resend failed") }
@@ -155,7 +178,7 @@ class AlpBrowserApp : Application() {
     }
 
     /** Clears cookies / cache / web storage on the live WebView, on the main thread. [what] = cookies|cache|storage|all. */
-    private fun clearBrowserData(what: String) {
+    fun clearBrowserData(what: String) {
         main.post {
             runCatching {
                 if (what == "cookies" || what == "all") {
@@ -168,9 +191,25 @@ class AlpBrowserApp : Application() {
         }
     }
 
+    /** Reads at most [max] bytes from [input] (API-safe, unlike InputStream.readNBytes which needs API 33+). */
+    private fun readCapped(input: java.io.InputStream, max: Int): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(16 * 1024)
+        var total = 0
+        while (total < max) {
+            val n = input.read(buf, 0, minOf(buf.size, max - total))
+            if (n < 0) break
+            out.write(buf, 0, n); total += n
+        }
+        return out.toByteArray()
+    }
+
     companion object {
         private const val TAG = "AlpBrowser"
         const val PROXY_PORT = 8890
         const val CONTROL_PORT = 8899
+        private const val MAX_RESEND_BODY = 10 * 1024 * 1024
+        /** CN of our MITM root CA (see core-proxy TlsCa.selfSignedCa) — the SSL-error fallback check. */
+        const val CA_CN = "Ronin Proxy CA"
     }
 }

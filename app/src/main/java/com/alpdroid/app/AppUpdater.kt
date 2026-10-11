@@ -81,32 +81,42 @@ object AppUpdater {
         }
     }.getOrNull()
 
-    /** The first non-draft, non-prerelease release whose tag [accept]s and that carries an APK asset. */
+    /**
+     * The first non-draft, non-prerelease release whose tag [accept]s and that carries an APK asset. Both the
+     * AlpDroid app and the AlpBrowser companion publish into this one repo, so a single channel's newest release
+     * can sit many entries deep once the other channel has shipped a lot — pages through several pages (not just
+     * the newest 10) so a browser update is still found when app releases dominate the list, and vice-versa.
+     */
     private fun selectRelease(context: Context, accept: (tag: String) -> Boolean): Update? {
-        val conn = openApi(context, "https://api.github.com/repos/$RELEASES_REPO/releases?per_page=10")
-        val text = conn.inputStream.bufferedReader().use { it.readText() }
-        conn.disconnect()
-        val releases = org.json.JSONArray(text)
-        for (i in 0 until releases.length()) {
-            val r = releases.optJSONObject(i) ?: continue
-            // Drafts AND prereleases are skipped: a prerelease with a higher tag would
-            // otherwise be offered as a stable update to every auto-checking client.
-            if (r.optBoolean("draft") || r.optBoolean("prerelease")) continue
-            val tag = r.optString("tag_name")
-            if (!accept(tag)) continue
-            val assets = r.optJSONArray("assets") ?: continue
-            for (j in 0 until assets.length()) {
-                val a = assets.optJSONObject(j) ?: continue
-                val name = a.optString("name")
-                if (!name.endsWith(".apk")) continue
-                // The API asset URL (not browser_download_url): with Accept: octet-stream +
-                // auth it 302s to a signed host. browser_download_url without auth just 404s
-                // on a private repo, and sending the bearer token to a redirect host leaks it.
-                return Update(tag, r.optString("name", tag), r.optString("body", ""), a.optString("browser_download_url"), a.optString("url"), a.optLong("size"), sha256Of(a.optString("digest")), name)
+        for (page in 1..MAX_RELEASE_PAGES) {
+            val conn = openApi(context, "https://api.github.com/repos/$RELEASES_REPO/releases?per_page=30&page=$page")
+            val text = conn.inputStream.bufferedReader().use { it.readText() }
+            conn.disconnect()
+            val releases = org.json.JSONArray(text)
+            if (releases.length() == 0) break // no more pages
+            for (i in 0 until releases.length()) {
+                val r = releases.optJSONObject(i) ?: continue
+                // Drafts AND prereleases are skipped: a prerelease with a higher tag would
+                // otherwise be offered as a stable update to every auto-checking client.
+                if (r.optBoolean("draft") || r.optBoolean("prerelease")) continue
+                val tag = r.optString("tag_name")
+                if (!accept(tag)) continue
+                val assets = r.optJSONArray("assets") ?: continue
+                for (j in 0 until assets.length()) {
+                    val a = assets.optJSONObject(j) ?: continue
+                    val name = a.optString("name")
+                    if (!name.endsWith(".apk")) continue
+                    // The API asset URL (not browser_download_url): with Accept: octet-stream +
+                    // auth it 302s to a signed host. browser_download_url without auth just 404s
+                    // on a private repo, and sending the bearer token to a redirect host leaks it.
+                    return Update(tag, r.optString("name", tag), r.optString("body", ""), a.optString("browser_download_url"), a.optString("url"), a.optLong("size"), sha256Of(a.optString("digest")), name)
+                }
             }
         }
         return null
     }
+
+    private const val MAX_RELEASE_PAGES = 4
 
     private fun openApi(context: Context, url: String): HttpURLConnection {
         // Token only when the user allowed agents to use it — same gate as git/alpctl.

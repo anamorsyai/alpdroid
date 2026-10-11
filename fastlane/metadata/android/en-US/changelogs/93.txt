@@ -1,0 +1,1 @@
+AlpBrowser redesign for phones: a strong default ad & tracker blocker, and an in-app settings menu (block ads, JavaScript, desktop site, DevTools, mode, clear data). Plus more reliable AlpBrowser install/update from Settings.

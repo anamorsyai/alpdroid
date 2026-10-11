@@ -162,15 +162,22 @@ class BrowserBridge(
                 respond(sock.getOutputStream(), 400, error("body is not valid JSON: ${e.message}")); return
             }
 
-            val raw = try { rawRoute(method, path, query) } catch (e: Exception) { Raw(500, "application/json", error(e.message ?: "error").toString().toByteArray()) }
+            val raw = try { rawRoute(method, path, query) } catch (e: Throwable) { Raw(500, "application/json", error(e.message ?: "error").toString().toByteArray()) }
             if (raw != null) { respondRaw(sock.getOutputStream(), raw); return }
-            val (code, json) = try { route(method, path, query, body) } catch (e: Exception) {
+            val (code, json) = try { route(method, path, query, body) } catch (e: Throwable) {
                 // Page commands answer 200 with {"ok":false,...} so the client can print the reason; a bare HTTP error would only show as "request failed".
                 val automation = path == "/v1/eval" || path == "/v1/act" || path == "/v1/navigate" || path == "/v1/waitnav" || path == "/v1/cookies" || path == "/v1/cdp"
                 (if (automation) 200 else 500) to error("${e.javaClass.simpleName}: ${e.message ?: "error"}")
             }
             respond(sock.getOutputStream(), code, json)
         }
+    }
+
+    /** [v] as JSON text. Written out because Android's org.json has no `JSONObject.valueToString` (the json.org library the unit tests use does). */
+    private fun jsonText(v: Any?): String = when (v) {
+        null, JSONObject.NULL -> "null"
+        is String -> JSONObject.quote(v)
+        else -> v.toString()   // JSONObject, JSONArray, Number and Boolean all print as JSON
     }
 
     private class Raw(val code: Int, val type: String, val bytes: ByteArray)
@@ -268,7 +275,7 @@ class BrowserBridge(
                     val r = pc.eval(js, body.optBoolean("await"), body.optLong("timeout", 30_000))
                     if (!r.optBoolean("ok", true)) return 200 to r
                     // Same shape as before: "result" is the value as JSON text.
-                    return 200 to JSONObject().put("ok", true).put("result", JSONObject.valueToString(r.opt("result") ?: JSONObject.NULL))
+                    return 200 to JSONObject().put("ok", true).put("result", jsonText(r.opt("result")))
                 }
                 return 200 to JSONObject().put("result", onEvalJs(js))
             }

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixes `browserctl eval` answering nothing at all: the reply used a helper that exists in the library the tests run on but not on Android. Any unexpected internal error in the control API now produces an error message instead of a silent drop, and a check keeps such calls out of the code.
+
 ## 1.7.83 — A sturdier eval and clearer errors (AlpBrowser 0.6.3)
 
 - `browserctl eval` is more robust: it no longer depends on the page returning a value to the browser, only on the same confirmation channel the element commands use, and it names the stage that failed (syntax error, page not answering, page navigated).

@@ -161,6 +161,7 @@ class BrowserBridge(
             if (contentLength > MAX_BODY_BYTES) { respond(sock.getOutputStream(), 400, error("request body too large")); return }
             // Exactly Content-Length BYTES, decoded as UTF-8 afterwards: counting characters instead would hang on (or cut)
             // any script containing non-ASCII text, which arrives as more bytes than characters.
+            if (contentLength < 0) { respond(sock.getOutputStream(), 400, error("invalid Content-Length")); return }
             val bodyBytes = ByteArray(contentLength.toInt())
             var read = 0
             while (read < bodyBytes.size) { val n = input.read(bodyBytes, read, bodyBytes.size - read); if (n < 0) break; read += n }
@@ -589,8 +590,11 @@ class BrowserBridge(
 
     private fun parseQuery(raw: String): Map<String, String> = raw.split('&').mapNotNull {
         val i = it.indexOf('='); if (i < 0) null else
-            java.net.URLDecoder.decode(it.substring(0, i), "UTF-8") to java.net.URLDecoder.decode(it.substring(i + 1), "UTF-8")
+            // A malformed %-escape must not drop the connection without an answer: keep that piece as it was sent.
+            decodeOrRaw(it.substring(0, i)) to decodeOrRaw(it.substring(i + 1))
     }.toMap()
+
+    private fun decodeOrRaw(s: String): String = try { java.net.URLDecoder.decode(s, "UTF-8") } catch (_: IllegalArgumentException) { s }
 
     /**
      * The JSON text with "ok" first when there is one. The CLI tells a failed command from a successful one by the

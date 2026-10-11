@@ -51,4 +51,32 @@ class HttpBodyTest {
         val r = readMessageBody(stream("stray bytes"), emptyList(), cap = 1024, allowEofBody = false)
         assertNull(r.bytes)
     }
+
+    @Test fun bodyThatEndsBeforeItsContentLengthIsIncomplete() {
+        val r = readMessageBody(stream("abc"), listOf("Content-Length" to "10"), cap = 1024, allowEofBody = true)
+        assertTrue(r.incomplete)
+        assertFalse(readMessageBody(stream("abcdefghij"), listOf("Content-Length" to "10"), cap = 1024, allowEofBody = true).incomplete)
+    }
+
+    @Test fun chunkedBodyCutOffMidChunkIsIncomplete() {
+        assertTrue(readMessageBody(stream("a\r\nhello"), listOf("Transfer-Encoding" to "chunked"), cap = 1024, allowEofBody = true).incomplete)
+        assertTrue(readMessageBody(stream("5\r\nhello\r\n"), listOf("Transfer-Encoding" to "chunked"), cap = 1024, allowEofBody = true).incomplete)
+        assertTrue(readMessageBody(stream("zz\r\nhello"), listOf("Transfer-Encoding" to "chunked"), cap = 1024, allowEofBody = true).incomplete)
+    }
+
+    @Test fun chunkTrailersAreConsumedSoTheNextMessageStartsClean() {
+        val input = stream("5\r\nhello\r\n0\r\nX-Sum: 1\r\nX-Other: 2\r\n\r\nHTTP/1.1 200 OK\r\n")
+        val r = readMessageBody(input, listOf("Transfer-Encoding" to "chunked"), cap = 1024, allowEofBody = true)
+        assertEquals("hello", String(r.bytes!!, Charsets.ISO_8859_1))
+        assertFalse(r.incomplete)
+        assertEquals("HTTP/1.1 200 OK", readLine(input))
+    }
+
+    @Test fun nonAsciiHeaderBytesSurviveARoundTrip() {
+        val raw = "Content-Disposition: attachment; filename=\u00c3\u00a9.txt\r\n\r\n".toByteArray(Charsets.ISO_8859_1)
+        val headers = readHeaders(ByteArrayInputStream(raw))
+        val out = java.io.ByteArrayOutputStream()
+        writeHeaders(out, headers)
+        assertEquals(raw.toList(), out.toByteArray().toList())
+    }
 }

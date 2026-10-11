@@ -52,6 +52,7 @@ internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: Browser
                 tab.url = url
                 tab.loading = true
                 tab.lastError = null
+                tab.httpStatus = 0
                 tab.navSeq++
             }
 
@@ -99,7 +100,8 @@ internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: Browser
             // Every byte routes through our proxy while it is on, so the only untrusted cert the WebView can see should
             // be a leaf our own CA signed. Proceed on UNTRUSTED only after confirming the leaf chains to our CA.
             override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-                if (error.primaryError == SslError.SSL_UNTRUSTED && isOurLeaf(error.certificate, app)) handler.proceed()
+                // Only while the proxy is in the path: with Capture off nothing of ours can legitimately sit between the page and the site.
+                if (error.primaryError == SslError.SSL_UNTRUSTED && app.proxyActive() && isOurLeaf(error.certificate, app)) handler.proceed()
                 else handler.cancel()
             }
         }
@@ -116,7 +118,7 @@ internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: Browser
             // window.open / target=_blank: only on a real tap (no pop-up spam), and into a new tab.
             override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message): Boolean {
                 if (!isUserGesture) return false
-                val child = holder.open("", activate = true) ?: return false
+                val child = holder.open("", activate = true, profile = tab.profile) ?: return false
                 val childView = ensureTabWebView(context, app, child)
                 (resultMsg.obj as? WebView.WebViewTransport)?.webView = childView
                 resultMsg.sendToTarget()
@@ -141,16 +143,20 @@ internal fun openTab(context: Context, app: AlpBrowserApp, url: String, activate
     return tab
 }
 
-/** True when [cert] is a leaf our own MITM CA signed (API 29+: verify the signature; older: issuer CN match). */
+/**
+ * True when [cert] is a leaf our own MITM CA signed, proven by its signature. A name match alone is never enough: anyone can
+ * mint a certificate whose issuer is called "Ronin Proxy CA".
+ */
 private fun isOurLeaf(cert: SslCertificate?, app: AlpBrowserApp): Boolean {
     if (cert == null) return false
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        val x = cert.x509Certificate
-        val pub = app.caPublicKey
-        if (x != null && pub != null) return runCatching { x.verify(pub); true }.getOrDefault(false)
-    }
-    val issuer = cert.issuedBy
-    return issuer.cName == AlpBrowserApp.CA_CN || issuer.dName.contains(AlpBrowserApp.CA_CN)
+    val pub = app.caPublicKey ?: return false
+    val x = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) cert.x509Certificate else runCatching {
+        // Before API 29 the certificate is only reachable through its saved state.
+        val der = SslCertificate.saveState(cert)?.getByteArray("x509-certificate") ?: return@runCatching null
+        java.security.cert.CertificateFactory.getInstance("X.509").generateCertificate(der.inputStream()) as java.security.cert.X509Certificate
+    }.getOrNull()
+    if (x == null) return false
+    return runCatching { x.verify(pub); true }.getOrDefault(false)
 }
 
 internal fun normalizeUrl(input: String): String {

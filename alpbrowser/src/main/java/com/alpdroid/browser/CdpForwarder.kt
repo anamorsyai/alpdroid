@@ -41,7 +41,7 @@ class CdpForwarder(
         server = s
         Thread({
             while (!s.isClosed) {
-                val c = try { s.accept() } catch (_: Exception) { break }
+                val c = try { s.accept() } catch (_: Exception) { if (s.isClosed) break else { Thread.sleep(50); continue } }
                 pool.execute { runCatching { handle(c) }; runCatching { c.close() } }
             }
         }, "alp-cdp-accept").apply { isDaemon = true }.start()

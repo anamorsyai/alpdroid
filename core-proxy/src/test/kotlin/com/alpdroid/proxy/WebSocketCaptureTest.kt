@@ -143,6 +143,8 @@ class WebSocketCaptureTest {
             assertEquals("echo:ping", String(second, 2, 9))
         }
         Thread.sleep(300)
+        assertTrue(upstreamSaw.contains("Connection: Upgrade", ignoreCase = true), "the Upgrade handshake must reach the server intact:\n$upstreamSaw")
+        assertFalse(upstreamSaw.contains("Connection: close", ignoreCase = true), upstreamSaw)
         assertFalse(upstreamSaw.contains("permessage-deflate", ignoreCase = true), "the compression extension must not reach the server:\n$upstreamSaw")
         val tx = store.transactions.value.single { it.responseStatus == 101 }
         val frames = store.webSockets[tx.id]!!

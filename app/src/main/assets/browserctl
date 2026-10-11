@@ -273,6 +273,7 @@ case "$1" in
              [ -n "$TIMEOUT" ] && J="$J,\"timeout\":$TIMEOUT"
              if [ "$WAIT" = 1 ]; then auto "/navigate" "$J}"; else post "/navigate" "$J}"; fi ;;
   waitnav)   shift; popts "$@"
+             case "${STATE:-load}" in load|domcontentloaded|networkidle) ;; *) die "--state must be load, domcontentloaded or networkidle" ;; esac
              J="{\"state\":\"${STATE:-load}\""; [ -n "$TIMEOUT" ] && J="$J,\"timeout\":$TIMEOUT"
              auto "/waitnav" "$J}" ;;
   eval)      shift; src=; mode=arg; EX=; ev_done=0
@@ -303,7 +304,7 @@ case "$1" in
   html)      shift; popts "$@"; act html "$A1" ;;
   waitfor)   shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl waitfor <selector> [--state visible|hidden|attached] [--timeout ms]"; act waitfor "$A1" ;;
   exists)    shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl exists <selector>"
-             res=$(act exists "$A1") || exit 1
+             res=$(act exists "$A1") || exit $?
              printf '%s\n' "$res"
              case "$res" in *'"exists":true'*) exit 0 ;; *) exit 1 ;; esac ;;
   shot)      shift; popts "$@"
@@ -324,7 +325,7 @@ case "$1" in
              auto "/cookies" "$J}" ;;
   cdp)       shift; port=; raw=0; off=0
              for a in "$@"; do case "$a" in off) off=1 ;; --json) raw=1 ;; *[!0-9]*|'') die "usage: browserctl cdp [port] | cdp off | cdp --json" ;; *) port=$a ;; esac; done
-             if [ $off -eq 1 ]; then post "/cdp" '{"enabled":false}' >/dev/null; echo 0; exit 0; fi
+             if [ $off -eq 1 ]; then post "/cdp" '{"enabled":false}' >/dev/null || exit $?; echo 0; exit 0; fi
              J='{"enabled":true'; [ -n "$port" ] && J="$J,\"port\":$port"
              res=$(wget -qO- --header "$H" --header "Content-Type: application/json" --post-data "$J}" "$BASE/cdp" 2>"$ERRF") || { fail_hint $?; exit 1; }
              [ $raw -eq 1 ] && { printf '%s\n' "$res"; exit 0; }

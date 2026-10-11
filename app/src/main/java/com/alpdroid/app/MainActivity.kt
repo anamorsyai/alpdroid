@@ -4909,7 +4909,7 @@ class MainActivity : Activity() {
             // Sweep up any .part left behind by a previous backup that got killed outright rather
             // than throwing — restoreAlpinePicker() already ignores these (it only lists
             // ".tar.gz"), but they'd otherwise sit in the backups folder forever.
-            destDir.listFiles { f -> f.name.endsWith(".tar.gz.part") }?.forEach { it.delete() }
+            destDir.listFiles { f -> f.name.contains(".tar.gz.part") }?.forEach { it.delete() }
             // Total file count isn't known up front (that would mean walking the whole tree
             // twice), so this shows a running count rather than a percentage — still far more
             // useful than a plain "backing up" spinner for a large rootfs. Throttled to avoid

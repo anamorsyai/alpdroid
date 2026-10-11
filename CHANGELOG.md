@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Proxy: a response that the server cuts short is now reported as an error instead of being passed on as a complete download; response trailers no longer corrupt the next response on a reused connection; `ws://` upgrades keep their `Connection: Upgrade` header; non-ASCII bytes in headers are forwarded unchanged; a HEAD request to an event-stream URL no longer hangs.
+- AlpBrowser: turning intercept off (for example by switching to web-dev mode) releases the requests it was holding; a pop-up opened from a profile tab stays in that profile; the first-launch certificate can no longer be generated twice at once; the page status resets on every navigation; the Remote DevTools listener survives a transient accept error; a malformed request no longer drops the connection without an answer; and an SSL error is accepted only when the certificate is proven to be signed by AlpBrowser's own CA while Capture is on.
+- Updates: a damaged delta patch can no longer overrun its bounds; a failed or cancelled backup removes its partial file; deltas that are not meaningfully smaller than the APK are no longer published.
+- `browserctl`: `cdp off` and `exists` report an unreachable AlpBrowser with exit code 2, and `waitnav --state` is validated.
+
 ## 1.7.91 — AlpBrowser updates are always found
 
 - The AlpBrowser update check no longer misses a new version: GitHub lists releases out of version order (0.6.10 appeared below 0.6.2), so the check now looks at every release and offers the highest version.

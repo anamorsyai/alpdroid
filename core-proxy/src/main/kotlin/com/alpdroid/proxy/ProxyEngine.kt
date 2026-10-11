@@ -306,6 +306,7 @@ class ProxyEngine(
         if (expects) { clientOut.write("HTTP/1.1 100 Continue\r\n\r\n".toByteArray()); clientOut.flush() }
 
         val requestBody = readMessageBody(clientIn, requestHeaders, BODY_BUFFER_CAP, allowEofBody = false)
+        if (requestBody.incomplete) return false // the client stopped sending mid-body: nothing sensible to forward
         if (requestBody.truncated) {
             sendError(clientOut, 413, "Payload Too Large", "Request body is larger than the ${BODY_BUFFER_CAP / (1024 * 1024)} MiB the proxy can intercept")
             return false
@@ -339,7 +340,7 @@ class ProxyEngine(
                 // request wait on Nagle/delayed-ACK (tens of ms each).
                 val reqBytes = java.io.ByteArrayOutputStream(1024)
                 writeRequestLine(reqBytes, req.method, req.target, requestLine.version)
-                writeHeaders(reqBytes, forwardHeaders(outHeaders, req.body, connectionClose = !allowReuse))
+                writeHeaders(reqBytes, forwardHeaders(outHeaders, req.body, connectionClose = !allowReuse && !wantsUpgrade))
                 req.body?.let { reqBytes.write(it) }
                 upOut.write(reqBytes.toByteArray())
                 upOut.flush()
@@ -358,7 +359,7 @@ class ProxyEngine(
         if (head.status == 101 && wantsUpgrade) {
             // Protocol switch (WebSocket): relay the 101 as-is and pipe bytes both ways, uncaptured.
             val upgradeHead = java.io.ByteArrayOutputStream(512)
-            upgradeHead.write("${head.statusLine}\r\n".toByteArray(Charsets.US_ASCII))
+            upgradeHead.write("${head.statusLine}\r\n".toByteArray(Charsets.ISO_8859_1))
             writeHeaders(upgradeHead, head.headers)
             clientOut.write(upgradeHead.toByteArray())
             clientOut.flush()
@@ -384,7 +385,8 @@ class ProxyEngine(
 
         // A Server-Sent Events stream never ends, so it cannot be buffered like an ordinary answer (the page would never see an
         // event): it is passed on as it arrives, and each event is kept in History. Not paused or edited by the interceptor.
-        if (head.status in 200..299 && headerValue(head.headers, "Content-Type")?.lowercase()?.startsWith("text/event-stream") == true) {
+        if (head.status in 200..299 && !responseHasNoBody(req.method, head.status) &&
+            headerValue(head.headers, "Content-Type")?.lowercase()?.startsWith("text/event-stream") == true) {
             streamEvents(clientSocket, clientOut, upstream, upIn, head, txId, start, req, scheme, target)
             return false
         }
@@ -395,6 +397,14 @@ class ProxyEngine(
         } catch (e: IOException) {
             upstream.close()
             sendError(clientOut, if (e is java.net.SocketTimeoutException) 504 else 502, "Bad Gateway", "Upstream error: ${e.javaClass.simpleName}")
+            return false
+        }
+
+        if (body.incomplete) {
+            // The origin closed before the length it announced (or sent broken chunking): passing the part on as a finished
+            // response would hand the client a silently short download.
+            upstream.close()
+            sendError(clientOut, 502, "Bad Gateway", "Upstream closed before the whole response arrived")
             return false
         }
 
@@ -439,7 +449,7 @@ class ProxyEngine(
 
         val keepClient = allowReuse && !clientWantsClose && !respTokens.contains("close")
         val respHead = java.io.ByteArrayOutputStream(1024)
-        resp.statusLine?.let { respHead.write("$it\r\n".toByteArray(Charsets.US_ASCII)) }
+        resp.statusLine?.let { respHead.write("$it\r\n".toByteArray(Charsets.ISO_8859_1)) }
         writeHeaders(respHead, forwardHeaders(outRespHeaders, outBody, connectionClose = !keepClient))
         if (outBody != null && outBody.size <= 64 * 1024) respHead.write(outBody) // small bodies ride along in the same write
         clientOut.write(respHead.toByteArray())
@@ -483,7 +493,7 @@ class ProxyEngine(
         val chunked = headerValue(head.headers, "Transfer-Encoding")?.contains("chunked", ignoreCase = true) == true
         val outHeaders = head.headers.filterNot { it.first.equals("Connection", ignoreCase = true) } + ("Connection" to "close")
         val respHead = java.io.ByteArrayOutputStream(1024)
-        respHead.write("${head.statusLine}\r\n".toByteArray(Charsets.US_ASCII))
+        respHead.write("${head.statusLine}\r\n".toByteArray(Charsets.ISO_8859_1))
         writeHeaders(respHead, outHeaders)
         try {
             clientOut.write(respHead.toByteArray()); clientOut.flush()
@@ -543,7 +553,7 @@ class ProxyEngine(
             val body = message.toByteArray(Charsets.UTF_8)
             out.write(
                 ("HTTP/1.1 $code $reason\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n")
-                    .toByteArray(Charsets.US_ASCII),
+                    .toByteArray(Charsets.ISO_8859_1),
             )
             out.write(body)
             out.flush()

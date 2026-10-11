@@ -23,7 +23,7 @@ class TlsCaStore(private val appContext: Context) {
     private val keyFile = File(appContext.filesDir, "ronin-ca-key.pem")
 
     /** Generates on first launch (~RSA-2048 keygen, well under a second), loads after that. */
-    fun loadOrGenerate(): CaMaterial {
+    @Synchronized fun loadOrGenerate(): CaMaterial {
         if (certFile.isFile && keyFile.isFile) {
             val loaded = runCatching {
                 val cert = TlsCa.decodeCertificate(certFile.readText())

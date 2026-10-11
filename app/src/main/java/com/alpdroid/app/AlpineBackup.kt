@@ -36,10 +36,15 @@ object AlpineBackup {
         // Write to a temp sibling and rename into place: an aborted run (killed app, full
         // disk) used to leave a truncated file at the real path that looked restorable.
         val tmp = File(destTarGz.parentFile, "${destTarGz.name}.part")
-        tmp.outputStream().buffered().use { fileOut ->
-            backupToStream(root, fileOut, onEntry, isCancelled)
+        try {
+            tmp.outputStream().buffered().use { fileOut ->
+                backupToStream(root, fileOut, onEntry, isCancelled)
+            }
+            if (!tmp.renameTo(destTarGz)) throw IllegalStateException("could not finalize backup")
+        } catch (e: Throwable) {
+            tmp.delete() // a full disk or a cancel must not leave a multi-GB partial archive behind
+            throw e
         }
-        if (!tmp.renameTo(destTarGz)) throw IllegalStateException("could not finalize backup")
     }
 
     /** Stream variant for user-chosen locations (SAF `ACTION_CREATE_DOCUMENT`): the caller

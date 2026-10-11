@@ -69,7 +69,7 @@ object ApkDelta {
                             when (val op = ops.read()) {
                                 'C'.code -> {
                                     var off = ops.readLong(); var len = ops.readLong()
-                                    if (off < 0 || len < 0 || off + len > src.length() || written + len > newSize) throw DeltaException("copy outside the installed APK")
+                                    if (off < 0 || len < 0 || len > src.length() || off > src.length() - len || len > newSize - written) throw DeltaException("copy outside the installed APK")
                                     src.seek(off)
                                     while (len > 0) {
                                         val n = src.read(buf, 0, minOf(len, buf.size.toLong()).toInt())
@@ -80,7 +80,7 @@ object ApkDelta {
                                 }
                                 'I'.code -> {
                                     var len = ops.readLong()
-                                    if (len < 0 || written + len > newSize) throw DeltaException("insert beyond the target size")
+                                    if (len < 0 || len > newSize - written) throw DeltaException("insert beyond the target size")
                                     while (len > 0) {
                                         val n = ops.read(buf, 0, minOf(len, buf.size.toLong()).toInt())
                                         if (n < 0) throw EOFException("delta ended early")

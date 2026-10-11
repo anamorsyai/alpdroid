@@ -7,7 +7,7 @@ internal data class RequestLine(val method: String, val target: String, val vers
 
 internal data class Target(val scheme: String, val host: String, val port: Int, val path: String)
 
-/** Reads one CRLF- or LF-terminated line as US-ASCII text, or null at EOF before any bytes. */
+/** Reads one CRLF- or LF-terminated line as Latin-1 text (every byte survives a round trip, so UTF-8 in a header is not mangled), or null at EOF before any bytes. */
 internal fun readLine(input: InputStream): String? {
     val buffer = ByteArrayBuilder()
     var sawAnyByte = false
@@ -84,8 +84,9 @@ internal fun headerValue(headers: List<Pair<String, String>>, name: String): Str
     headers.firstOrNull { it.first.equals(name, ignoreCase = true) }?.second
 
 /** A message body read from the wire: the bytes kept, and whether the origin had more than [BodyResult.bytes]
- *  (because it hit the buffering cap). The caller re-frames Content-Length to the bytes actually kept. */
-internal class BodyResult(val bytes: ByteArray?, val truncated: Boolean)
+ *  (because it hit the buffering cap), and whether the sender stopped before the declared end ([BodyResult.incomplete]: the
+ *  connection closed mid-body or the chunk framing was invalid). The caller re-frames Content-Length to the bytes actually kept. */
+internal class BodyResult(val bytes: ByteArray?, val truncated: Boolean, val incomplete: Boolean = false)
 
 /**
  * Reads a message body per its framing, buffering at most [cap] bytes:
@@ -113,7 +114,7 @@ internal fun readMessageBody(input: InputStream, headers: List<Pair<String, Stri
             out.write(buf, 0, n)
             read += n
         }
-        return BodyResult(out.toByteArray(), cl > keep.toLong())
+        return BodyResult(out.toByteArray(), cl > keep.toLong(), incomplete = read < keep)
     }
     if (!allowEofBody) return BodyResult(null, false)
     return readToEof(input, cap)
@@ -124,14 +125,20 @@ private fun readChunked(input: InputStream, cap: Int): BodyResult {
     var truncated = false
     val buf = ByteArray(8192)
     while (true) {
-        val sizeLine = readLine(input) ?: break
+        val sizeLine = readLine(input) ?: return BodyResult(out.toByteArray(), truncated, incomplete = true)
         if (sizeLine.isEmpty()) continue
-        val size = sizeLine.substringBefore(';').trim().toIntOrNull(16) ?: break
-        if (size == 0) { readLine(input); break } // final chunk; consume trailing CRLF / trailers line
+        val size = sizeLine.substringBefore(';').trim().toLongOrNull(16)
+        if (size == null || size < 0) return BodyResult(out.toByteArray(), truncated, incomplete = true) // not valid chunk framing
+        if (size == 0L) {
+            // Final chunk: any trailer lines follow, up to the blank line. Leaving them unread would corrupt the next response
+            // on a reused connection.
+            while (true) { val t = readLine(input) ?: return BodyResult(out.toByteArray(), truncated, incomplete = true); if (t.isEmpty()) break }
+            break
+        }
         var remaining = size
         while (remaining > 0) {
-            val n = input.read(buf, 0, minOf(buf.size, remaining))
-            if (n < 0) break
+            val n = input.read(buf, 0, minOf(buf.size.toLong(), remaining).toInt())
+            if (n < 0) return BodyResult(out.toByteArray(), truncated, incomplete = true)
             remaining -= n
             val room = cap - out.size()
             if (room > 0) out.write(buf, 0, minOf(n, room)) else truncated = true
@@ -170,14 +177,14 @@ internal fun replaceStatusCode(statusLine: String?, code: Int): String {
 }
 
 internal fun writeRequestLine(output: OutputStream, method: String, path: String, version: String) {
-    output.write("$method $path $version\r\n".toByteArray(Charsets.US_ASCII))
+    output.write("$method $path $version\r\n".toByteArray(Charsets.ISO_8859_1))
 }
 
 internal fun writeHeaders(output: OutputStream, headers: List<Pair<String, String>>) {
     for ((name, value) in headers) {
-        output.write("$name: $value\r\n".toByteArray(Charsets.US_ASCII))
+        output.write("$name: $value\r\n".toByteArray(Charsets.ISO_8859_1))
     }
-    output.write("\r\n".toByteArray(Charsets.US_ASCII))
+    output.write("\r\n".toByteArray(Charsets.ISO_8859_1))
 }
 
 /** Small growable byte buffer; avoids pulling in a dependency just to build an ASCII line. */
@@ -192,7 +199,7 @@ private class ByteArrayBuilder {
 
     val length: Int get() = size
 
-    fun toAsciiString(): String = String(bytes, 0, size, Charsets.US_ASCII)
+    fun toAsciiString(): String = String(bytes, 0, size, Charsets.ISO_8859_1)
 }
 
 /** Responses that never carry a body whatever their headers say (RFC 9110 §6.4.1): reading one would block. */

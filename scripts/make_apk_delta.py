@@ -122,6 +122,10 @@ def main(argv):
     new = open(argv[2], "rb").read()
     patch = encode(old, new, delta_ops(old, new))
     assert apply(old, patch) == new
+    if len(patch) * 10 >= len(new) * 9:
+        # A patch about as big as the APK saves nothing, yet the updater prefers a delta whenever one exists: publish none.
+        print(f"no delta: the patch ({len(patch)} bytes) is not meaningfully smaller than the APK ({len(new)} bytes)")
+        return 1
     open(argv[3], "wb").write(patch)
     print(f"{argv[3]}: {len(patch)} bytes ({100 * len(patch) // max(1, len(new))}% of the {len(new)}-byte APK)")
     return 0

@@ -239,8 +239,15 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
 
     // ------------------------------------------------------------------------------------------------- cookies
 
+    /** The profile of the front tab ("" for the shared one): cookie commands act on the jar that tab uses. */
+    private fun frontProfile(): String = app.browserWebViewHolder.active?.profile.orEmpty()
+
+    private fun cookieManagerFor(profile: String): CookieManager? =
+        if (profile.isEmpty()) CookieManager.getInstance() else runBlocking { withContext(Dispatchers.Main) { Profiles.cookieManager(profile) } }
+
     override fun cookies(domain: String?): JSONObject {
-        val cm = CookieManager.getInstance()
+        val profile = frontProfile()
+        val cm = cookieManagerFor(profile) ?: return fail("the front tab's profile '$profile' no longer exists")
         val hosts = if (domain != null) listOf(domain.removePrefix(".")) else {
             val fromTraffic = app.transactionStore.transactions.value.map { it.host }
             val fromTabs = app.browserWebViewHolder.tabs.mapNotNull { runCatching { java.net.URI(it.url).host }.getOrNull() }
@@ -255,7 +262,8 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
                 if (seen.add("$name=$value@$h")) arr.put(JSONObject().put("domain", h).put("name", name).put("value", value))
             }
         }
-        val plain = JSONObject().put("ok", true).put("cookies", arr)
+        val plain = JSONObject().put("ok", true).put("cookies", arr).also { if (profile.isNotEmpty()) it.put("profile", profile) }
+        if (profile.isNotEmpty()) return plain.put("note", "These are the cookies of the front tab's profile '$profile' (name and value only; every attribute is available for the shared profile with Remote DevTools on).")
         // With Remote DevTools on, the browser itself can list every attribute (path, expiry, HttpOnly, Secure, SameSite).
         if (app.devtoolsEnabled()) {
             try {
@@ -272,7 +280,8 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
         val host = cookie.domain?.removePrefix(".") ?: app.browserWebViewHolder.active?.url?.let { runCatching { java.net.URI(it).host }.getOrNull() }
             ?: return fail("no domain given and no page is open")
         val attrs = CookieHeader.build(cookie).getOrElse { return fail(it.message ?: "invalid cookie") }
-        val cm = CookieManager.getInstance()
+        val profile = frontProfile()
+        val cm = cookieManagerFor(profile) ?: return fail("the front tab's profile '$profile' no longer exists")
         // A Secure cookie needs an https URL to be accepted; the rest go to the scheme of the open page, https by default.
         cm.setCookie("https://$host", attrs)
         cm.flush()

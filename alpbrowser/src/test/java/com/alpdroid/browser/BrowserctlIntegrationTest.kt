@@ -32,6 +32,8 @@ class BrowserctlIntegrationTest {
     private val pageArgs = ArrayList<JSONObject>()
     private val evaluated = ArrayList<String>()
     private val cookies = ArrayList<CookieSpec>()
+    private val openedProfiles = ArrayList<String>()
+    private val profileNames = mutableListOf("alice", "bob")
     private val openedTabs = ArrayList<Triple<String, Boolean, Long>>()
 
     private val script: File = listOf("../app/src/main/assets/browserctl", "app/src/main/assets/browserctl", "../../app/src/main/assets/browserctl")
@@ -72,6 +74,13 @@ class BrowserctlIntegrationTest {
             tabs = object : TabsHost {
                 override fun list() = listOf(TabInfo(1, "T", "https://t.test/", true, false, 1L))
                 override fun open(url: String, wait: Boolean, timeoutMs: Long): Int? { openedTabs += Triple(url, wait, timeoutMs); return 2 }
+                override fun open(url: String, wait: Boolean, timeoutMs: Long, profile: String?): Int? {
+                    if (profile == "bad") throw IllegalArgumentException("a profile name is 1-32 letters, digits, - or _")
+                    if (profile == "old") throw IllegalStateException("this WebView does not support separate profiles")
+                    openedProfiles += profile.orEmpty(); return open(url, wait, timeoutMs)
+                }
+                override fun profiles() = profileNames.toList()
+                override fun deleteProfile(name: String) = profileNames.remove(name)
                 override fun switchTo(id: Int) = true
                 override fun close(id: Int) = true
             },
@@ -260,5 +269,21 @@ class BrowserctlIntegrationTest {
         assertTrue(ctl("history", "--host", "ws.test", "--compact").out.contains("[websocket 3]"))
         assertEquals("websocket", JSONObject(ctl("history", "--host", "ws.test").out).getJSONArray("transactions").getJSONObject(0).getString("kind"))
         assertTrue(ctl("frames", "t1").code != 0)   // an ordinary request has none
+    }
+
+    @Test fun `tab new can open a tab in its own profile, and profiles can be listed and deleted`() {
+        assertEquals(0, ctl("tab", "new", "https://a.test/", "--profile", "alice", "--no-wait").code)
+        assertEquals(listOf("alice"), openedProfiles)
+        val bad = ctl("tab", "new", "https://a.test/", "--profile", "bad")
+        assertEquals(1, bad.code); assertTrue(bad.err, bad.err.contains("1-32 letters"))
+        val old = ctl("tab", "new", "https://a.test/", "--profile", "old")
+        assertEquals(1, old.code); assertTrue(old.err.contains("does not support separate profiles"))
+        assertTrue(ctl("tab", "new", "x", "--profile").code != 0)                       // a missing name is refused by the CLI
+        assertEquals(listOf("alice", "bob"), JSONObject(ctl("profile", "list").out).getJSONArray("profiles").let { a -> (0 until a.length()).map { a.getString(it) } })
+        assertEquals(0, ctl("profile", "delete", "bob").code)
+        assertEquals(listOf("alice"), profileNames)
+        val gone = ctl("profile", "delete", "bob")
+        assertEquals(1, gone.code); assertTrue(gone.err.contains("could not delete"))
+        assertTrue(JSONObject(ctl("tabs").out).getJSONArray("tabs").getJSONObject(0).has("profile"))
     }
 }

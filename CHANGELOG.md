@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `browserctl tab new --profile <name>` opens a tab with its own cookies and storage, so two logins can be tested side by side; `profile list` and `profile delete` manage them, and `cookies` / `setcookie` follow the front tab's profile. If the WebView cannot provide a separate profile, no tab is opened.
 - `browserctl cookies` lists every attribute of a cookie (domain, path, expiry, HttpOnly, Secure, SameSite) while Remote DevTools is on.
 - WebSocket messages and Server-Sent Events are now captured: each connection is one History entry, and `browserctl frames <id>` lists its messages in both directions (text or base64), with timestamps. Event streams are passed on as they arrive instead of being held back until they end, so pages that use them work with Capture on.
 

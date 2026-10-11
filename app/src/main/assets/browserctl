@@ -13,7 +13,8 @@
 #            cookies [--domain d] | setcookie <name> <value> [--domain d] [--path p] [--secure] [--httponly] [--samesite Lax|Strict|None] [--expires epoch] [--max-age s]
 #            cdp [port] | cdp off | cdp --json     remote debugging for Puppeteer/Playwright (prints the WebSocket URL)
 # Capture:   capture [on|off]     route the page through the proxy (needed for decrypted History); off = fast direct browsing
-# Tabs:      tabs | tab new [url] | tab switch <id> | tab close <id>
+# Tabs:      tabs | tab new [url] [--no-wait] [--profile name] | tab switch <id> | tab close <id>
+#            profile list | profile delete <name>     a --profile tab has its own cookies and storage (a second login side by side)
 # Sockets:   frames <id> [--from n] [--limit n] [--compact]    the frames of a WebSocket, or the events of an event stream, from History
 # History:   history [host] [--host h] [--method M] [--status N] [--since ISO] [--limit n] [--page n] [--compact] | get <id>
 #            save <id> --dir <dir> | save <id> --out <file>      raw request/response with decoded bodies, saved to disk
@@ -252,11 +253,18 @@ case "$1" in
              esac ;;
   tabs)      get "/tabs" ;;
   tab)       case "$2" in
-               new)    shift 2; w=true; u=; for a in "$@"; do case "$a" in --no-wait) w=false ;; *) u=$a ;; esac; done
-                       post "/tabs" "{\"action\":\"new\",\"url\":$(jstr "$u"),\"wait\":$w}" ;;
+               new)    shift 2; w=true; u=; prof=
+                       while [ $# -gt 0 ]; do case "$1" in --no-wait) w=false; shift ;; --profile) [ -n "${2:-}" ] || die "--profile needs a name"; safe "$2"; prof=$2; shift 2 ;; *) u=$1; shift ;; esac; done
+                       J="{\"action\":\"new\",\"url\":$(jstr "$u"),\"wait\":$w"; [ -n "$prof" ] && J="$J,\"profile\":$(jstr "$prof")"
+                       auto "/tabs" "$J}" ;;
                switch|close) case "$3" in ''|*[!0-9]*) die "usage: browserctl tab $2 <id>" ;; esac
                        post "/tabs" "{\"action\":\"$2\",\"id\":$3}" ;;
-               *)      die "usage: browserctl tab new [url] | tab switch <id> | tab close <id>" ;;
+               *)      die "usage: browserctl tab new [url] [--no-wait] [--profile name] | tab switch <id> | tab close <id>" ;;
+             esac ;;
+  profile)   case "${2:-list}" in
+               list) get "/profiles" ;;
+               delete) [ -n "${3:-}" ] || die "usage: browserctl profile delete <name>"; safe "$3"; auto "/profiles" "{\"delete\":$(jstr "$3")}" ;;
+               *) die "usage: browserctl profile list | profile delete <name>" ;;
              esac ;;
   navigate)  shift; popts "$@"; [ -n "$A1" ] || die "usage: browserctl navigate <url> [--wait] [--state S] [--timeout ms]"
              J="{\"url\":$(jstr "$A1")"

@@ -15,6 +15,7 @@ import android.webkit.WebViewClient
 import com.alpdroid.browser.AlpBrowserApp
 import com.alpdroid.browser.BrowserTab
 import com.alpdroid.browser.ErrorPage
+import com.alpdroid.browser.Profiles
 import java.io.ByteArrayInputStream
 
 internal const val HOME_URL = "https://www.google.com"
@@ -31,6 +32,9 @@ internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: Browser
     return holder.ensureWebView(tab) { wv ->
         // Pages that set no background of their own (and expect the usual white canvas) must stay readable: with a dark
         // surface their dark text vanished. The failed-load page below paints its own dark background instead.
+        // A tab with its own profile must be assigned before anything loads; if that fails, the exception stops the tab from
+        // being created at all (it never falls back to the shared cookie jar).
+        if (tab.profile.isNotEmpty()) Profiles.assign(wv, tab.profile)
         wv.setBackgroundColor(android.graphics.Color.WHITE)
         wv.settings.javaScriptEnabled = app.jsEnabled()
         wv.settings.domStorageEnabled = true
@@ -131,9 +135,9 @@ internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: Browser
 }
 
 /** Opens [url] in a new tab (front by default), creating its WebView right away. Null when the tab limit is reached. */
-internal fun openTab(context: Context, app: AlpBrowserApp, url: String, activate: Boolean = true): BrowserTab? {
-    val tab = app.browserWebViewHolder.open(url, activate) ?: return null
-    ensureTabWebView(context, app, tab)
+internal fun openTab(context: Context, app: AlpBrowserApp, url: String, activate: Boolean = true, profile: String = ""): BrowserTab? {
+    val tab = app.browserWebViewHolder.open(url, activate, profile) ?: return null
+    try { ensureTabWebView(context, app, tab) } catch (e: Throwable) { app.browserWebViewHolder.close(tab.id); throw e }
     return tab
 }
 

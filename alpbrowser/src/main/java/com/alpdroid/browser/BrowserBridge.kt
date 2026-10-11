@@ -41,6 +41,11 @@ interface TabsHost {
     fun open(url: String, wait: Boolean = false, timeoutMs: Long = 20_000): Int?
     fun switchTo(id: Int): Boolean
     fun close(id: Int): Boolean
+    /** Like [open], in its own cookie/storage [profile]; throws IllegalArgumentException (with the reason) when that cannot be provided. */
+    fun open(url: String, wait: Boolean, timeoutMs: Long, profile: String?): Int? =
+        if (profile.isNullOrEmpty()) open(url, wait, timeoutMs) else throw IllegalArgumentException("separate profiles are not available")
+    fun profiles(): List<String> = emptyList()
+    fun deleteProfile(name: String): Boolean = false
 }
 
 class BrowserBridge(
@@ -328,18 +333,34 @@ class BrowserBridge(
                 val arr = JSONArray()
                 host.list().forEach {
                     arr.put(JSONObject().put("id", it.id).put("title", it.title).put("url", it.url).put("active", it.active)
-                        .put("loading", it.loading).put("lastActiveAt", it.lastActiveAt))
+                        .put("loading", it.loading).put("lastActiveAt", it.lastActiveAt).put("profile", it.profile))
                 }
                 return 200 to JSONObject().put("tabs", arr)
             }
             path == "/v1/tabs" && method == "POST" -> {
                 val host = tabs ?: return 404 to error("tabs are not available")
                 return when (body.optString("action")) {
-                    "new" -> host.open(body.optString("url"), body.optBoolean("wait", true), body.optLong("timeout", 20_000)).let { id -> if (id == null) 409 to error("tab limit reached") else 200 to JSONObject().put("ok", true).put("id", id) }
+                    "new" -> {
+                        val profile = body.optStringOrNull("profile")?.takeIf { it.isNotBlank() }
+                        val id = try { host.open(body.optString("url"), body.optBoolean("wait", true), body.optLong("timeout", 20_000), profile) }
+                        // Answered with 200 and {"ok":false,...} so browserctl prints the reason.
+                        catch (e: IllegalArgumentException) { return 200 to error(e.message ?: "invalid request").put("ok", false) }
+                        catch (e: IllegalStateException) { return 200 to error(e.message ?: "could not open the tab").put("ok", false) }
+                        if (id == null) 409 to error("tab limit reached") else 200 to JSONObject().put("ok", true).put("id", id).also { if (profile != null) it.put("profile", profile) }
+                    }
                     "switch" -> if (host.switchTo(body.optInt("id", -1))) 200 to ok() else 404 to error("no such tab")
                     "close" -> if (host.close(body.optInt("id", -1))) 200 to ok() else 404 to error("no such tab")
                     else -> 400 to error("action must be new, switch or close")
                 }
+            }
+            path == "/v1/profiles" && method == "GET" -> {
+                val host = tabs ?: return 404 to error("tabs are not available")
+                return 200 to JSONObject().put("ok", true).put("profiles", JSONArray(host.profiles()))
+            }
+            path == "/v1/profiles" && method == "POST" -> {
+                val host = tabs ?: return 404 to error("tabs are not available")
+                val name = body.optString("delete").takeIf { it.isNotBlank() } ?: return 400 to error("delete (a profile name) required")
+                return if (host.deleteProfile(name)) 200 to ok() else 200 to error("could not delete '$name': it does not exist or a tab is still using it").put("ok", false)
             }
             path == "/v1/capture" && method == "GET" -> return 200 to captureJson()
             path == "/v1/capture" && method == "POST" -> {

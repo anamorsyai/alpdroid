@@ -155,7 +155,8 @@ Selectors are standard CSS selectors. Time values are in milliseconds. Every com
 | `cookies [--domain d]` | Read cookies. By default Android gives name and value only; while Remote DevTools is on (`browserctl cdp`) every attribute is listed: domain, path, expiry, `httpOnly`, `secure`, `sameSite` and whether it is a session cookie. |
 | `setcookie <name> <value> [--domain d] [--path p] [--secure] [--httponly] [--samesite Lax\|Strict\|None] [--expires epoch] [--max-age s]` | Set a cookie with its attributes. |
 | `cdp [port]` · `cdp off` · `cdp --json` | Turn on remote debugging and print the WebSocket address for Playwright or Puppeteer. |
-| `tabs` · `tab new [url] [--no-wait]` · `tab switch <id>` · `tab close <id>` | Manage tabs. |
+| `tabs` · `tab new [url] [--no-wait] [--profile name]` · `tab switch <id>` · `tab close <id>` | Manage tabs. A tab opened with `--profile` has its **own cookies and storage**, so two different logins can run side by side. Needs a WebView with profile support (Chrome 128 or newer); otherwise the command says so and no tab is opened. `cookies` and `setcookie` act on the front tab's profile. |
+| `profile list` · `profile delete <name>` | List the named profiles, or delete one with its data (not while a tab still uses it). |
 | `console [limit]` | Read the page's console messages. |
 
 ### Traffic

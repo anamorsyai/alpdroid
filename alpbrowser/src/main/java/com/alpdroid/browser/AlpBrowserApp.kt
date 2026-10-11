@@ -242,6 +242,24 @@ class AlpBrowserApp : Application() {
             if (wait && url.isNotBlank()) tab.webView?.let { pageAutomation.awaitLoad(tab, it, timeoutMs) }
             return tab.id
         }
+        override fun open(url: String, wait: Boolean, timeoutMs: Long, profile: String?): Int? {
+            if (profile.isNullOrEmpty()) return open(url, wait, timeoutMs)
+            require(Profiles.validName(profile)) { "a profile name is 1-32 letters, digits, - or _" }
+            val tab = try {
+                onMainBlocking {
+                    check(Profiles.supported()) { "this WebView does not support separate profiles (it needs Chrome 128 or newer)" }
+                    com.alpdroid.browser.ui.browser.openTab(
+                        this@AlpBrowserApp, this@AlpBrowserApp,
+                        com.alpdroid.browser.ui.browser.normalizeUrl(url.ifBlank { BrowserWebViewHolder.DEFAULT_URL }), profile = profile,
+                    )
+                }
+            } catch (e: IllegalStateException) { throw e }
+            if (tab == null) return null
+            if (wait && url.isNotBlank()) tab.webView?.let { pageAutomation.awaitLoad(tab, it, timeoutMs) }
+            return tab.id
+        }
+        override fun profiles(): List<String> = onMainBlocking { Profiles.names() } ?: emptyList()
+        override fun deleteProfile(name: String): Boolean = onMainBlocking { Profiles.delete(name) } ?: false
         override fun switchTo(id: Int) = onMainBlocking { holder.switchTo(id) } ?: false
         override fun close(id: Int) = onMainBlocking { holder.close(id) } ?: false
     }
@@ -251,8 +269,12 @@ class AlpBrowserApp : Application() {
         if (Looper.myLooper() == Looper.getMainLooper()) return block()
         var out: T? = null
         val latch = CountDownLatch(1)
-        main.post { try { out = block() } finally { latch.countDown() } }
-        return if (latch.await(5, TimeUnit.SECONDS)) out else null
+        var failure: Throwable? = null
+        // An error inside the block must reach the caller, not escape on the main thread (where it would crash the app).
+        main.post { try { out = block() } catch (t: Throwable) { failure = t } finally { latch.countDown() } }
+        if (!latch.await(5, TimeUnit.SECONDS)) return null
+        failure?.let { throw it }
+        return out
     }
 
     val bridge by lazy {
@@ -371,6 +393,7 @@ class AlpBrowserApp : Application() {
                     android.webkit.CookieManager.getInstance().flush()
                 }
                 if (what == "storage" || what == "all") android.webkit.WebStorage.getInstance().deleteAllData()
+                Profiles.clearAll(cookies = what == "cookies" || what == "all", storage = what == "storage" || what == "all")
                 if (what == "cache" || what == "all") browserWebViewHolder.allWebViews.firstOrNull()?.clearCache(true)
             }
         }

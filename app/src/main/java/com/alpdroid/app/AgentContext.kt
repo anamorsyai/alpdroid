@@ -107,7 +107,8 @@ Both modes:
 - browserctl eval '<js>' | eval --file <path> | eval --stdin [--await]   run JavaScript in the live page (multi-line, backticks and non-ASCII are fine; --await waits for a promise)
 - browserctl history [host] [--method M] [--status N] [--since ISO] [--limit n] [--page n] [--compact]   captured requests (only the newest 500 are kept; the answer says how many were dropped); browserctl get <id> for one in full: bodies are base64 of the DECODED bytes (gzip already removed), with bodyText and bodyPretty alongside
 - browserctl save <id> --dir <dir>      write request.txt, response.txt, meta.json and the raw bodies to disk; browserctl har [--out file] exports HAR 1.2
-- browserctl tabs / browserctl tab new [url] | tab switch <id> | tab close <id>   several pages at once; navigate/eval act on the tab in front
+- browserctl tabs / browserctl tab new [url] [--profile name] | tab switch <id> | tab close <id>   several pages at once; navigate/eval act on the tab in front. A tab opened with --profile has its OWN cookies and storage, so two logins can sit side by side (IDOR / cross-tenant checks); `cookies` and `setcookie` act on the front tab's profile; browserctl profile list | profile delete <name>
+- browserctl frames <id> [--from n] [--limit n] [--compact]   the messages of a WebSocket (both directions) or the events of an event stream; history entries for them carry kind "websocket" or "sse" (Capture must be on while the connection runs)
 - browserctl clear [cookies|cache|storage|all]
 - browserctl ca                         print the proxy root CA (PEM)
 
@@ -130,7 +131,7 @@ Driving the page without Playwright (acts on the tab in front; every command exi
 - browserctl click <sel> | fill <sel> <text> | type <sel> <text> [--delay ms] | press <key> | text <sel> | attr <sel> <name> | html [sel] | exists <sel>
 - browserctl waitfor <sel> [--state visible|hidden|attached] | waitnav [--state ...]   (all element commands wait up to 10 s by default; --timeout ms changes it)
 - browserctl shot [--selector css] [--full-page] [--out file.png] [--format png|jpeg]   screenshot; the Browser screen must be on screen (open AlpBrowser)
-- browserctl cookies [--domain d] | setcookie <name> <value> [--domain d] [--path p]
+- browserctl cookies [--domain d] (every attribute is listed while `browserctl cdp` has Remote DevTools on) | setcookie <name> <value> [--domain d] [--path p] [--secure] [--httponly] [--samesite Lax|Strict|None] [--expires epoch] [--max-age s]
 - browserctl cdp   turns remote debugging on and prints a WebSocket URL (it carries the control token only when Open local access is off) for Puppeteer/Playwright `connectOverCDP`; the page being driven is the same one the proxy is capturing. `cdp off` turns it off.
 
 Rules: only test targets the user is authorized to test; never exfiltrate captured data anywhere; treat tokens/cookies in captured traffic as secret.

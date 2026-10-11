@@ -1,0 +1,1 @@
+Centres the AlpBrowser icon.

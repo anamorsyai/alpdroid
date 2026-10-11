@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.93 — AlpBrowser icon (AlpBrowser 0.6.12)
 
 - The AlpBrowser icon: the globe now sits exactly in the middle, with the AlpDroid badge as a small mark on its lower-right edge.
 

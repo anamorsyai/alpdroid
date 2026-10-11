@@ -166,8 +166,9 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
 
     private class ShotError(message: String) : Exception(message)
 
+    /** WebView.getScale is a WebView method, so like every other one it may only run on the main thread. */
     @Suppress("DEPRECATION")
-    private fun scaleOf(wv: WebView): Float = wv.scale.takeIf { it > 0f } ?: wv.resources.displayMetrics.density
+    private suspend fun scaleOf(wv: WebView): Float = withContext(Dispatchers.Main) { wv.scale.takeIf { it > 0f } ?: wv.resources.displayMetrics.density }
 
     private suspend fun drawViewport(wv: WebView): Bitmap = withContext(Dispatchers.Main) {
         Bitmap.createBitmap(wv.width, wv.height, Bitmap.Config.ARGB_8888).also { wv.draw(Canvas(it)) }

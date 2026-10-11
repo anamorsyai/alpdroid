@@ -164,7 +164,11 @@ class BrowserBridge(
                 respond(sock.getOutputStream(), 400, error("body is not valid JSON: ${e.message}")); return
             }
 
-            val raw = try { rawRoute(method, path, query) } catch (e: Throwable) { Raw(500, "application/json", error(e.message ?: "error").toString().toByteArray()) }
+            val raw = try { rawRoute(method, path, query) } catch (e: Throwable) {
+                // A screenshot that fails answers 200 with {"ok":false,...} like every page command, so the client prints the reason.
+                val shot = path == "/v1/shot"
+                Raw(if (shot) 200 else 500, "application/json", render(error("${e.javaClass.simpleName}: ${e.message ?: "error"}").also { if (shot) it.put("ok", false) }).toByteArray())
+            }
             if (raw != null) { respondRaw(sock.getOutputStream(), raw); return }
             val (code, json) = try { route(method, path, query, body) } catch (e: Throwable) {
                 // Page commands answer 200 with {"ok":false,...} so the client can print the reason; a bare HTTP error would only show as "request failed".

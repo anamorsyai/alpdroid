@@ -147,7 +147,12 @@ class WebSocketCaptureTest {
         val tx = store.transactions.value.single { it.responseStatus == 101 }
         val frames = store.webSockets[tx.id]!!
         assertEquals("websocket", frames.kind)
-        assertEquals(listOf("welcome" to false, "ping" to true, "echo:ping" to false), frames.snapshot().map { String(it.payload) to it.fromClient })
+        // The two directions are recorded by separate threads, so only the order within each direction is fixed; give a slow machine time to record all three.
+        val deadline = System.currentTimeMillis() + 5000
+        while (frames.snapshot().size < 3 && System.currentTimeMillis() < deadline) Thread.sleep(25)
+        val seen = frames.snapshot().map { String(it.payload) to it.fromClient }
+        assertEquals(listOf("welcome", "echo:ping"), seen.filter { !it.second }.map { it.first }, seen.toString())
+        assertEquals(listOf("ping"), seen.filter { it.second }.map { it.first }, seen.toString())
     }
 
     @Test fun `a server-sent event stream reaches the client while it is still open, and its events are kept`() {

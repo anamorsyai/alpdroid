@@ -22,7 +22,7 @@ object AppUpdater {
     /** Owner/repo whose releases carry AlpDroid-*.apk assets (releases before 1.7.43 used the AlpineTerm- prefix; any .apk asset is accepted). */
     const val RELEASES_REPO = "anamorsyai/alpdroid"
 
-    data class Update(val tag: String, val name: String, val notes: String, val apkUrl: String, val apiUrl: String, val size: Long, val sha256: String = "")
+    data class Update(val tag: String, val name: String, val notes: String, val apkUrl: String, val apiUrl: String, val size: Long, val sha256: String = "", val fileName: String = "")
 
     /** versionName + versionCode of the running APK. */
     fun currentVersion(context: Context): Pair<String, Long> = runCatching {
@@ -59,10 +59,31 @@ object AppUpdater {
         return md.digest().joinToString("") { "%02x".format(it) }
     }
 
-    /** Latest release carrying an APK asset, or null. Blocking — call off the main thread. */
+    /** Latest AlpDroid release carrying an APK asset and newer than this build, or null. Blocking. */
     fun checkForUpdate(context: Context): Update? = runCatching {
         val (currentName, _) = currentVersion(context)
-        val conn = openApi(context, "https://api.github.com/repos/$RELEASES_REPO/releases?per_page=5")
+        selectRelease(context) { tag ->
+            // An AlpBrowser release (alpbrowser-v*) is a different app — never offer it as an AlpDroid update.
+            !BrowserInstall.isBrowserTag(tag) && isNewer(tag, currentName)
+        }
+    }.getOrNull()
+
+    /**
+     * The AlpBrowser companion release to offer: the newest `alpbrowser-v*` release that is newer than the
+     * installed AlpBrowser — or, when AlpBrowser is not installed at all, simply the newest one (so the same
+     * flow installs it the first time). Null when nothing applies. Blocking — call off the main thread.
+     */
+    fun checkForBrowserUpdate(context: Context): Update? = runCatching {
+        val installed = BrowserInstall.installedVersion(context)?.first
+        selectRelease(context) { tag ->
+            BrowserInstall.isBrowserTag(tag) &&
+                (installed == null || isNewer(BrowserInstall.versionFromTag(tag), installed))
+        }
+    }.getOrNull()
+
+    /** The first non-draft, non-prerelease release whose tag [accept]s and that carries an APK asset. */
+    private fun selectRelease(context: Context, accept: (tag: String) -> Boolean): Update? {
+        val conn = openApi(context, "https://api.github.com/repos/$RELEASES_REPO/releases?per_page=10")
         val text = conn.inputStream.bufferedReader().use { it.readText() }
         conn.disconnect()
         val releases = org.json.JSONArray(text)
@@ -72,7 +93,7 @@ object AppUpdater {
             // otherwise be offered as a stable update to every auto-checking client.
             if (r.optBoolean("draft") || r.optBoolean("prerelease")) continue
             val tag = r.optString("tag_name")
-            if (!isNewer(tag, currentName)) continue
+            if (!accept(tag)) continue
             val assets = r.optJSONArray("assets") ?: continue
             for (j in 0 until assets.length()) {
                 val a = assets.optJSONObject(j) ?: continue
@@ -81,11 +102,11 @@ object AppUpdater {
                 // The API asset URL (not browser_download_url): with Accept: octet-stream +
                 // auth it 302s to a signed host. browser_download_url without auth just 404s
                 // on a private repo, and sending the bearer token to a redirect host leaks it.
-                return Update(tag, r.optString("name", tag), r.optString("body", ""), a.optString("browser_download_url"), a.optString("url"), a.optLong("size"), sha256Of(a.optString("digest")))
+                return Update(tag, r.optString("name", tag), r.optString("body", ""), a.optString("browser_download_url"), a.optString("url"), a.optLong("size"), sha256Of(a.optString("digest")), name)
             }
         }
-        null
-    }.getOrNull()
+        return null
+    }
 
     private fun openApi(context: Context, url: String): HttpURLConnection {
         // Token only when the user allowed agents to use it — same gate as git/alpctl.
@@ -106,7 +127,10 @@ object AppUpdater {
      */
     fun download(context: Context, update: Update, onProgress: (Long, Long) -> Unit, isCancelled: () -> Boolean): File {
         val dir = File(context.getExternalFilesDir(null), "updates").apply { mkdirs() }
-        val dest = File(dir, "AlpDroid-${update.tag}.apk")
+        // The asset's own file name (AlpDroid-*.apk or AlpBrowser-*.apk), so an app download and a
+        // browser download never collide on one cached file. Sanitised to a bare name just in case.
+        val safeName = update.fileName.substringAfterLast('/').ifBlank { "AlpDroid-${update.tag}.apk" }
+        val dest = File(dir, safeName)
         // Size alone isn't proof the cached file is intact: also require it to parse as an APK.
         if (dest.isFile && dest.length() == update.size && update.size > 0) {
             if (runCatching { apkVersionCode(context, dest) }.isSuccess && (update.sha256.isEmpty() || sha256Hex(dest) == update.sha256)) return dest

@@ -1,0 +1,1 @@
+Install, open and update the companion AlpBrowser app right from Settings → About, with the same download animation as the app updater and the same automatic remote update checks.

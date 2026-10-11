@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.7.70 — install, open and update AlpBrowser from Settings
+
+AlpBrowser (the standalone, agent-controlled browser) is now a first-class citizen inside AlpDroid.
+
+- Added (Settings → About → AlpBrowser): **Install AlpBrowser** when it is not present — it downloads
+  the latest signed release behind the same filling-logo animation as the app updater and hands it to
+  the installer. Once installed, the buttons become **Open AlpBrowser** and **Check for browser
+  updates**.
+- Added (remote update check): AlpDroid checks GitHub for new AlpBrowser releases (tagged
+  `alpbrowser-v*`) on the same cadence as its own self-update, and offers the update with release
+  notes — exactly like an app update. Auto-checks run only once AlpBrowser is installed, so it never
+  nags to install it.
+- The current AlpBrowser version (or "not installed") shows under About.
+
 ## 1.7.69 — stop the guest /tmp from filling the phone
 
 A user hit 65 GB of app "cache" with the phone out of space. The cause: the guest `/tmp` (where

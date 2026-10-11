@@ -2987,6 +2987,41 @@ class MainActivity : Activity() {
                 setOnClickListener { checkForAppUpdate(manual = true) }
             },
         )
+
+        // AlpBrowser — the companion app, installed/opened/updated from here with the same flow.
+        panel.addView(sectionLabel("AlpBrowser"))
+        browserStatusText = TextView(this).apply {
+            textSize = 12f
+            setTextColor(0xFF8B93A1.toInt())
+            text = browserStatusLine()
+        }
+        panel.addView(browserStatusText)
+        if (BrowserInstall.isInstalled(this)) {
+            panel.addView(
+                pillButton().apply {
+                    text = "Open AlpBrowser"
+                    setOnClickListener { openBrowserApp() }
+                },
+            )
+            panel.addView(
+                pillButton().apply {
+                    text = "Check for browser updates"
+                    setOnClickListener { checkForBrowserUpdate(manual = true) }
+                },
+            )
+            // Surface a waiting browser update when opening About, just like the app's own check.
+            if (System.currentTimeMillis() - settingsStore.lastBrowserCheckMs > updateCheckThrottleMs) {
+                checkForBrowserUpdate(manual = false)
+            }
+        } else {
+            panel.addView(
+                pillButton().apply {
+                    text = "Install AlpBrowser"
+                    setOnClickListener { checkForBrowserUpdate(manual = true) }
+                },
+            )
+            panel.addView(devNote("Downloads the latest signed AlpBrowser release and installs it as a separate app."))
+        }
     }
 
     private var updateStatusText: TextView? = null
@@ -3036,6 +3071,9 @@ class MainActivity : Activity() {
     // a daily throttle is what silently swallowed the very first auto-check in testing.
     private val updateCheckThrottleMs = 15L * 60 * 1000
     private fun maybeAutoUpdateCheck() {
+        // AlpBrowser rides the same cadence (its own throttle), so an installed companion app
+        // surfaces its updates just like AlpDroid does.
+        maybeAutoBrowserCheck()
         if (System.currentTimeMillis() - settingsStore.lastUpdateCheckMs < updateCheckThrottleMs) return
         checkForAppUpdate(manual = false)
     }
@@ -3079,9 +3117,38 @@ class MainActivity : Activity() {
     }
 
     private fun downloadAndInstallUpdate(update: AppUpdater.Update) {
+        downloadApkWithAnimation(update) { apk ->
+            if (apk == null) {
+                if (!updateDownloadCancelled) {
+                    updateStatusText?.text = "Update check failed — try again later."
+                    android.widget.Toast.makeText(this, "Couldn't download the update", android.widget.Toast.LENGTH_LONG).show()
+                }
+                return@downloadApkWithAnimation
+            }
+            updateStatusText?.text = "Ready to install ${update.name}."
+            val (_, currentCode) = AppUpdater.currentVersion(this)
+            val apkCode = runCatching { AppUpdater.apkVersionCode(this, apk) }.getOrNull()
+            if (apkCode == null || apkCode <= currentCode) {
+                updateStatusText?.text = "Download rejected: not newer than installed."
+                android.widget.Toast.makeText(this, "Downloaded file isn't a newer app version — aborted", android.widget.Toast.LENGTH_LONG).show()
+                runCatching { apk.delete() }
+                return@downloadApkWithAnimation
+            }
+            // Returns false only when install permission is missing — the user is already
+            // on their way to Settings then. Remember it: onResume() re-offers the install
+            // when they return (the old flow stranded them with no way back).
+            if (!AppUpdater.installApk(this, apk)) sentToInstallSettings = true
+        }
+    }
+
+    /**
+     * Downloads [update]'s APK behind the same filling-logo animation as the app updater (a
+     * LiquidFillView fed by real bytes, indeterminate until the total is known), then hands the
+     * finished file — or null on cancel/failure — to [onReady] on the main thread. Shared by the
+     * app self-update and the AlpBrowser install/update so both look and behave identically.
+     */
+    private fun downloadApkWithAnimation(update: AppUpdater.Update, onReady: (java.io.File?) -> Unit) {
         updateDownloadCancelled = false
-        // Same filling-logo treatment as the Alpine setup screen: a LiquidFillView fed by
-        // real bytes, indeterminate until the total is known.
         val density = resources.displayMetrics.density
         val fill = LiquidFillView(this).apply {
             layoutParams = android.widget.LinearLayout.LayoutParams((120 * density).toInt(), (120 * density).toInt()).apply { gravity = android.view.Gravity.CENTER_HORIZONTAL }
@@ -3125,28 +3192,104 @@ class MainActivity : Activity() {
             mainHandler.post {
                 runCatching { dialog.dismiss() }
                 if (isFinishing || isDestroyed) return@post
-                if (apk == null) {
-                    if (!updateDownloadCancelled) {
-                        updateStatusText?.text = "Update check failed — try again later."
-                        android.widget.Toast.makeText(this, "Couldn't download the update", android.widget.Toast.LENGTH_LONG).show()
-                    }
-                    return@post
-                }
-                updateStatusText?.text = "Ready to install ${update.name}."
-                val (_, currentCode) = AppUpdater.currentVersion(this)
-                val apkCode = runCatching { AppUpdater.apkVersionCode(this, apk) }.getOrNull()
-                if (apkCode == null || apkCode <= currentCode) {
-                    updateStatusText?.text = "Download rejected: not newer than installed."
-                    android.widget.Toast.makeText(this, "Downloaded file isn't a newer app version — aborted", android.widget.Toast.LENGTH_LONG).show()
-                    runCatching { apk.delete() }
-                    return@post
-                }
-                // Returns false only when install permission is missing — the user is already
-                // on their way to Settings then. Remember it: onResume() re-offers the install
-                // when they return (the old flow stranded them with no way back).
-                if (!AppUpdater.installApk(this, apk)) sentToInstallSettings = true
+                onReady(apk)
             }
         }
+    }
+
+    // ---- AlpBrowser (companion app) install / update, mirroring the app updater ----
+
+    private var browserStatusText: TextView? = null
+    private var browserCheckInFlight = false
+
+    private fun browserStatusLine(): String {
+        val v = BrowserInstall.installedVersion(this)
+        return if (v == null) "Not installed — the agent-controlled browser (bug-bounty + web-dev)."
+        else "Installed: AlpBrowser ${v.first}."
+    }
+
+    private fun openBrowserApp() {
+        val intent = BrowserInstall.launchIntent(this)
+        if (intent != null) startActivity(intent)
+        else android.widget.Toast.makeText(this, "Couldn't open AlpBrowser", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    /** Checks GitHub for an AlpBrowser release to install (first time) or a newer one (already installed). */
+    private fun checkForBrowserUpdate(manual: Boolean) {
+        if (browserCheckInFlight) return
+        browserCheckInFlight = true
+        if (manual) browserStatusText?.text = "Checking…"
+        (application as AlpineTermApp).backgroundExecutor.execute {
+            val update = AppUpdater.checkForBrowserUpdate(this)
+            mainHandler.post {
+                browserCheckInFlight = false
+                if (isFinishing || isDestroyed) return@post
+                settingsStore.lastBrowserCheckMs = System.currentTimeMillis()
+                if (update == null) {
+                    browserStatusText?.text = browserStatusLine()
+                    if (manual) android.widget.Toast.makeText(
+                        this,
+                        if (BrowserInstall.isInstalled(this)) "AlpBrowser is up to date" else "No AlpBrowser release found",
+                        android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                    return@post
+                }
+                showBrowserUpdateDialog(update)
+            }
+        }
+    }
+
+    private fun showBrowserUpdateDialog(update: AppUpdater.Update) {
+        val installed = BrowserInstall.isInstalled(this)
+        val ver = BrowserInstall.versionFromTag(update.tag)
+        val notes = update.notes.take(1200)
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle(if (installed) "AlpBrowser update: $ver" else "Install AlpBrowser $ver")
+            .setMessage(
+                (if (installed) "A newer AlpBrowser is available." else "AlpBrowser is a separate app the AlpDroid agent fully controls — bug-bounty and web-dev.") +
+                    (if (notes.isNotBlank()) "\n\nWhat's new:\n$notes" else "") +
+                    "\n\nIt installs as its own app (com.alpdroid.browser), signed with the same key as AlpDroid.",
+            )
+            .setPositiveButton(if (installed) "Update now" else "Install") { _, _ -> downloadAndInstallBrowser(update) }
+            .setNegativeButton("Later", null)
+            .setCancelable(true)
+            .show()
+    }
+
+    private fun downloadAndInstallBrowser(update: AppUpdater.Update) {
+        downloadApkWithAnimation(update) { apk ->
+            if (apk == null) {
+                if (!updateDownloadCancelled) {
+                    browserStatusText?.text = browserStatusLine()
+                    android.widget.Toast.makeText(this, "Couldn't download AlpBrowser", android.widget.Toast.LENGTH_LONG).show()
+                }
+                return@downloadApkWithAnimation
+            }
+            // Downgrade guard only matters when AlpBrowser is already installed; a first install has
+            // no baseline to be older than.
+            val installedCode = BrowserInstall.installedVersion(this)?.second
+            val apkCode = runCatching { AppUpdater.apkVersionCode(this, apk) }.getOrNull()
+            if (apkCode == null) {
+                android.widget.Toast.makeText(this, "Downloaded file isn't a valid APK — aborted", android.widget.Toast.LENGTH_LONG).show()
+                runCatching { apk.delete() }
+                return@downloadApkWithAnimation
+            }
+            if (installedCode != null && apkCode <= installedCode) {
+                browserStatusText?.text = "Download rejected: not newer than installed."
+                android.widget.Toast.makeText(this, "That AlpBrowser isn't newer than the installed one — aborted", android.widget.Toast.LENGTH_LONG).show()
+                runCatching { apk.delete() }
+                return@downloadApkWithAnimation
+            }
+            browserStatusText?.text = "Ready to install AlpBrowser ${BrowserInstall.versionFromTag(update.tag)}."
+            if (!AppUpdater.installApk(this, apk)) sentToInstallSettings = true
+        }
+    }
+
+    /** Daily-ish auto-check for an AlpBrowser update, only once it is installed (no nagging to install it). */
+    private fun maybeAutoBrowserCheck() {
+        if (!BrowserInstall.isInstalled(this)) return
+        if (System.currentTimeMillis() - settingsStore.lastBrowserCheckMs < updateCheckThrottleMs) return
+        checkForBrowserUpdate(manual = false)
     }
 
     /** "1.2.3 (45)" from the APK's own versionName/versionCode — read once rather than on every

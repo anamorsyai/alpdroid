@@ -105,6 +105,7 @@ class BrowserctlIntegrationTest {
     }
 
     @Test fun `ping and a wrong token`() {
+        openAccess = false   // with open local access a token is optional, so a wrong one is only refused when it is required
         assertEquals(0, ctl("ping").code)
         assertTrue(ctl("ping", tok = "wrongtoken1").code != 0)
     }

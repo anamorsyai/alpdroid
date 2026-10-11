@@ -6,10 +6,10 @@ shorter task-based help also lives in the app under Settings → Guide.
 Contents: [Install](#1-install) · [First run](#2-first-run) · [Tabs & terminal](#3-tabs--terminal) ·
 [Keyboard & keys](#4-keyboard--keys) · [Display & themes](#5-display--themes) · [Packages](#6-packages--quick-install) ·
 [Files](#7-files--operations) · [Backup](#8-backup--restore) · [Network, SSH, opencode web](#9-network-ssh--opencode-web) ·
-[Devices](#10-devices) · [GitHub](#11-github-sign-in) · [Agent access](#12-agent-access--alpctl) ·
-[Plugins](#13-plugins) · [Scheduled jobs](#14-scheduled--background-jobs) · [Updates](#15-updates) ·
-[Keep-alive & battery](#16-sessions--keep-alive) · [Widget](#17-home-screen-widget) ·
-[Troubleshooting](#18-troubleshooting) · [Security notes](#19-security-notes)
+[AlpBrowser](#10-alpbrowser--the-agents-browser) · [Devices](#11-devices) · [GitHub](#12-github-sign-in) · [Agent access](#13-agent-access--alpctl) ·
+[Plugins](#14-plugins) · [Scheduled jobs](#15-scheduled--background-jobs) · [Updates](#16-updates) ·
+[Keep-alive & battery](#17-sessions--keep-alive) · [Widget](#18-home-screen-widget) ·
+[Troubleshooting](#19-troubleshooting) · [Security notes](#20-security-notes)
 
 ## 1. Install
 
@@ -80,11 +80,32 @@ Settings → Network & SSH.
 
 - Shows your Wi-Fi address. A server in a tab is reachable on the LAN at `http://<phone-ip>:<port>`.
 - **SSH profiles**: save host/port/user, reconnect in one tap.
-- **SSH server** (log in from a laptop): "Start SSH server (port 8022)" installs OpenSSH on first use, starts it in a new tab and shows `ssh -p 8022 root@<phone-ip>` with a generated root password (kept in `/etc/alpdroid/ssh_password`; delete that file to get a new one). Android apps cannot use ports below 1024, hence 8022. Use "Add SSH public key" to paste your laptop's `~/.ssh/id_ed25519.pub` and log in without the password. Phone and laptop must be on the same network; stop with Ctrl+C. Anyone on that network with the password gets full access (trusted networks only).
-- **opencode web**: "Start opencode web server" opens a tab running `opencode serve` on `0.0.0.0:4096`. It prints a generated password, which the app catches and shows you with a Copy button — enter it in the browser. Anyone on that network with the password gets full access (trusted networks only). Stop with Ctrl+C.
+
+Long-running servers run **in the background** — no dedicated tab. Each one in Settings → Network & SSH has its own **Stop**, **Log** and (for opencode web) **Open** button, and they keep running with the screen off while the keep-alive notification shows.
+
+- **SSH server** (log in from a laptop): "Start SSH server (port 8022)" installs OpenSSH on first use and starts it in the background, showing `ssh -p 8022 root@<phone-ip>` with a generated root password (kept in `/etc/alpdroid/ssh_password`; delete that file to get a new one). Android apps cannot use ports below 1024, hence 8022. Use "Add SSH public key" to paste your laptop's `~/.ssh/id_ed25519.pub` and log in without the password. Phone and laptop must be on the same network. Stop it from its Stop button in Settings. Anyone on that network with the password gets full access (trusted networks only).
+- **opencode web**: "Start opencode web server" runs `opencode serve` on `0.0.0.0:4096` in the background. On this phone it opens already signed in — no password to type or copy. For other devices on your Wi-Fi, use "Copy link for another device" (the link signs in for them) or enter the saved password. It keeps the same password across restarts and **restarts itself** if it stops (including when Android kills it in the background). Stop it from its Stop button in Settings. Anyone on that network with the password gets full access (trusted networks only).
 - **Refresh network / DNS**: rewrites guest DNS live after Wi-Fi/mobile switches.
 
-## 10. Devices
+## 10. AlpBrowser — the agent's browser
+
+**AlpBrowser** is a separate companion app: a web browser the AlpDroid agent controls end to end, built for two jobs — **bug-bounty testing** and **web development**. It is its own app (`com.alpdroid.browser`), signed with the same key as AlpDroid.
+
+**Get it from AlpDroid** — Settings → About → **AlpBrowser**:
+
+- Not installed yet → **Install AlpBrowser**: downloads the latest signed release behind the same filling-logo progress screen as an app update, then installs it.
+- Installed → **Open AlpBrowser** and **Check for browser updates**. AlpDroid also checks for AlpBrowser updates on its own, on the same schedule as its own updates, and offers them the same way (only once AlpBrowser is installed — it never nags you to install it). The current AlpBrowser version shows right there.
+
+**What it does.** AlpBrowser sends its own traffic through an on-device proxy, so the agent can watch and change what the page sends and receives — including decrypted HTTPS — read the page's console, run JavaScript in it, and attach Chrome DevTools. Two modes:
+
+- **Bug bounty**: set a scope (which hosts to capture), pause/modify/drop live requests, auto-rewrite traffic with match-and-replace rules, replay a request (repeater), and browse the full decrypted history.
+- **Web development**: capture console logs, run JS / inspect the DOM, see the network history with timings, clear cache/cookies/storage, and use DevTools.
+
+**How the agent drives it.** From a tab, the AlpDroid agent talks to AlpBrowser over a local (127.0.0.1) control API using a per-install token — tap the gear icon in AlpBrowser to see the token and connection details. Coding agents learn the commands on their own from the built-in notes AlpDroid keeps in your home directory (the `browserctl` client).
+
+**Please note.** Only test sites you own or are authorised to test. Anything AlpBrowser captures (including tokens or cookies in the traffic) stays on your phone — treat it as sensitive and don't share it.
+
+## 11. Devices
 
 Settings → Devices (auto-refresh on plug/unplug, manual Refresh too).
 
@@ -93,14 +114,14 @@ Settings → Devices (auto-refresh on plug/unplug, manual Refresh too).
 - Network: active connection, addresses, per-connection traffic.
 - Wi-Fi scan: needs Location on + permission; Connect jumps to Android Wi-Fi settings.
 
-## 11. GitHub sign-in
+## 12. GitHub sign-in
 
 Settings → Agent access & GitHub → Sign in with GitHub (your browser opens a GitHub approval page).
 
 - Turn on "Let agents use my GitHub token": `git` clone/push/pull just works, no passwords.
 - Sign out removes it from the phone; also revoke at github.com/settings/applications.
 
-## 12. Agent access & alpctl
+## 13. Agent access & alpctl
 
 Coding assistants in a tab (opencode, Claude Code) can control the app — OFF by default.
 
@@ -109,7 +130,7 @@ Coding assistants in a tab (opencode, Claude Code) can control the app — OFF b
 - Assistants auto-learn the environment from managed `AGENTS.md`/`CLAUDE.md` notes in home.
 - Try: `alpctl` lists everything (`set`, `tab send/screen`, `notify`, `plugin add`, `github token`…).
 
-## 13. Plugins
+## 14. Plugins
 
 Custom Settings screens with fields + buttons running your scripts.
 
@@ -135,18 +156,19 @@ Format: folder with `plugin.json` + scripts; fields reach scripts as `FIELD_<ID>
 ```
 Rules: `id` is `a-z 0-9 _ -` (max 40); every `script` must be a key of `files`; file names are relative (no `..`, not `plugin.json`/`state.json`/`logs/`); up to 64 files, 256 KB each, 1 MB total.
 
-## 14. Scheduled & background jobs
+## 15. Scheduled & background jobs
 
 Per plugin under Automation: switches, Run now, View log. Jobs run while the keep-alive notification shows; after reboot open the app once. Notification Exit pauses jobs until next open. Times are approximate.
 
-## 15. Updates
+## 16. Updates
 
 Settings → check for updates (auto-check throttled; manual anytime).
 
 - "Update now" downloads with the filling-logo progress screen, checks it's actually newer, then installs (app closes; tabs/sessions don't survive updates, files do).
 - If Android detours you to allow installs, returning re-offers the waiting install automatically.
+- The companion **AlpBrowser** app updates the same way, from Settings → About → AlpBrowser (see [AlpBrowser](#10-alpbrowser--the-agents-browser)).
 
-## 16. Sessions & keep-alive
+## 17. Sessions & keep-alive
 
 Android stops background apps. Countermeasures (Settings → Sessions & Background):
 
@@ -162,6 +184,7 @@ Settings → Sessions & Background → Smart resource manager (on by default) ke
 
 - **Repaint rate**: a terminal repaints at most ~30 times a second under sustained output (full-screen programs such as opencode used to repaint on every screen refresh, which is most of the heat), ~20 in battery saver or low battery, ~10 when Android reports the phone is hot. Nothing is painted while the terminal isn't on screen.
 - **Memory**: when Android is short on memory, old scrollback of background tabs is trimmed first. Terminal history per tab is also configurable (Terminal memory).
+- **Storage (guest `/tmp`)**: the scratch space tools like opencode, npm and compilers use can otherwise pile up and fill the phone. AlpDroid clears it on every app start and trims it automatically during long sessions, never touching anything changed in the last few minutes. Its current size shows under Sessions & Background.
 - **Frozen sessions**: a session whose helper process keeps a CPU core busy while everything in it is idle is closed, with a notification, instead of draining the battery.
 - **Usage**: the same screen shows each session's CPU and RAM, the app's memory, and the terminal's frames per second, draw time and skipped repaints (tap Refresh usage).
 - **Typing stays instant**: for 0.4 s after a keystroke the repaint cap is lifted, and a repaint that would draw the same frame again is skipped.
@@ -169,11 +192,11 @@ Settings → Sessions & Background → Smart resource manager (on by default) ke
 - **Run sessions on efficiency cores (off by default)**: pins new tabs to the phone's low-power cores. A program that keeps a core busy while idle (some CLIs do) then runs much cooler and drains less battery; heavy work such as builds is slower. Applies to new tabs.
 - **Balance load across cores (on by default)**: a busy session in a background tab (or any busy session while the app is hidden) is parked on the phone's low-power cores, so the tab you are using and your other apps keep the fast ones; it moves back when you return to it or it calms down. Hot phone → even the active tab is parked. Only AlpDroid's own processes are touched, never other apps, and nothing is paused or re-prioritised. The status above says when a session is parked. Needs a phone whose low-power cores can be detected.
 
-## 17. Home-screen widget
+## 18. Home-screen widget
 
 Add the AlpDroid widget → tap jumps straight into a new session.
 
-## 18. Troubleshooting
+## 19. Troubleshooting
 
 - Garbled prompt after resizing: open a new tab (prompt sizes at tab start).
 - opencode won't quit: `opencode service stop`, then `exit`.
@@ -181,10 +204,10 @@ Add the AlpDroid widget → tap jumps straight into a new session.
 - Empty Wi-Fi list: location permission + Location on.
 - Pages of `ALSA lib ... cannot find card` errors: fixed in 1.7.49 (a null sound device is configured). On older versions create `/etc/asound.conf` with `pcm.!default { type null }` and `ctl.!default { type null }`.
 - Slow builds: Linux runs through a compatibility layer, so heavy jobs take longer than on a computer.
-- SSH or a server stops with the screen off: see [Sessions & keep-alive](#16-sessions--keep-alive) (battery exemption, wake lock).
+- SSH or a server stops with the screen off: see [Sessions & keep-alive](#17-sessions--keep-alive) (battery exemption, wake lock).
 - `apk add` prints errors but the tool installed: mirrors can hiccup even when packages land. Check with `command -v <tool>`; if it's missing, run "Update package index" and retry.
 - Still broken: new tab → else backup + Reinstall Alpine.
 
-## 19. Security notes
+## 20. Security notes
 
 Guest = trusted (like Termux): terminal code runs as your UID with storage access — run software you trust. Tokens live encrypted in the Keystore. Agent/plugin powers are off-by-default or approval-gated. Details: [SECURITY.md](../SECURITY.md), [PRIVACY.md](../PRIVACY.md) (no analytics/tracking/ads).

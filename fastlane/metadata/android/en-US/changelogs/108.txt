@@ -1,0 +1,1 @@
+Fixes browserctl shot --selector and --full-page screenshots in AlpBrowser.

@@ -17,7 +17,31 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  # The unit tests and the signed build run side by side: a release takes as long as the slower of the two, not both
+  # added up. Publishing waits for both.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Install Android NDK, CMake and platform
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "ndk;26.3.11579264" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Unit tests
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --stacktrace
+
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -39,17 +63,13 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
       - name: Install Android NDK, CMake and platform
         run: |
           SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKM" --licenses > /dev/null || true
           "$SDKM" "ndk;26.3.11579264" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
-
-      - name: Unit tests
-        run: |
-          chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
 
       - name: Restore release keystore from secrets
         # The keystore never lives in git (see .gitignore + SECURITY.md): it arrives here as
@@ -71,7 +91,7 @@ jobs:
           ALPDROID_KEY_PASSWORD: ${{ secrets.ALPDROID_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+          ./gradlew :app:assembleRelease --stacktrace
 
       - name: Stage APK
         env:
@@ -85,10 +105,21 @@ jobs:
           path: AlpDroid-${{ inputs.tag_name }}.apk
           if-no-files-found: error
 
+  publish:
+    if: ${{ inputs.publish_release }}
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download the built APK
+        uses: actions/download-artifact@v4
+        with:
+          name: AlpDroid-${{ inputs.tag_name }}
+
       - name: Build update deltas
         # Small patches from the last few releases to this one, so installed apps download only what changed. Optional:
         # the full APK is always published, and a failure here never blocks the release.
-        if: ${{ inputs.publish_release }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -96,7 +127,6 @@ jobs:
         run: bash scripts/release_deltas.sh app "$TAG" "AlpDroid-${TAG}.apk" 3
 
       - name: Create release with the APK attached
-        if: ${{ inputs.publish_release }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag_name }}

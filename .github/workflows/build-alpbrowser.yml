@@ -51,8 +51,9 @@ jobs:
           path: alpbrowser/build/outputs/apk/debug/alpbrowser-debug.apk
           if-no-files-found: error
 
-  # Signed release + GitHub release, only on an explicit publish dispatch.
-  release:
+  # Signed release + GitHub release, only on an explicit publish dispatch. The unit tests and the signed build run side by
+  # side (a release takes as long as the slower of the two); publishing waits for both.
+  release-test:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
     runs-on: ubuntu-latest
     steps:
@@ -61,10 +62,22 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
       - name: Unit tests (core-proxy + alpbrowser)
         run: |
           chmod +x gradlew
           ./gradlew :core-proxy:test :alpbrowser:testDebugUnitTest --stacktrace
+
+  release-build:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
 
       - name: Restore release keystore from secrets
         # Same signing identity as :app, so AlpBrowser installs/updates over an earlier copy. The keystore never lives
@@ -83,7 +96,7 @@ jobs:
           ALPDROID_KEY_PASSWORD: ${{ secrets.ALPDROID_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew :alpbrowser:assembleRelease --no-daemon --stacktrace
+          ./gradlew :alpbrowser:assembleRelease --stacktrace
 
       - name: Stage APK
         env:
@@ -96,6 +109,18 @@ jobs:
           name: AlpBrowser-${{ inputs.tag_name }}
           path: AlpBrowser-${{ inputs.tag_name }}.apk
           if-no-files-found: error
+
+  release:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+    needs: [release-test, release-build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the built APK
+        uses: actions/download-artifact@v4
+        with:
+          name: AlpBrowser-${{ inputs.tag_name }}
 
       - name: Build update deltas
         # Small patches from the last few releases to this one, so installed apps download only what changed. Optional:
@@ -121,7 +146,7 @@ jobs:
             echo
             echo "Download **${APK}** below and open it. It is a separate app from AlpDroid (\`com.alpdroid.browser\`), signed with the same key so it installs/updates cleanly."
             echo
-            echo "Android 8.0+ (minSdk 26). Control API on 127.0.0.1 with a per-install token shown in the app."
+            echo "Android 8.0+ (minSdk 26). Programs on your phone control it through a loopback API with no token to copy (Open local access, on by default); turn it off in the app to require the control token."
           } > notes.md
           shopt -s nullglob
           gh release create "$TAG" "$APK" deltas/*.adp --target "$GITHUB_SHA" --title "AlpBrowser $TAG" --notes-file notes.md

@@ -1,0 +1,1 @@
+Fixes the AlpBrowser update check missing new versions.

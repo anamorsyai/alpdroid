@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.91 — AlpBrowser updates are always found
 
 - The AlpBrowser update check no longer misses a new version: GitHub lists releases out of version order (0.6.10 appeared below 0.6.2), so the check now looks at every release and offers the highest version.
 

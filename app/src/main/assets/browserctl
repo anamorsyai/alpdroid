@@ -1,8 +1,8 @@
 #!/bin/sh
 # browserctl — drive AlpBrowser from the AlpDroid agent's Alpine shell (control API on 127.0.0.1, reachable from proot).
-# AlpDroid installs this and provisions the token automatically (read from AlpBrowser over a signed channel), so you
-# normally just run `browserctl ping`. If it says AlpBrowser is not linked, open the AlpBrowser app once, then start a
-# new shell (or retry).
+# AlpDroid installs this. No token is needed on this phone (AlpBrowser's "Open local access", on by default); if that is
+# switched off, AlpDroid provides the token automatically. Just run `browserctl ping`; if it cannot connect, open the
+# AlpBrowser app once, then start a new shell (or retry).
 #
 # General:   ping | ca | trust | mode [bugbounty|webdev] | clear [cookies|cache|storage|all]
 # Page:      navigate <url> [--wait] [--state load|domcontentloaded|networkidle] [--timeout ms]

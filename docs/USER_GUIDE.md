@@ -1,12 +1,13 @@
 # AlpDroid User Guide
 
-Real Alpine Linux on your phone — no root, no VM. This guide covers everything;
-shorter task-based help also lives in the app under Settings → Guide.
+AlpDroid puts real Alpine Linux on your phone — no root, no VM. This guide covers the whole app, from the terminal and
+servers to agents, plugins and the AlpBrowser companion. Shorter task-based help also lives inside AlpDroid under
+Settings → Guide. For AlpBrowser in depth, see the [AlpBrowser guide](ALPBROWSER.md).
 
 Contents: [Install](#1-install) · [First run](#2-first-run) · [Tabs & terminal](#3-tabs--terminal) ·
 [Keyboard & keys](#4-keyboard--keys) · [Display & themes](#5-display--themes) · [Packages](#6-packages--quick-install) ·
 [Files](#7-files--operations) · [Backup](#8-backup--restore) · [Network, SSH, opencode web](#9-network-ssh--opencode-web) ·
-[AlpBrowser](#10-alpbrowser--the-agents-browser) · [Devices](#11-devices) · [GitHub](#12-github-sign-in) · [Agent access](#13-agent-access--alpctl) ·
+[AlpBrowser](#10-alpbrowser--the-agents-browser) ([full guide](ALPBROWSER.md)) · [Devices](#11-devices) · [GitHub](#12-github-sign-in) · [Agent access](#13-agent-access--alpctl) ·
 [Plugins](#14-plugins) · [Scheduled jobs](#15-scheduled--background-jobs) · [Updates](#16-updates) ·
 [Keep-alive & battery](#17-sessions--keep-alive) · [Widget](#18-home-screen-widget) ·
 [Troubleshooting](#19-troubleshooting) · [Security notes](#20-security-notes)
@@ -89,36 +90,26 @@ Long-running servers run **in the background** — no dedicated tab. Each one in
 
 ## 10. AlpBrowser — the agent's browser
 
-**AlpBrowser** is a separate companion app: a web browser the AlpDroid agent controls end to end, built for two jobs — **bug-bounty testing** and **web development**. It is its own app (`com.alpdroid.browser`), signed with the same key as AlpDroid.
+**AlpBrowser** is AlpDroid's companion app: a web browser the AlpDroid agent controls end to end, built for **bug-bounty testing** and **web development**. It is its own app (`com.alpdroid.browser`), signed with the same key as AlpDroid. This section is the short version; the full reference is the **[AlpBrowser guide](ALPBROWSER.md)**.
 
 **Get it from AlpDroid** — Settings → About → **AlpBrowser**:
 
-- Not installed yet → **Install AlpBrowser**: downloads the latest signed release behind the same filling-logo progress screen as an app update, then installs it.
+- Not installed yet → **Install AlpBrowser**: downloads the latest signed release behind the same filling-logo progress screen as an AlpDroid update, then installs it.
 - Installed → **Open AlpBrowser** and **Check for browser updates**. AlpDroid also checks for AlpBrowser updates on its own, on the same schedule as its own updates, and offers them the same way (only once AlpBrowser is installed — it never nags you to install it). The current AlpBrowser version shows right there.
 
-**Browsing.** AlpBrowser opens pages directly, at full Chromium speed, with several tabs, a **strong ad & tracker blocker** (on by default), **JavaScript** on/off and **Desktop site**. In the ⋮ menu you can also clear cookies, cache or everything, switch between **Bug bounty** and **Web dev** mode, and turn on **Remote DevTools** and **Open local access** (see below).
+**Browsing.** AlpBrowser opens pages directly at full Chromium speed, with tabs, a **strong ad & tracker blocker** (on by default), **JavaScript** on/off and **Desktop site**. The ⋮ menu also clears cookies, cache or everything, switches between **Bug bounty** and **Web dev** mode, and holds the **Capture traffic**, **Open local access** and **Remote DevTools** switches.
 
-**Capture.** Switch **Capture traffic** on and the page is routed through an on-device proxy, so the agent (and you) can see the full, decrypted requests and responses of the sites you test. With Capture off, History lists only the URLs that were loaded. Two modes build on it:
+**Capture.** Switch **Capture traffic** on and pages go through an on-device proxy, so you (and the agent) see full, decrypted requests and responses for the sites you test. With Capture off, History lists only the URLs that were loaded. On top of it AlpBrowser provides:
 
-- **Bug bounty**: choose a scope (which hosts are recorded), pause, edit, forward or drop live requests and responses, rewrite traffic automatically with match-and-replace rules, replay any request in the Repeater, and search the full history.
-- **Web development**: read the console, run JavaScript and inspect the page, see every request with its timing, and clear cookies, cache and storage.
+- **Proxy** — History with search and filters, Intercept (pause, edit, forward or drop requests and responses), match-and-replace Rules, and Scope (which hosts are recorded).
+- **Repeater** — resend and edit any request by hand.
+- **Extensions** — userscripts that stay installed and run on the sites you choose.
 
-**Proxy, Repeater and Extensions.** The app has its own screens for the Proxy (History, Intercept, Rules, Scope, Options), the Repeater for resending and editing requests by hand, and Extensions — userscripts that stay installed and run on the sites you choose.
+**What the agent can do.** The AlpDroid agent uses the `browserctl` command, installed for you in every Alpine shell. It can open and switch tabs; navigate and wait for a page to load; click, fill and type into fields, press keys, read text, attributes and HTML, and wait for elements; run scripts from a file or standard input; take screenshots of the page or one element; read and set cookies; list, filter, save and export traffic (an evidence folder per request, or a HAR file); add rules and intercept traffic; and print a DevTools address (`browserctl cdp`) so Playwright or Puppeteer can drive the same page. Every command waits for what it needs and exits with a non-zero status and a clear message if it can't do its job. Coding agents learn all of it from the notes AlpDroid keeps in your home directory.
 
-**What the agent can do.** The AlpDroid agent controls AlpBrowser with the `browserctl` command, which is installed for you. It can:
+**No tokens to copy.** AlpDroid and AlpBrowser talk over your phone only (127.0.0.1). With **Open local access** (on by default) programs on your phone connect without a token, and web pages are always refused, so a site you open can't reach the control port. Turn Open local access off if you would rather require a token; AlpDroid then supplies it to the agent automatically.
 
-- **Drive pages like a person would** — open and switch tabs, `navigate` and wait for the page to load, `click`, `fill` and `type` into fields, press keys, read text, attributes and HTML, and wait for elements to appear. Each step waits for its element and reports a clear message (and a non-zero exit code) if it never shows up.
-- **Run scripts** — `eval` takes a file or standard input, including long, multi-line scripts in any language.
-- **Take screenshots** — the visible page, a single element, or the whole page (keep the Browser screen open).
-- **Work with traffic** — list History with filters, open any request, save a request and its response as a ready-to-share evidence folder, export everything as a HAR file, add rules and pause or edit traffic.
-- **Read and set cookies** for a site.
-- **Hand the page to other tools** — `browserctl cdp` prints a DevTools address that Playwright or Puppeteer can attach to, so they work on the very page you are looking at.
-
-Coding agents learn all of this on their own from the notes AlpDroid keeps in your home directory.
-
-**No tokens to copy.** AlpDroid and AlpBrowser talk over your phone only (127.0.0.1), and with **Open local access** (on by default) programs on your phone connect without any token. Web pages are always refused, so a site you open can't reach the control port. Turn Open local access off in the ⋮ menu if you would rather require a token; AlpDroid then provides it to the agent automatically.
-
-**Switching back to AlpDroid.** Once a page is open, AlpBrowser keeps running — proxy, control port and the page itself — while you talk to the agent in AlpDroid. A small notification shows while it's running; tap **Stop** there when you're done. Screenshots and the DevTools address need the Browser screen to be on screen.
+**Switching back to AlpDroid.** Once a page is open, AlpBrowser keeps running — proxy, control port and the page itself — while you talk to the agent in AlpDroid. A small notification shows while it's running; tap **Stop** there when you're done. Screenshots and the DevTools address need AlpBrowser's Browser screen to be on screen.
 
 **Please note.** Only test sites you own or are authorised to test. Anything AlpBrowser captures (including tokens or cookies in the traffic) stays on your phone — treat it as sensitive and don't share it.
 
@@ -144,7 +135,7 @@ Coding assistants in a tab (opencode, Claude Code) can control the app — OFF b
 
 - Turn on in Settings → Agent access & GitHub. When on, any guest program can use it: trusted networks/software only.
 - Battery/background changes always ask first. "Regenerate token" cuts off prior access.
-- Assistants auto-learn the environment from managed `AGENTS.md`/`CLAUDE.md` notes in home.
+- Assistants auto-learn the environment from managed `AGENTS.md`/`CLAUDE.md` notes in your AlpDroid home directory, including how to drive AlpBrowser with `browserctl`.
 - Try: `alpctl` lists everything (`set`, `tab send/screen`, `notify`, `plugin add`, `github token`…).
 
 ## 14. Plugins
@@ -223,8 +214,9 @@ Add the AlpDroid widget → tap jumps straight into a new session.
 - Slow builds: Linux runs through a compatibility layer, so heavy jobs take longer than on a computer.
 - SSH or a server stops with the screen off: see [Sessions & keep-alive](#17-sessions--keep-alive) (battery exemption, wake lock).
 - `apk add` prints errors but the tool installed: mirrors can hiccup even when packages land. Check with `command -v <tool>`; if it's missing, run "Update package index" and retry.
+- `browserctl` can't reach AlpBrowser: open AlpBrowser once, then start a new AlpDroid tab. More in the [AlpBrowser guide](ALPBROWSER.md#troubleshooting).
 - Still broken: new tab → else backup + Reinstall Alpine.
 
 ## 20. Security notes
 
-Guest = trusted (like Termux): terminal code runs as your UID with storage access — run software you trust. Tokens live encrypted in the Keystore. Agent/plugin powers are off-by-default or approval-gated. Details: [SECURITY.md](../SECURITY.md), [PRIVACY.md](../PRIVACY.md) (no analytics/tracking/ads).
+Guest = trusted (like Termux): terminal code runs as your UID with storage access — run software you trust. Tokens live encrypted in the Keystore. Agent/plugin powers are off-by-default or approval-gated. AlpBrowser keeps what it captures on your phone; with *Open local access* on, programs on the phone can control it without a token while web pages are refused — turn that off in AlpBrowser's ⋮ menu to require a token. Details: [SECURITY.md](../SECURITY.md), [PRIVACY.md](../PRIVACY.md) (no analytics/tracking/ads).

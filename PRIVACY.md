@@ -1,8 +1,8 @@
-# Privacy Policy — AlpDroid
+# Privacy Policy — AlpDroid and AlpBrowser
 
 Last updated: 2026.
 
-AlpDroid is an offline-first terminal app. There are **no accounts, no
+AlpDroid is an offline-first terminal app, and its companion browser AlpBrowser follows the same rules. There are **no accounts, no
 analytics, no ads, and no third-party tracking SDKs**. We collect nothing.
 
 ## Data Stays on Your Device
@@ -21,6 +21,17 @@ Everything AlpDroid stores lives on your device:
 
 Nothing above is transmitted to us. There is no server side.
 
+### AlpBrowser
+
+- **Browsing data** — cookies, cache, open tabs and settings stay in AlpBrowser's private storage on your device; you can clear
+  them from its ⋮ menu.
+- **Captured traffic** — when you turn on Capture, requests and responses (which can include cookies and tokens) are kept in
+  memory on the device for History, Repeater and export. They are never uploaded and are discarded when AlpBrowser stops. Files
+  you export (evidence folders, HAR) go where you save them.
+- **Control access** — the control API listens on `127.0.0.1` only. See [SECURITY.md](SECURITY.md) for how local access works.
+- AlpBrowser requests only `INTERNET`, `ACCESS_NETWORK_STATE`, `POST_NOTIFICATIONS` and the foreground-service permissions it
+  needs to keep running while you work in AlpDroid. It has no analytics, ads or accounts.
+
 ## Network Use
 
 The app uses the network only for these user-visible purposes:
@@ -30,7 +41,9 @@ The app uses the network only for these user-visible purposes:
 - **GitHub API / OAuth** — only when you sign in (OAuth Device Flow) or use a
   GitHub-backed feature; traffic goes to `github.com` / `api.github.com`.
 - **Release checks** — the in-app updater queries GitHub releases to check
-  for new versions and download APKs you approve.
+  for new versions of AlpDroid (and AlpBrowser, once installed) and download APKs you approve.
+- **AlpBrowser browsing** — the sites you open in AlpBrowser are contacted directly (or through its on-device proxy when
+  Capture is on); nothing goes through any server of ours.
 
 ## Android Permissions
 

@@ -7,10 +7,13 @@
 - Non-Android-driver USB devices (serial, other adapters) would go through the same USB host layer.
 
 ## Device bridge (terminal <-> Android APIs / custom apps)
-- PARTLY DONE in 1.4.0: local control API + `alpctl` (settings, tabs, clipboard, notifications, devices, GitHub token), GitHub device-flow sign-in, opencode web server on 0.0.0.0. Still open: in-app controllable browser, intents, sensors.
+- PARTLY DONE in 1.4.0: local control API + `alpctl` (settings, tabs, clipboard, notifications, devices, GitHub token), GitHub device-flow sign-in, opencode web server on 0.0.0.0. The in-app controllable browser shipped as **AlpBrowser** (see below). Still open: intents, sensors.
 - Local socket server in the app, token-authenticated, exposed to the guest (MCP/JSON-RPC) so tools like opencode can call it.
-- Capabilities as plugins: controllable in-app WebView browser (navigate, read DOM, click, type, screenshots; CDP-compatible), clipboard, notifications, intents, sensors.
+- Capabilities as plugins: clipboard, notifications, intents, sensors.
 - Off by default, per-capability permission prompts, audit log.
+
+## Done: AlpBrowser (1.7.70 – 1.7.81)
+- A companion browser app with an on-device intercepting proxy, Repeater, rules and extensions, driven by the `browserctl` command: tabs, element commands with auto-wait, `navigate --wait`, scripts from files, screenshots, cookies, evidence folders, HAR export and a DevTools (CDP) address for Playwright and Puppeteer. Programs on the phone control it with no token; web pages are refused. Possible later: HTTP/2-aware capture, request-to-request diffing, richer extension APIs.
 
 ## Done: plugins (1.5.0)
 - Settings -> Plugins: panels from plugin.json (text/number/toggle/select fields, script buttons, live output), saved values per plugin, included in backup/restore, user approval before an added plugin runs, `alpctl plugin add|list|remove`. Scheduled and keep-running background scripts added in 1.6.0 (run while the app process is alive; nothing after reboot until the app is opened). Possible later: more field types, plugin-defined tabs on the main screen, exact-time schedules that survive process death (AlarmManager/WorkManager).

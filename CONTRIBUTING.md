@@ -17,7 +17,10 @@ Requirements: **JDK 17**, Android SDK 34, NDK `26.3.11579264`, CMake `3.22.1`, P
 ```sh
 ./gradlew :app:assembleDebug     # fetches proot at build time (scripts/fetch_proot.py)
 ./gradlew :app:installDebug
+./gradlew :alpbrowser:assembleDebug   # the AlpBrowser companion app
 ```
+
+Run every test suite with `./gradlew :core-proxy:test :alpbrowser:testDebugUnitTest :app:testDebugUnitTest`.
 
 The build needs internet access to `packages.termux.dev` (proot) and Google's Maven repository. Debug builds
 use Android's auto-generated debug key unless you place an `app/debug.keystore`.
@@ -29,9 +32,12 @@ use Android's auto-generated debug key unless you place an `app/debug.keystore`.
 | `app/src/main/java/com/alpdroid/app/` | App code: `MainActivity`, sessions (`AlpineSession`, `PtySession`), `AgentBridge` (alpctl), plugins, updater, GitHub auth |
 | `app/src/main/java/com/alpdroid/app/terminal/` | Hand-written terminal: `TerminalEmulator`, `TerminalView`, themes |
 | `app/src/main/java/com/alpdroid/app/files/` | File browser and file operations |
+| `app/src/main/assets/browserctl` | The `browserctl` shell client AlpDroid installs for agents (POSIX/busybox `sh`); tested in `app/src/test/` against a mock server |
+| `alpbrowser/` | AlpBrowser: the browser UI, the control API (`BrowserBridge`), page automation, DevTools forwarder, interception and rules |
+| `core-proxy/` | The pure-JVM intercepting HTTP/HTTPS proxy engine used by AlpBrowser (no Android dependencies) |
 | `app/src/main/cpp/` | `pty_bridge.c`, the native PTY helper |
 | `scripts/` | `fetch_proot.py` (build-time proot download) |
-| `docs/` | User guide |
+| `docs/` | [User guide](docs/USER_GUIDE.md), [AlpBrowser guide](docs/ALPBROWSER.md), plugin schema |
 | `assets/` | Logo, banner and diagrams (SVG sources — see `assets/README.md`) |
 
 ## Code style
@@ -48,7 +54,7 @@ use Android's auto-generated debug key unless you place an `app/debug.keystore`.
 1. Fork and branch from `main`.
 2. Keep each PR focused on one change.
 3. Describe what changed and how you tested it (device, Android version).
-4. Make sure `./gradlew :app:testDebugUnitTest :app:assembleDebug` passes — CI runs both on every PR. Add a unit test for logic you touch (see `app/src/test/`).
+4. Make sure `./gradlew :core-proxy:test :alpbrowser:testDebugUnitTest :app:testDebugUnitTest :app:assembleDebug` passes — CI runs both on every PR. Add a unit test for logic you touch (see `app/src/test/`).
 5. Update [`CHANGELOG.md`](CHANGELOG.md) for user-visible changes.
 
 ## Rules that matter
@@ -64,4 +70,7 @@ use Android's auto-generated debug key unless you place an `app/debug.keystore`.
 Releases are built by [`alpdroid-release.yml`](.github/workflows/alpdroid-release.yml) from a manual run:
 bump `versionCode`/`versionName`, add a `## X.Y.Z — title` section to `CHANGELOG.md` (it becomes the release
 notes), push, then run the workflow with the tag (`vX.Y.Z`). With *publish_release* off it only uploads the
-signed `AlpDroid-vX.Y.Z.apk` as a workflow artifact. Signing secrets live in repository Actions secrets, never in the tree.
+signed `AlpDroid-vX.Y.Z.apk` as a workflow artifact.
+
+AlpBrowser is released separately by [`build-alpbrowser.yml`](.github/workflows/build-alpbrowser.yml): bump its `versionCode`/`versionName` in
+`alpbrowser/build.gradle.kts` and run the workflow with a tag such as `alpbrowser-vX.Y.Z` and *publish_release* on. Signing secrets live in repository Actions secrets, never in the tree.

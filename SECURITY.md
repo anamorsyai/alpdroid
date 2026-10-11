@@ -13,7 +13,7 @@ We will acknowledge receipt, investigate, and coordinate a fix and disclosure ti
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.7.x   | Yes                |
+| 1.7.x   | Yes (AlpDroid and AlpBrowser 0.x) |
 | < 1.7   | No (please update) |
 
 Only the latest 1.7.x release receives security fixes.
@@ -38,6 +38,16 @@ This defines the trust model:
   accepts root login by a generated password or an added public key, so anyone on the same network
   who knows the password has full guest access. Use it on networks you trust, stop it with Ctrl+C
   when done, and delete `/etc/alpdroid/ssh_password` to rotate the password.
+- **AlpBrowser local access.** AlpBrowser (the companion browser) exposes a control API and an optional DevTools port on
+  `127.0.0.1` only. With *Open local access* on (the default) programs on the phone can use them without a token, while any
+  request that looks like it came from a web page (an `Origin` or `Sec-Fetch-*` header, or a `Host` other than
+  loopback) is refused. Turn the setting off to require the control token for every request. Remote DevTools is off
+  until you enable it.
+- **Captured traffic.** In Capture mode AlpBrowser decrypts HTTPS with a certificate authority generated on the device, and
+  History can contain cookies, tokens and passwords from the sites you test. It is kept in memory on the phone, never
+  uploaded, and is lost when AlpBrowser stops; evidence files you save (`browserctl save`, HAR export) are ordinary
+  unencrypted files, so keep them private. Install the AlpBrowser certificate authority inside Alpine
+  (`browserctl trust`) only if you need other tools to accept captured HTTPS.
 - **Backups and shared storage.** Rootfs backups (`.tar.gz`) and anything
   under shared storage (`/sdcard`) are unencrypted files — whoever can read
   the storage can read them. Keep backups somewhere private.

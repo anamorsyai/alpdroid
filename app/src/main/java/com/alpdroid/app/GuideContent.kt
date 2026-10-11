@@ -99,6 +99,20 @@ OPENCODE IN YOUR BROWSER
 • It runs in the background — no tab. Stop it with its Stop button under "Running in the background" at the top of this screen (Log shows what it printed).""",
         ),
         Section(
+            "AlpBrowser",
+            "A browser your coding assistant can drive",
+            """AlpBrowser is AlpDroid's companion browser, made for bug-bounty testing and web development. Get it from Settings → About → AlpBrowser: Install, then Open and Check for browser updates.
+
+• Browsing is direct and fast, with tabs and a strong ad and tracker blocker.
+• Switch on "Capture traffic" (the ⋮ menu) to route pages through a proxy on your phone. You then see full, decrypted requests and responses in History, and can pause, edit, forward or drop them, rewrite them with Rules, and resend them in the Repeater.
+• Extensions are small scripts that stay installed and run on the sites you choose.
+• Your coding assistant drives it with the `browserctl` command, already installed in every tab: it can open pages and wait for them, click, fill in forms, read text, run scripts, take screenshots, save evidence, export traffic as a HAR file and hand the page to Playwright or Puppeteer.
+• There is nothing to copy or sign in to: AlpDroid and AlpBrowser find each other automatically on your phone. Web pages you open can never control it. "Open local access" in AlpBrowser's ⋮ menu turns the token-free access off.
+• AlpBrowser keeps running while you work in AlpDroid. Screenshots need its Browser screen to be on screen.
+
+Only test sites you own or are allowed to test. Anything captured stays on your phone — treat it as private. The full guide is docs/ALPBROWSER.md in the project's GitHub repository.""",
+        ),
+        Section(
             "Devices",
             "SD cards, USB, network, Wi-Fi",
             """Settings → Devices shows what your phone is connected to. It refreshes when you plug something in or out — tap Refresh to update it (and to rescan Wi-Fi) yourself.

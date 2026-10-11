@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.82 — Smaller updates, and eval that works on strict sites (AlpBrowser 0.6.2)
 
 - Updates download only what changed. Each release now carries small patch files for the last few earlier versions; AlpDroid applies the one that matches what you have installed, checks the result against the release's checksum, and installs it. A typical AlpDroid update drops from about 2.4 MB to about 0.7 MB, and an AlpBrowser update from about 14 MB to about 3.7 MB. If no patch fits (you skipped several versions) or anything doesn't check out, it downloads the full file exactly as before. The first update after this one still downloads in full.
 - `browserctl eval` now works on sites with a strict Content-Security-Policy or Trusted Types (GitHub, YouTube and similar). It accepts an expression (promises and `await` included), a list of statements (the value of the last expression comes back) or statements with `return`.

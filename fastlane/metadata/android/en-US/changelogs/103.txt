@@ -1,0 +1,1 @@
+Updates now download only what changed, and browserctl eval works on sites with strict security policies.

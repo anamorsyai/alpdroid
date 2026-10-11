@@ -16,8 +16,8 @@ android {
         applicationId = "com.alpdroid.browser"
         minSdk = 26 // androidx.webkit.ProxyController + WebView interception
         targetSdk = 34
-        versionCode = 13
-        versionName = "0.6.1"
+        versionCode = 14
+        versionName = "0.6.2"
     }
 
     // Release signing mirrors :app — from the ALPDROID_* CI environment when present, else unsigned.

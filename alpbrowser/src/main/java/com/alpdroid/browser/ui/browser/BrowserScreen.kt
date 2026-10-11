@@ -117,6 +117,7 @@ fun BrowserScreen(proxyPort: Int, onOpenControlInfo: () -> Unit) {
                         app.browserWebViewHolder.lastUrl = url
                         canGoBack = view.canGoBack()
                         canGoForward = view.canGoForward()
+                        app.extensionInjector.onPageFinished(view)
                     }
 
                     // Strong default ad/tracker blocker: a blocked host gets an empty 200 instead of
@@ -145,6 +146,7 @@ fun BrowserScreen(proxyPort: Int, onOpenControlInfo: () -> Unit) {
                         return true
                     }
                 }
+                app.extensionInjector.registerNow(wv)
                 wv.loadUrl(normalizeUrl(app.browserWebViewHolder.lastUrl))
             }
             // Keep the process (proxy, control bridge, this WebView's JS timers) alive once there is

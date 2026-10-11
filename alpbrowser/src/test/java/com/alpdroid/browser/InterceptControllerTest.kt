@@ -62,4 +62,16 @@ class InterceptControllerTest {
         assertFalse(c.resolveRequest("nope", RequestAction.Forward))
         assertFalse(c.resolveResponse("nope", ResponseAction.Forward))
     }
+
+    @Test fun `pendingFlow follows parked messages`() = runTest {
+        val c = InterceptController()
+        c.enabled = true
+        val r = async { c.interceptor.onRequest(req()) }
+        var tries = 0
+        while (c.pendingFlow.value.isEmpty() && tries++ < 50) delay(5)
+        assertEquals(1, c.pendingFlow.value.size)
+        c.releaseAll()
+        r.await()
+        assertTrue(c.pendingFlow.value.isEmpty())
+    }
 }

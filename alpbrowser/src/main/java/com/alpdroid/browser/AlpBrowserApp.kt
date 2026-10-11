@@ -32,8 +32,13 @@ class AlpBrowserApp : Application() {
     val browserCommandBus = BrowserCommandBus()
     val intercept = InterceptController()
     val console = ConsoleBuffer()
+    val repeater = com.alpdroid.browser.ui.proxy.RepeaterModel()
     val adBlocker by lazy { AdBlocker(this) }
     val browserWebViewHolder by lazy { BrowserWebViewHolder(this) }
+
+    /** Installed extensions (userscripts), kept in private storage so they stay installed until removed. */
+    val extensions by lazy { ExtensionStore(java.io.File(filesDir, "extensions")) }
+    val extensionInjector by lazy { ExtensionInjector(extensions) { browserWebViewHolder.current } }
 
     private val prefs by lazy { getSharedPreferences("alpbrowser", MODE_PRIVATE) }
 
@@ -153,7 +158,7 @@ class AlpBrowserApp : Application() {
     }
 
     /** Replays a request directly (not through the proxy, so no duplicate History entry) — the repeater. */
-    private fun httpResend(req: BrowserBridge.ResendRequest): BrowserBridge.ResendResponse {
+    fun httpResend(req: BrowserBridge.ResendRequest): BrowserBridge.ResendResponse {
         val future = resendPool.submit<BrowserBridge.ResendResponse> {
             runCatching {
                 val conn = (URL(req.url).openConnection() as HttpURLConnection).apply {

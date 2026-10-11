@@ -15,6 +15,13 @@
   uploads too large to inspect now return a clear error instead of a truncated file, and a
   misbehaving server can no longer stall or stop the proxy.
 - AlpBrowser remembers the capture scope you set across restarts.
+- AlpBrowser now has a Proxy screen: turn Intercept on and each request or response pauses so you can
+  edit its method, path, status, headers or body, then forward or drop it — plus a searchable History of
+  everything captured.
+- New Repeater: send any captured request (or one you write) again, edit it, and compare responses.
+- New Extensions: install userscripts (`.user.js`, the Tampermonkey format) by pasting, from a URL or from
+  a file. They stay installed and enabled across restarts until you remove them, and you can update them
+  from their source URL. Chrome and Firefox extension packages can't run in Android's WebView.
 
 ## 1.7.74 — AlpBrowser stays reachable in the background, and other fixes (AlpBrowser 0.2.2)
 

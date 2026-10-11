@@ -8,6 +8,9 @@ import com.alpdroid.proxy.ResponseAction
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * The Burp-style breakpoint, driven by the control API (and therefore by the agent). While [enabled] is off, every
@@ -46,6 +49,11 @@ class InterceptController {
     private val resHolds = ConcurrentHashMap<String, CompletableDeferred<ResponseAction>>()
     private val info = ConcurrentHashMap<String, Held>()
 
+    private val _pendingFlow = MutableStateFlow<List<Held>>(emptyList())
+    /** [pending] as an observable, so the Proxy screen updates the moment a message is parked or released. */
+    val pendingFlow: StateFlow<List<Held>> = _pendingFlow.asStateFlow()
+    private fun publish() { _pendingFlow.value = pending() }
+
     val interceptor: ProxyInterceptor = object : ProxyInterceptor {
         override suspend fun onRequest(req: InterceptedRequest): RequestAction {
             val ruleEdit = rules.applyRequest(req) // automatic match-and-replace (may be null)
@@ -58,14 +66,15 @@ class InterceptController {
             val d = CompletableDeferred<RequestAction>()
             reqHolds[holdId] = d
             info[holdId] = Held(holdId, "request", req.id, req.method, req.host, req.port, req.target, null, effHeaders, effBody)
+            publish()
             // Race guard: if interception was switched off (setIntercept flips `enabled` then calls
             // releaseAll) in the window between the check above and registering this hold, releaseAll's
             // snapshot may have missed us — forward now instead of parking this request forever.
-            if (!enabled) { reqHolds.remove(holdId); info.remove(holdId); return ruleAction }
+            if (!enabled) { reqHolds.remove(holdId); info.remove(holdId); publish(); return ruleAction }
             return try {
                 // "Forward" from the agent means "send the rule-applied version", not the untouched original.
                 when (val chosen = d.await()) { RequestAction.Forward -> ruleAction; else -> chosen }
-            } finally { reqHolds.remove(holdId); info.remove(holdId) }
+            } finally { reqHolds.remove(holdId); info.remove(holdId); publish() }
         }
 
         override suspend fun onResponse(res: InterceptedResponse): ResponseAction {
@@ -78,11 +87,12 @@ class InterceptController {
             val d = CompletableDeferred<ResponseAction>()
             resHolds[holdId] = d
             info[holdId] = Held(holdId, "response", res.id, "", res.host, res.port, "", res.status, effHeaders, effBody)
+            publish()
             // Same race guard as onRequest: never leave a response parked after interception is off.
-            if (!enabled) { resHolds.remove(holdId); info.remove(holdId); return ruleAction }
+            if (!enabled) { resHolds.remove(holdId); info.remove(holdId); publish(); return ruleAction }
             return try {
                 when (val chosen = d.await()) { ResponseAction.Forward -> ruleAction; else -> chosen }
-            } finally { resHolds.remove(holdId); info.remove(holdId) }
+            } finally { resHolds.remove(holdId); info.remove(holdId); publish() }
         }
     }
 

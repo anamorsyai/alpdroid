@@ -259,16 +259,10 @@ class AlpBrowserApp : Application() {
             return tab.id
         }
         override fun profiles(): List<String> = onMainBlocking { Profiles.names() } ?: emptyList()
-        override fun deleteProfile(name: String): Boolean {
-            // Only a tab that still exists can legitimately block this. A closed tab's WebView is released by the engine a
-            // moment after destroy(), so give that a few seconds (and a nudge to collect it) before reporting failure.
-            if (onMainBlocking { holder.tabs.any { it.profile == name } || name !in Profiles.names() } != false) return false
-            repeat(12) { attempt ->
-                if (onMainBlocking { Profiles.delete(name) } == true) return true
-                if (attempt < 11) { System.gc(); Thread.sleep(250) }
-            }
-            return false
-        }
+        override fun deleteProfile(name: String): Boolean = onMainBlocking {
+            // An open tab really does hold its profile; anything else is emptied now and removed for real at the next start.
+            holder.tabs.none { it.profile == name } && Profiles.delete(name)
+        } ?: false
         override fun switchTo(id: Int) = onMainBlocking { holder.switchTo(id) } ?: false
         override fun close(id: Int) = onMainBlocking { holder.close(id) } ?: false
     }
@@ -325,6 +319,7 @@ class AlpBrowserApp : Application() {
         // Match & replace rules are kept across restarts: load first, then start saving every change.
         intercept.rules.loadJson(prefs.getString("rules", "") ?: "")
         intercept.rules.onChange = { prefs.edit().putString("rules", intercept.rules.toJson()).apply() }
+        main.post { runCatching { Profiles.init(prefs) } }
         adBlocker.enabled = adblockEnabled()
         adBlocker.loadAsync()
         browserEngine.start(engineScope)

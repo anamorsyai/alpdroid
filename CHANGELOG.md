@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `browserctl profile delete` works right after the tab is closed. When the browser engine still holds the profile, it is emptied and hidden at once (its name can be reused immediately) and removed from disk at the next start.
+
 ## 1.7.89 — Icon centring and profile deletion fix (AlpBrowser 0.6.9)
 
 - The AlpBrowser icon is centred: the globe and its badge now sit on the middle of the icon.

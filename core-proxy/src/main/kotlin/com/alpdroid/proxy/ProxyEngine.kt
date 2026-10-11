@@ -91,6 +91,7 @@ class ProxyEngine(
                 launch(connDispatcher) {
                     try {
                         client.soTimeout = IDLE_TIMEOUT_MS
+                        client.tcpNoDelay = true // we write whole messages at once; don't let Nagle hold the tail back
                         handleClient(client)
                     } catch (e: CancellationException) {
                         throw e
@@ -252,6 +253,7 @@ class ProxyEngine(
             if (socket == null) {
                 val s = open()
                 s.soTimeout = soTimeoutMs
+                runCatching { s.tcpNoDelay = true }
                 socket = s; input = BufferedInputStream(s.getInputStream()); output = s.getOutputStream(); used = false
             }
             return input!! to output!!
@@ -327,9 +329,13 @@ class ProxyEngine(
             val reusing = upstream.isOpen && upstream.used
             try {
                 val (upIn, upOut) = upstream.streams()
-                writeRequestLine(upOut, req.method, req.target, requestLine.version)
-                writeHeaders(upOut, forwardHeaders(outHeaders, req.body, connectionClose = !allowReuse))
-                req.body?.let { upOut.write(it) }
+                // The head goes out as ONE write: a TLS record and TCP segment per header line is what made every
+                // request wait on Nagle/delayed-ACK (tens of ms each).
+                val reqBytes = java.io.ByteArrayOutputStream(1024)
+                writeRequestLine(reqBytes, req.method, req.target, requestLine.version)
+                writeHeaders(reqBytes, forwardHeaders(outHeaders, req.body, connectionClose = !allowReuse))
+                req.body?.let { reqBytes.write(it) }
+                upOut.write(reqBytes.toByteArray())
                 upOut.flush()
                 head = readResponseHead(upIn) ?: throw IOException("connection closed")
             } catch (e: IOException) {
@@ -344,8 +350,10 @@ class ProxyEngine(
 
         if (head.status == 101 && wantsUpgrade) {
             // Protocol switch (WebSocket): relay the 101 as-is and pipe bytes both ways, uncaptured.
-            clientOut.write("${head.statusLine}\r\n".toByteArray(Charsets.US_ASCII))
-            writeHeaders(clientOut, head.headers)
+            val upgradeHead = java.io.ByteArrayOutputStream(512)
+            upgradeHead.write("${head.statusLine}\r\n".toByteArray(Charsets.US_ASCII))
+            writeHeaders(upgradeHead, head.headers)
+            clientOut.write(upgradeHead.toByteArray())
             clientOut.flush()
             recordIfInScope(
                 HttpTransaction(
@@ -411,9 +419,12 @@ class ProxyEngine(
         if (outBody == null && !noBody && headerValue(outRespHeaders, "Content-Length") == null) outRespHeaders = withContentLength(outRespHeaders, 0)
 
         val keepClient = allowReuse && !clientWantsClose && !respTokens.contains("close")
-        resp.statusLine?.let { clientOut.write("$it\r\n".toByteArray(Charsets.US_ASCII)) }
-        writeHeaders(clientOut, forwardHeaders(outRespHeaders, outBody, connectionClose = !keepClient))
-        outBody?.let { clientOut.write(it) }
+        val respHead = java.io.ByteArrayOutputStream(1024)
+        resp.statusLine?.let { respHead.write("$it\r\n".toByteArray(Charsets.US_ASCII)) }
+        writeHeaders(respHead, forwardHeaders(outRespHeaders, outBody, connectionClose = !keepClient))
+        if (outBody != null && outBody.size <= 64 * 1024) respHead.write(outBody) // small bodies ride along in the same write
+        clientOut.write(respHead.toByteArray())
+        if (outBody != null && outBody.size > 64 * 1024) clientOut.write(outBody)
         clientOut.flush()
 
         recordIfInScope(

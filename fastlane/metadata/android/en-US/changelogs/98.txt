@@ -1,0 +1,1 @@
+Much faster requests through the AlpBrowser proxy: messages are sent in one piece instead of many tiny stalling writes.

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.77 — Much faster requests through the AlpBrowser proxy (AlpBrowser 0.4.1)
+
+- Requests through the intercepting proxy are far quicker: each response used to be sent as many tiny
+  network writes that stalled waiting on each other, adding tens of milliseconds to every request.
+  Messages now go out in one piece, so a page's many small requests no longer pile up delay. In a local
+  test, 100 requests over one connection went from about 9 seconds to about a quarter of a second.
+
 ## 1.7.76 — A much faster AlpBrowser, with tabs (AlpBrowser 0.4.0)
 
 - AlpBrowser now browses directly by default, at normal WebView speed. Pages only go through the

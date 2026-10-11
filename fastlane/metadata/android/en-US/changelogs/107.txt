@@ -1,0 +1,1 @@
+Requests and responses in AlpBrowser are now coloured: methods, status codes, headers, JSON and HTML.

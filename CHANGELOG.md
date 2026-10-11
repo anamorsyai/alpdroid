@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.86 — Coloured requests and responses (AlpBrowser 0.6.6)
+
+- In History and the Repeater, requests and responses are now coloured in the app's palette: the method in yellow, status codes in green, blue or red, header names in the accent colour, and JSON and HTML in code colours (keys and tags blue, strings green, numbers yellow, true / false / null in the accent). Very large messages are coloured only in their first part so the screen stays smooth.
+
 ## 1.7.85 — Readable pages on the dark app, cookie attributes, background reliability (AlpBrowser 0.6.5)
 
 - Pages that don't set their own background, and the page shown when a load fails, are readable again on the dark app. A failed load now shows a clear error page with the address, the reason and a Reload button.

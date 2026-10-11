@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.90 — Profile deletion that works (AlpBrowser 0.6.10)
 
 - `browserctl profile delete` works right after the tab is closed. When the browser engine still holds the profile, it is emptied and hidden at once (its name can be reused immediately) and removed from disk at the next start.
 

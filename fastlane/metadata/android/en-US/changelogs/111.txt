@@ -1,0 +1,1 @@
+Fixes deleting a browser profile right after its tab is closed.

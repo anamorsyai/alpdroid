@@ -33,8 +33,8 @@ android {
         applicationId = "com.alpdroid.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 110
-        versionName = "1.7.89"
+        versionCode = 111
+        versionName = "1.7.90"
 
         ndk {
             // Keep in sync with fetch_proot.py's ANDROID_ABI_TO_TERMUX_ARCH — no point building

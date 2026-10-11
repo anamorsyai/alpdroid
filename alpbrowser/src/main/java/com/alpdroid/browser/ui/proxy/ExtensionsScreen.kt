@@ -79,7 +79,7 @@ fun ExtensionsScreen(app: AlpBrowserApp, modifier: Modifier = Modifier) {
         }
     }
 
-    Column(modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Column(modifier.fillMaxSize().padding(horizontal = ScreenPadding, vertical = 10.dp)) {
         Text("Extensions", style = MaterialTheme.typography.titleMedium)
         Text(
             "Add userscripts (.user.js — the Tampermonkey format). They stay installed and enabled until you remove them, " +

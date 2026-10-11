@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.7.78 — AlpBrowser scope you can see, a tidier Proxy and Repeater (AlpBrowser 0.4.2)
+
+- New Scope tab in the Proxy screen. A scope limits History to the hosts you list, and until now it
+  could only be set by the agent and was invisible — so History could look empty for every other
+  site. A banner now shows whenever a scope is on, with a one-tap Clear, and the Scope tab lets you
+  edit it.
+- Sending a paused request to the Repeater keeps it paused; a new "Repeater + drop" button sends it
+  and also stops the browser's own copy. Both say what they do.
+- A more consistent look across Proxy, History, Rules, Repeater and Extensions: shared margins, rounded
+  cards for lists, coloured status pills, and a cleaner Repeater layout (method and Send on one row,
+  response info and Pretty/Copy on their own lines).
+
 ## 1.7.77 — Much faster requests through the AlpBrowser proxy (AlpBrowser 0.4.1)
 
 - Requests through the intercepting proxy are far quicker: each response used to be sent as many tiny

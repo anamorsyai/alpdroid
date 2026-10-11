@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -84,11 +86,12 @@ fun RepeaterScreen(app: AlpBrowserApp, modifier: Modifier = Modifier) {
     val clipboard = LocalClipboardManager.current
     val chunks = remember(m.responseText) { if (m.responseText.isEmpty()) emptyList() else chunkText(m.responseText) }
 
-    LazyColumn(modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    LazyColumn(modifier.fillMaxSize().padding(horizontal = ScreenPadding, vertical = 10.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                MonoField(m.method, { m.method = it.uppercase().filter { c -> c.isLetter() } }, "Method", Modifier.weight(0.35f), singleLine = true)
+                MonoField(m.method, { m.method = it.uppercase().filter { c -> c.isLetter() } }, "Method", Modifier.width(112.dp), singleLine = true)
                 Button(
+                    modifier = Modifier.weight(1f).height(56.dp),
                     enabled = !m.sending,
                     onClick = {
                         m.sending = true
@@ -115,11 +118,14 @@ fun RepeaterScreen(app: AlpBrowserApp, modifier: Modifier = Modifier) {
             MonoField(m.url, { m.url = it }, "URL (http:// or https://)")
             MonoField(m.headers, { m.headers = it }, "Headers (Name: value per line)", minLines = 3)
             MonoField(m.body, { m.body = it }, "Body", minLines = 3)
-            HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Response", style = MaterialTheme.typography.titleSmall)
+            HorizontalDivider(Modifier.padding(top = 12.dp))
+            Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Response", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                 StatusChip(m.responseStatus)
-                Text(m.responseInfo, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+            }
+            if (m.responseInfo.isNotEmpty()) Text(m.responseInfo, style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
+            if (m.hasRaw || m.responseText.isNotEmpty()) Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (m.hasRaw) FilterChip(selected = m.pretty, onClick = {
                     m.pretty = !m.pretty
                     scope.launch { val t = withContext(Dispatchers.Default) { rawMessage("HTTP ${m.respStatus}", m.respHeaders, m.respBody, m.pretty) }; m.responseText = t }
@@ -133,20 +139,19 @@ fun RepeaterScreen(app: AlpBrowserApp, modifier: Modifier = Modifier) {
 
         if (m.log.isNotEmpty()) {
             item {
-                HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                Text("Sent this session (tap to reload)", style = MaterialTheme.typography.titleSmall)
+                HorizontalDivider(Modifier.padding(top = 12.dp))
+                SectionTitle("Sent this session (tap to reload)")
             }
             items(m.log.toList()) { e ->
-                Row(
-                    Modifier.fillMaxWidth().clickable {
-                        m.method = e.method; m.url = e.url; m.headers = e.headers; m.body = e.body
-                        m.responseStatus = e.status; m.responseText = e.responseText; m.responseInfo = "${e.ms} ms · ${e.size} bytes"
-                        m.hasRaw = false
-                    }.padding(vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    StatusChip(e.status)
-                    Text("${e.method} ${e.url}", style = MaterialTheme.typography.bodySmall.copy(fontFamily = RoninMono), maxLines = 1)
+                ListCard(onClick = {
+                    m.method = e.method; m.url = e.url; m.headers = e.headers; m.body = e.body
+                    m.responseStatus = e.status; m.responseText = e.responseText; m.responseInfo = "${e.ms} ms · ${e.size} bytes"
+                    m.hasRaw = false
+                }) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        StatusChip(e.status)
+                        Text("${e.method} ${e.url}", style = MaterialTheme.typography.bodySmall.copy(fontFamily = RoninMono), maxLines = 1)
+                    }
                 }
             }
         }

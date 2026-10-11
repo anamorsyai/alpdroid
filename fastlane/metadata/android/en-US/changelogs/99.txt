@@ -1,0 +1,1 @@
+A visible Scope tab (a hidden scope could make History look empty), clearer Repeater buttons, and a more consistent Proxy and Repeater layout.

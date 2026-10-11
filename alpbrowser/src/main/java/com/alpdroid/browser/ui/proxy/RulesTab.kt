@@ -44,9 +44,9 @@ fun RulesTab(app: AlpBrowserApp) {
     val isHeader = part == RuleEngine.Part.REQ_HEADER || part == RuleEngine.Part.RES_HEADER
     fun refresh() { rules = engine.all() }
 
-    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = ScreenPadding, vertical = 10.dp)) {
         item {
-            Text("New rule", style = MaterialTheme.typography.titleSmall)
+            SectionTitle("New rule")
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 RuleEngine.Part.entries.forEach { p ->
                     FilterChip(selected = part == p, onClick = { part = p }, label = { Text(p.name.replace('_', ' ').lowercase()) })
@@ -73,17 +73,18 @@ fun RulesTab(app: AlpBrowserApp) {
             if (rules.isEmpty()) Text("No rules yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         items(rules, key = { it.id }) { r ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(r.part.name.replace('_', ' ').lowercase() + (if (r.hostContains.isNotEmpty()) " · ${r.hostContains}" else "") + (if (r.regex) " · regex" else ""),
-                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
-                    Text(if (r.find.isEmpty()) "set ${r.replace}" else "${r.find}  →  ${r.replace}",
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = RoninMono), maxLines = 3)
+            ListCard {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(r.part.name.replace('_', ' ').lowercase() + (if (r.hostContains.isNotEmpty()) " · ${r.hostContains}" else "") + (if (r.regex) " · regex" else ""),
+                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                        Text(if (r.find.isEmpty()) "set ${r.replace}" else "${r.find}  →  ${r.replace}",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = RoninMono), maxLines = 3)
+                    }
+                    Switch(checked = r.enabled, onCheckedChange = { engine.setEnabled(r.id, it); refresh() })
+                    TextButton(onClick = { engine.remove(r.id); refresh() }) { Text("Delete") }
                 }
-                Switch(checked = r.enabled, onCheckedChange = { engine.setEnabled(r.id, it); refresh() })
-                TextButton(onClick = { engine.remove(r.id); refresh() }) { Text("Delete") }
             }
-            HorizontalDivider()
         }
     }
 }

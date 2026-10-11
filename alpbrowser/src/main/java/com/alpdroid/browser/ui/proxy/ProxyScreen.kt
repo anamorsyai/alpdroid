@@ -24,6 +24,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -47,22 +48,58 @@ import com.alpdroid.proxy.HttpTransaction
 import com.alpdroid.proxy.RequestAction
 import com.alpdroid.proxy.ResponseAction
 
-/** Burp-style Proxy: live Intercept (pause, edit, forward or drop), History of everything captured, and Rules. */
+/** Burp-style Proxy: live Intercept (pause, edit, forward or drop), History of everything captured, Rules and Scope. */
 @Composable
 fun ProxyScreen(app: AlpBrowserApp, onSendToRepeater: () -> Unit, modifier: Modifier = Modifier) {
     var tab by remember { mutableStateOf(0) }
+    var scope by remember { mutableStateOf(app.scope()) }
     val held by app.intercept.pendingFlow.collectAsState()
     Column(modifier.fillMaxSize()) {
         TabRow(selectedTabIndex = tab) {
-            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text(if (held.isEmpty()) "Intercept" else "Intercept (${held.size})") })
-            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("History") })
-            Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Rules") })
+            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text(if (held.isEmpty()) "Intercept" else "Intercept (${held.size})", maxLines = 1) })
+            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("History", maxLines = 1) })
+            Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Rules", maxLines = 1) })
+            Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text(if (scope.isEmpty()) "Scope" else "Scope ●", maxLines = 1) })
+        }
+        // A scope silently hides every other host from History, so it is always announced, whichever tab is open.
+        if (scope.isNotEmpty() && tab != 3) {
+            Row(
+                Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.tertiaryContainer).padding(horizontal = ScreenPadding, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "Scope is on — only ${scope.joinToString(", ")} is recorded; other sites are not shown.",
+                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onTertiaryContainer, modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { app.setScope(emptyList()); scope = emptyList() }) { Text("Clear") }
+            }
         }
         when (tab) {
             0 -> InterceptTab(app, held, onSendToRepeater)
             1 -> HistoryTab(app, onSendToRepeater)
-            else -> RulesTab(app)
+            2 -> RulesTab(app)
+            else -> ScopeTab(app, scope) { app.setScope(it); scope = app.scope() }
         }
+    }
+}
+
+@Composable
+private fun ScopeTab(app: AlpBrowserApp, scope: List<String>, onSave: (List<String>) -> Unit) {
+    var text by remember(scope) { mutableStateOf(scope.joinToString("\n")) }
+    Column(Modifier.fillMaxSize().padding(horizontal = ScreenPadding, vertical = 10.dp).verticalScroll(rememberScrollState())) {
+        SectionTitle("Scope")
+        Text(
+            "Only hosts matching these patterns are recorded in History (and by Capture). One per line; * is a wildcard, " +
+                "e.g. *.example.com. Leave it empty to record every site.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        MonoField(text, { text = it }, "Hosts (one per line)", minLines = 4)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { onSave(text.lines().map { it.trim() }.filter { it.isNotEmpty() }) }) { Text("Save scope") }
+            OutlinedButton(onClick = { text = ""; onSave(emptyList()) }) { Text("Record everything") }
+        }
+        if (scope.isEmpty()) Text("No scope: every site is recorded.", style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 10.dp))
     }
 }
 
@@ -78,7 +115,7 @@ private fun InterceptTab(app: AlpBrowserApp, held: List<InterceptController.Held
     var selectedId by remember { mutableStateOf<String?>(null) }
     val selected = held.firstOrNull { it.holdId == selectedId }
 
-    Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = ScreenPadding, vertical = 10.dp)) {
         if (selected == null) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Intercept is ${if (on) "ON" else "off"}", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
@@ -118,18 +155,16 @@ private fun InterceptTab(app: AlpBrowserApp, held: List<InterceptController.Held
         } else {
             LazyColumn {
                 items(held, key = { it.holdId }) { h ->
-                    Row(
-                        Modifier.fillMaxWidth().clickable { selectedId = h.holdId }.padding(vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Text(if (h.kind == "request") "REQ" else "RES", color = MaterialTheme.colorScheme.secondary,
-                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = RoninMono))
-                        Text(
-                            if (h.kind == "request") "${h.method} ${h.host}${h.target}" else "${h.status ?: "?"} from ${h.host}",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = RoninMono), maxLines = 2,
-                        )
+                    ListCard(onClick = { selectedId = h.holdId }) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(if (h.kind == "request") "REQ" else "RES", color = MaterialTheme.colorScheme.secondary,
+                                style = MaterialTheme.typography.labelMedium.copy(fontFamily = RoninMono))
+                            Text(
+                                if (h.kind == "request") "${h.method} ${h.host}${h.target}" else "${h.status ?: "?"} from ${h.host}",
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = RoninMono), maxLines = 2,
+                            )
+                        }
                     }
-                    HorizontalDivider()
                 }
             }
         }
@@ -185,12 +220,22 @@ private fun HeldEditor(app: AlpBrowserApp, h: InterceptController.Held, onDone: 
                 if (isReq) ic.resolveRequest(h.holdId, RequestAction.Drop) else ic.resolveResponse(h.holdId, ResponseAction.Drop)
                 onDone()
             }) { Text("Drop") }
-            if (isReq) OutlinedButton(onClick = {
+            OutlinedButton(onClick = onDone) { Text("Back") }
+        }
+        if (isReq) {
+            fun toRepeater() {
                 val scheme = if (h.port == 443) "https" else "http"
                 app.repeater.load(line1.ifBlank { h.method }, RawHttp.displayUrl(scheme, h.host, h.port, target), RawHttp.parseHeaders(headers), if (editable) RawHttp.textToBody(body) else h.body)
                 onSendToRepeater()
-            }) { Text("Repeater") }
-            OutlinedButton(onClick = onDone) { Text("Back") }
+            }
+            Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { toRepeater() }) { Text("To Repeater") }
+                OutlinedButton(onClick = { toRepeater(); ic.resolveRequest(h.holdId, RequestAction.Drop); onDone() }) { Text("Repeater + drop") }
+            }
+            Text(
+                "To Repeater keeps this request paused here (forward or drop it when you're ready). Repeater + drop also stops the browser's copy from ever being sent.",
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp),
+            )
         }
     }
 }
@@ -211,7 +256,7 @@ private fun HistoryTab(app: AlpBrowserApp, onSendToRepeater: () -> Unit) {
             (f.isEmpty() || it.host.contains(f, true) || it.path.contains(f, true) || it.method.equals(f, true) || it.responseStatus?.toString() == f) }
     }
 
-    Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = ScreenPadding, vertical = 10.dp)) {
         if (open != null) {
             TxDetail(app, open, onBack = { openId = null }, onSendToRepeater = onSendToRepeater)
             return@Column
@@ -239,16 +284,18 @@ private fun HistoryTab(app: AlpBrowserApp, onSendToRepeater: () -> Unit) {
         }
         LazyColumn {
             items(rows, key = { it.id }) { tx ->
-                Row(
-                    Modifier.fillMaxWidth().clickable { openId = tx.id }.padding(vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Text(tx.method, style = MaterialTheme.typography.labelMedium.copy(fontFamily = RoninMono), color = MaterialTheme.colorScheme.secondary)
-                    if (tx.opaque) Text("tunnel", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.outline)
-                    else StatusChip(tx.responseStatus)
-                    Text("${tx.host}${tx.path}", style = MaterialTheme.typography.bodySmall.copy(fontFamily = RoninMono), maxLines = 2)
+                ListCard(onClick = { openId = tx.id }) {
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(tx.method, style = MaterialTheme.typography.labelMedium.copy(fontFamily = RoninMono), color = MaterialTheme.colorScheme.secondary)
+                            if (tx.opaque) Text("tunnel", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.outline)
+                            else StatusChip(tx.responseStatus)
+                            tx.durationMs?.let { Text("$it ms", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        }
+                        Text("${tx.host}${tx.path}", style = MaterialTheme.typography.bodySmall.copy(fontFamily = RoninMono), maxLines = 2,
+                            modifier = Modifier.padding(top = 4.dp))
+                    }
                 }
-                HorizontalDivider()
             }
         }
     }

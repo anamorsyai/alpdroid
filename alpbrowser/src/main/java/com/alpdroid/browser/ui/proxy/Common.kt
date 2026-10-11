@@ -1,5 +1,7 @@
 package com.alpdroid.browser.ui.proxy
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -25,8 +27,27 @@ fun MonoField(
         modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
         singleLine = singleLine, minLines = minLines, maxLines = if (singleLine) 1 else 14, readOnly = readOnly,
         textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = RoninMono),
-        shape = RoundedCornerShape(10.dp),
+        shape = RoundedCornerShape(12.dp),
     )
+}
+
+/** Horizontal margin shared by every screen, so edges line up from tab to tab. */
+val ScreenPadding = 16.dp
+
+/** A small section heading used above groups of controls. */
+@Composable
+fun SectionTitle(text: String, modifier: Modifier = Modifier) {
+    Text(text, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary,
+        modifier = modifier.padding(top = 14.dp, bottom = 4.dp))
+}
+
+/** A tappable rounded row for lists (held messages, history, rules), so every list looks the same. */
+@Composable
+fun ListCard(modifier: Modifier = Modifier, onClick: (() -> Unit)? = null, content: @Composable () -> Unit) {
+    androidx.compose.material3.Surface(
+        shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp,
+        modifier = modifier.fillMaxWidth().padding(vertical = 3.dp).let { if (onClick != null) it.clickable(onClick = onClick) else it },
+    ) { Box(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) { content() } }
 }
 
 @Composable
@@ -38,10 +59,13 @@ fun StatusChip(status: Int?) {
         status < 500 -> MaterialTheme.colorScheme.secondary
         else -> MaterialTheme.colorScheme.error
     }
-    Text(
-        if (status == null) "…" else if (status == 0) "dropped" else status.toString(),
-        color = color, style = MaterialTheme.typography.labelMedium.copy(fontFamily = RoninMono),
-    )
+    androidx.compose.material3.Surface(shape = RoundedCornerShape(50), color = color.copy(alpha = 0.16f)) {
+        Text(
+            if (status == null) "–" else if (status == 0) "dropped" else status.toString(),
+            color = color, style = MaterialTheme.typography.labelMedium.copy(fontFamily = RoninMono),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+        )
+    }
 }
 
 /**

@@ -1,0 +1,1 @@
+No more tokens between AlpDroid and AlpBrowser on your phone, plus browserctl fixes: compact history limits, live field values, clearer errors.

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.81 — Tokenless local control (AlpBrowser 0.6.1)
 
 - No more tokens between AlpDroid and AlpBrowser: programs on the phone (the agent, `browserctl`, Playwright/Puppeteer over `cdp`) control AlpBrowser directly. Web pages are still refused, and Settings → Open local access turns the token requirement back on.
 - `history --compact` now honours `--limit` and `--page`.

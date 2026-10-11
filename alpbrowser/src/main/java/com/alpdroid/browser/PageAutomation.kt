@@ -41,14 +41,17 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
     }
 
     /** Runs [body] (an async function body) in the page and waits for it to settle. */
-    private suspend fun callAsync(wv: WebView, body: String, timeoutMs: Long): JSONObject {
+    private suspend fun callAsync(wv: WebView, body: String, timeoutMs: Long, tab: BrowserTab? = null): JSONObject {
+        val seq0 = tab?.navSeq
         val id = ByteArray(12).also { random.nextBytes(it) }.joinToString("") { "%02x".format(it) }
         val done = CompletableDeferred<String>()
         pending[id] = done
         try {
             withContext(Dispatchers.Main) { wv.evaluateJavascript(AutomationJs.asyncWrapper(id, body), null) }
             val raw = withTimeoutOrNull(timeoutMs) { done.await() }
-                ?: return fail("timed out after ${timeoutMs}ms (the page may have navigated away, or has no script access)")
+                ?: return fail(
+                    if (tab != null && tab.navSeq != seq0) "the page navigated while the command was running (no answer within ${timeoutMs}ms): wait for the navigation, then retry"
+                    else "no answer from the page within ${timeoutMs}ms: it may still be loading, or it has no script access")
             val j = JSONObject(raw)
             if (!j.optBoolean("ok")) return fail(j.optString("error", "script failed"))
             val out = JSONObject().put("ok", true)
@@ -61,17 +64,17 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
     // ------------------------------------------------------------------------------------------------- commands
 
     override fun command(args: JSONObject): JSONObject = runBlocking {
-        val (_, wv) = front() ?: return@runBlocking fail("no page is open")
+        val (tab, wv) = front() ?: return@runBlocking fail("no page is open")
         val timeout = args.optLong("timeout", AutomationJs.DEFAULT_TIMEOUT_MS)
         if (args.optString("cmd") in setOf("click", "fill", "type", "text", "attr", "exists", "waitfor", "html") && args.optString("selector").isBlank() && args.optString("cmd") != "html") {
             return@runBlocking fail("selector required")
         }
-        callAsync(wv, AutomationJs.commandBody(args), timeout + 4_000)
+        callAsync(wv, AutomationJs.commandBody(args), timeout + 4_000, tab)
     }
 
     override fun eval(js: String, await: Boolean, timeoutMs: Long): JSONObject = runBlocking {
-        val (_, wv) = front() ?: return@runBlocking fail("no page is open")
-        callAsync(wv, AutomationJs.evalBody(js), timeoutMs)
+        val (tab, wv) = front() ?: return@runBlocking fail("no page is open")
+        callAsync(wv, AutomationJs.evalBody(js), timeoutMs, tab)
     }
 
     // ------------------------------------------------------------------------------------------------- navigation

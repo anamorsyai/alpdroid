@@ -185,7 +185,9 @@ class BrowserBridge(
             else Raw(200, "application/json", render(err ?: error("screenshot failed")).toByteArray())
         }
         if (path == "/v1/history" && q["fmt"] == "lines") {
-            val lines = filteredHistory(q).joinToString("\n") { tx ->
+            val lim = q["limit"]?.toIntOrNull()?.coerceIn(1, 1000) ?: Int.MAX_VALUE
+            val skip = ((q["page"]?.toIntOrNull() ?: 1).coerceAtLeast(1) - 1).toLong() * (if (lim == Int.MAX_VALUE) 0 else lim)
+            val lines = filteredHistory(q).drop(skip.toInt()).take(lim).joinToString("\n") { tx ->
                 "${tx.id} ${tx.method} ${tx.responseStatus ?: "-"} ${tx.durationMs ?: "-"}ms ${tx.host}${tx.path}"
             }
             return text(if (lines.isEmpty()) "" else lines + "\n")
@@ -252,7 +254,14 @@ class BrowserBridge(
             path == "/v1/eval" && method == "POST" -> {
                 val js = body.optString("js"); if (js.isBlank()) return 400 to error("js required")
                 val pc = page
-                if (body.optBoolean("await") && pc != null) return 200 to pc.eval(js, true, body.optLong("timeout", 30_000))
+                // Through the page-automation path whenever it exists: it waits for the script and reports a page that
+                // is not ready, where a raw evaluateJavascript call answers a bare null in the middle of a navigation.
+                if (pc != null) {
+                    val r = pc.eval(js, body.optBoolean("await"), body.optLong("timeout", 30_000))
+                    if (!r.optBoolean("ok", true)) return 200 to r
+                    // Same shape as before: "result" is the value as JSON text.
+                    return 200 to JSONObject().put("ok", true).put("result", JSONObject.valueToString(r.opt("result") ?: JSONObject.NULL))
+                }
                 return 200 to JSONObject().put("result", onEvalJs(js))
             }
             path == "/v1/resend" && method == "POST" -> return resend(body)

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `history --compact` now honours `--limit` and `--page`.
+- `attr <selector> value` (also `checked`, `selected`, `disabled`) returns the live value of the field.
+- `eval` always runs through the page, so a page that is still loading is reported instead of answering `null`.
+- Timeouts say whether the page navigated mid-command or simply gave no answer.
+
 ## 1.7.80 — Drive AlpBrowser without Playwright (AlpBrowser 0.6.0)
 
 - The agent can now drive pages from `browserctl` alone: `click`, `fill`, `type`, `press`, `text`, `attr`,

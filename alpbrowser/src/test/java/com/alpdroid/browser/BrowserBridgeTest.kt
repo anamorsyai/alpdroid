@@ -135,7 +135,7 @@ class BrowserBridgeTest {
         assertEquals(200, call("POST", "/v1/navigate", body = JSONObject().put("url", "https://t.test").toString()).first)
         assertEquals("https://t.test", navigated.single())
         val (_, ev) = call("POST", "/v1/eval", body = JSONObject().put("js", "1+1").toString())
-        assertTrue(ev.getString("result").contains("evaluated:1+1"))
+        assertEquals("3", ev.getString("result"))
     }
 
     @Test fun `intercept state can be toggled`() {
@@ -254,7 +254,7 @@ class BrowserBridgeTest {
         assertTrue("more bytes than characters, the case that used to hang", payload.size > payload.toString(Charsets.UTF_8).length)
         val (code, _, bytes) = callRaw("/v1/eval", method = "POST", body = payload)
         assertEquals(200, code)
-        assertEquals("\"evaluated:$js\"", JSONObject(String(bytes, Charsets.UTF_8)).getString("result"))
+        assertEquals(js.length.toString(), JSONObject(String(bytes, Charsets.UTF_8)).getString("result"))
     }
 
     @Test fun `invalid json is rejected with a reason instead of being treated as empty`() {

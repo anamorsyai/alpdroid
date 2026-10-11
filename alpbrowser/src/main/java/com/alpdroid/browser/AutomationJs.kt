@@ -39,7 +39,7 @@ if(go){if(key==='Enter'){if(el.tagName==='INPUT'&&el.form){if(el.form.requestSub
 else if(key==='Tab'){const f=[...document.querySelectorAll('a[href],button,input,select,textarea,[tabindex]')].filter(x=>!x.disabled&&x.tabIndex>=0&&vis(x));if(f.length){const i=f.indexOf(el);f[(i+(a.shift?-1:1)+f.length)%f.length].focus()}}}
 el.dispatchEvent(new KeyboardEvent('keyup',o));return{key:key,target:el.tagName.toLowerCase()}},
 async text(a){const el=await waitFor(a.selector,'attached',a.timeout);return{selector:a.selector,text:el.innerText!==undefined?el.innerText:el.textContent}},
-async attr(a){const el=await waitFor(a.selector,'attached',a.timeout);return{selector:a.selector,name:a.name,value:el.getAttribute(a.name)}},
+async attr(a){const el=await waitFor(a.selector,'attached',a.timeout);return{selector:a.selector,name:a.name,value:(['value','checked','selected','disabled','indeterminate'].indexOf(a.name)>=0&&a.name in el)?el[a.name]:el.getAttribute(a.name)}},
 async exists(a){const el=find(a.selector);return{selector:a.selector,exists:!!el,visible:!!el&&vis(el),count:document.querySelectorAll(a.selector).length}},
 async waitfor(a){const t0=Date.now();await waitFor(a.selector,a.state||'visible',a.timeout);return{selector:a.selector,state:a.state||'visible',waitedMs:Date.now()-t0}},
 async html(a){if(a.selector){const el=await waitFor(a.selector,'attached',a.timeout);return{html:el.outerHTML}}return{html:'<!DOCTYPE html>\n'+document.documentElement.outerHTML}}

@@ -46,7 +46,7 @@ class BrowserctlIntegrationTest {
         override fun navigate(url: String, wait: Boolean, state: String, timeoutMs: Long) =
             JSONObject().put("url", "$url/final").put("redirected", true).put("ok", true)
         override fun waitNav(state: String, timeoutMs: Long) = JSONObject().put("navigated", false).put("ok", true)
-        override fun eval(js: String, await: Boolean, timeoutMs: Long) = JSONObject().put("result", js.length).put("ok", true)
+        override fun eval(js: String, await: Boolean, timeoutMs: Long): JSONObject { evaluated += js; return JSONObject().put("result", js.length).put("ok", true) }
         override fun screenshot(selector: String?, fullPage: Boolean, jpeg: Boolean): Pair<ByteArray?, JSONObject?> =
             if (selector == "#missing") null to JSONObject().put("error", "no element matches #missing").put("ok", false)
             else byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0, 1, 2, 3, 0xff.toByte(), 0xfe.toByte()) to null
@@ -63,7 +63,7 @@ class BrowserctlIntegrationTest {
             responseStatus = 404, durationMs = 9))
         bridge = BrowserBridge(
             token = token, store = store, intercept = intercept, proxyPort = { 8890 }, caPem = { "PEM" },
-            onNavigate = {}, onEvalJs = { js -> evaluated += js; "\"ok\"" },
+            onNavigate = {}, onEvalJs = { "unused" },
             onResend = { BrowserBridge.ResendResponse(200, emptyList(), "x".toByteArray()) },
             scopeGet = { scope }, scopeSet = { scope = it }, console = ConsoleBuffer(), modeGet = { "bugbounty" }, modeSet = {}, onClear = {},
             preferredPort = 0, captureGet = { capture }, captureSet = { capture = it },
@@ -119,6 +119,11 @@ class BrowserctlIntegrationTest {
         val lines = ctl("history", "--compact", "--host", "api.test")
         assertEquals(lines.err, 0, lines.code)
         assertEquals("t1 POST 200 31ms api.test/login?a=1", lines.out.trim())
+
+        assertEquals(2, ctl("history", "--compact").out.trim().lines().size)
+        assertEquals(1, ctl("history", "--compact", "--limit", "1").out.trim().lines().size)
+        assertEquals(1, ctl("history", "--compact", "--limit", "1", "--page", "2").out.trim().lines().size)
+        assertEquals(1, JSONObject(ctl("history", "--limit", "1").out).getJSONArray("transactions").length())
 
         val one = ctl("get", "t1")
         assertEquals(one.err, 0, one.code)

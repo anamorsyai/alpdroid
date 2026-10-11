@@ -67,6 +67,8 @@ class BrowserBridge(
     private val appVersion: String = "",
     /** True while open local access is on: programs on this phone may skip the token (see [LocalAccess]). */
     private val openAccess: () -> Boolean = { false },
+    /** Extra fields for `ping` (for example whether Android may stop the app in the background). */
+    private val pingExtras: () -> Map<String, Any> = { emptyMap() },
 ) {
     data class ResendRequest(val method: String, val url: String, val headers: List<Pair<String, String>>, val body: ByteArray?)
     data class ResendResponse(val status: Int, val headers: List<Pair<String, String>>, val body: ByteArray?, val error: String? = null)
@@ -227,7 +229,7 @@ class BrowserBridge(
 
     private fun route(method: String, path: String, q: Map<String, String>, body: JSONObject): Pair<Int, JSONObject> {
         when {
-            path == "/v1/ping" -> return 200 to JSONObject().put("ok", true).put("app", "AlpBrowser").put("version", appVersion).put("proxyPort", proxyPort())
+            path == "/v1/ping" -> return 200 to JSONObject().put("ok", true).put("app", "AlpBrowser").put("version", appVersion).put("proxyPort", proxyPort()).also { j -> pingExtras().forEach { (k, v) -> j.put(k, v) } }
             path == "/v1/ca" && method == "GET" -> return 200 to JSONObject().put("pem", caPem() ?: "")
             path == "/v1/history" && method == "GET" -> return 200 to historyList(q)
             path.startsWith("/v1/history/") && method == "GET" -> return historyOne(path.removePrefix("/v1/history/"))

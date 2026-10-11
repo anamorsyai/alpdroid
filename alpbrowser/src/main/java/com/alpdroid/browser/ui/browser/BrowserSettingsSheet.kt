@@ -1,5 +1,7 @@
 package com.alpdroid.browser.ui.browser
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -24,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.alpdroid.browser.AlpBrowserApp
+import com.alpdroid.browser.BatteryExemption
 import com.alpdroid.browser.ui.kit.AppButton
 import com.alpdroid.browser.ui.kit.Kind
 import com.alpdroid.browser.ui.kit.ScreenPad
@@ -60,6 +63,9 @@ fun BrowserSettingsSheet(
     var openLocal by remember { mutableStateOf(app.openLocalAccess()) }
     var capture by remember { mutableStateOf(app.captureEnabled()) }
     var mode by remember { mutableStateOf(app.mode()) }
+    var exempt by remember { mutableStateOf(BatteryExemption.isExempt(app)) }
+    // Whatever the user chose on the system screen, read the real state back when they return.
+    val batteryScreen = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { exempt = BatteryExemption.isExempt(app) }
     var blocked by remember { mutableIntStateOf(app.adBlocker.blockedCount.get().toInt()) }
 
     ModalBottomSheet(
@@ -86,6 +92,15 @@ fun BrowserSettingsSheet(
                 if (capture) "On — History shows full decrypted requests and responses (a bit slower)" else "Off — direct, fastest browsing; History lists URLs only",
                 capture,
             ) { capture = it; app.setCaptureEnabled(it) }
+
+            ToggleRow(
+                "Keep running in the background",
+                if (exempt) "On — Android will not stop AlpBrowser while you work in another app" else "Off — some phones stop AlpBrowser in the background; allow it so the agent can keep using it",
+                exempt,
+            ) {
+                val intent = if (it) BatteryExemption.requestIntent(app) else BatteryExemption.settingsIntent()
+                runCatching { batteryScreen.launch(intent) }.onFailure { runCatching { batteryScreen.launch(BatteryExemption.settingsIntent()) } }
+            }
 
             ToggleRow(
                 "Open local access",

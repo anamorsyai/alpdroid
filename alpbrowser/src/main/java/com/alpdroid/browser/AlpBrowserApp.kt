@@ -273,6 +273,7 @@ class AlpBrowserApp : Application() {
             appVersion = BuildConfig.VERSION_NAME,
             cdp = cdpControl,
             openAccess = ::openLocalAccess,
+            pingExtras = { mapOf("batteryExempt" to BatteryExemption.isExempt(this)) },
             onClear = ::clearBrowserData,
             preferredPort = CONTROL_PORT,
         )

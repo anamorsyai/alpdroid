@@ -26,6 +26,12 @@ object BrowserInstall {
 
     fun isInstalled(context: Context): Boolean = installedVersion(context) != null
 
+    /** When AlpBrowser was last installed or updated (0 if it is not installed) — a cheap PackageManager lookup that
+     *  does not start the app. A token/port file written before this moment may be stale. */
+    fun lastUpdateTime(context: Context): Long = runCatching {
+        context.packageManager.getPackageInfo(PACKAGE, 0).lastUpdateTime
+    }.getOrDefault(0L)
+
     /** A launch intent for AlpBrowser, or null when it is not installed / has no launcher activity. */
     fun launchIntent(context: Context): Intent? =
         context.packageManager.getLaunchIntentForPackage(PACKAGE)

@@ -59,58 +59,107 @@ object AppUpdater {
         return md.digest().joinToString("") { "%02x".format(it) }
     }
 
-    /** Latest AlpDroid release carrying an APK asset and newer than this build, or null. Blocking. */
-    fun checkForUpdate(context: Context): Update? = runCatching {
+    /**
+     * What a release check found: an [update] to offer, nothing ([update] null, [failed] false — genuinely up
+     * to date), or it could not tell ([failed], with [rateLimited] when GitHub said so). Telling "up to date"
+     * from "could not check" matters: a failed check must neither claim "No updates found" nor count as a
+     * completed check that suppresses the next one.
+     */
+    class CheckResult(val update: Update?, val failed: Boolean = false, val rateLimited: Boolean = false)
+
+    /** GitHub's unauthenticated API limit (60/h per IP) was hit. */
+    class RateLimitedException : java.io.IOException("GitHub API rate limit reached")
+
+    /** Latest AlpDroid release carrying an APK asset and newer than this build. Blocking. */
+    fun checkForUpdate(context: Context): CheckResult = check {
         val (currentName, _) = currentVersion(context)
-        selectRelease(context) { tag ->
-            // An AlpBrowser release (alpbrowser-v*) is a different app — never offer it as an AlpDroid update.
-            !BrowserInstall.isBrowserTag(tag) && isNewer(tag, currentName)
-        }
-    }.getOrNull()
+        selectRelease(
+            context,
+            belongs = { tag -> !BrowserInstall.isBrowserTag(tag) }, // alpbrowser-v* is a different app
+            newer = { tag -> isNewer(tag, currentName) },
+        )
+    }
 
     /**
      * The AlpBrowser companion release to offer: the newest `alpbrowser-v*` release that is newer than the
      * installed AlpBrowser — or, when AlpBrowser is not installed at all, simply the newest one (so the same
-     * flow installs it the first time). Null when nothing applies. Blocking — call off the main thread.
+     * flow installs it the first time). Blocking — call off the main thread.
      */
-    fun checkForBrowserUpdate(context: Context): Update? = runCatching {
+    fun checkForBrowserUpdate(context: Context): CheckResult = check {
         val installed = BrowserInstall.installedVersion(context)?.first
-        selectRelease(context) { tag ->
-            BrowserInstall.isBrowserTag(tag) &&
-                (installed == null || isNewer(BrowserInstall.versionFromTag(tag), installed))
+        selectRelease(
+            context,
+            belongs = { tag -> BrowserInstall.isBrowserTag(tag) },
+            newer = { tag -> installed == null || isNewer(BrowserInstall.versionFromTag(tag), installed) },
+        )
+    }
+
+    private inline fun check(block: () -> Update?): CheckResult = try {
+        CheckResult(block())
+    } catch (e: RateLimitedException) {
+        CheckResult(null, failed = true, rateLimited = true)
+    } catch (e: Exception) {
+        CheckResult(null, failed = true)
+    }
+
+    /** What one page of releases tells the search to do next. Pure, so it is unit-tested without a network. */
+    internal sealed class Pick {
+        class Found(val release: org.json.JSONObject, val asset: org.json.JSONObject) : Pick()
+        /** An in-channel release that is NOT newer: releases are newest-first, so nothing further down can be either. */
+        object Stop : Pick()
+        /** Nothing decisive on this page (other channel's releases, drafts…) — look at the next one. */
+        object Continue : Pick()
+    }
+
+    internal fun pickFromPage(releases: org.json.JSONArray, belongs: (String) -> Boolean, newer: (String) -> Boolean): Pick {
+        for (i in 0 until releases.length()) {
+            val r = releases.optJSONObject(i) ?: continue
+            // Drafts AND prereleases are skipped: a prerelease with a higher tag would
+            // otherwise be offered as a stable update to every auto-checking client.
+            if (r.optBoolean("draft") || r.optBoolean("prerelease")) continue
+            val tag = r.optString("tag_name")
+            if (!belongs(tag)) continue
+            if (!newer(tag)) return Pick.Stop
+            val assets = r.optJSONArray("assets") ?: continue
+            for (j in 0 until assets.length()) {
+                val a = assets.optJSONObject(j) ?: continue
+                if (a.optString("name").endsWith(".apk")) return Pick.Found(r, a)
+            }
         }
-    }.getOrNull()
+        return Pick.Continue
+    }
 
     /**
-     * The first non-draft, non-prerelease release whose tag [accept]s and that carries an APK asset. Both the
-     * AlpDroid app and the AlpBrowser companion publish into this one repo, so a single channel's newest release
-     * can sit many entries deep once the other channel has shipped a lot — pages through several pages (not just
-     * the newest 10) so a browser update is still found when app releases dominate the list, and vice-versa.
+     * The newest release of one channel that is newer than what is installed. Both the AlpDroid app and the
+     * AlpBrowser companion publish into this one repo, so a channel's newest release can sit many entries deep
+     * once the other channel has shipped a lot — this pages (up to [MAX_RELEASE_PAGES]) until it reaches the
+     * channel's newest release, and STOPS at the first in-channel release that is not newer. In the common
+     * "already up to date" case that is a single request per channel, which keeps the 15-minute auto-check far
+     * under GitHub's unauthenticated 60-requests-per-hour limit.
      */
-    private fun selectRelease(context: Context, accept: (tag: String) -> Boolean): Update? {
+    private fun selectRelease(context: Context, belongs: (String) -> Boolean, newer: (String) -> Boolean): Update? {
         for (page in 1..MAX_RELEASE_PAGES) {
             val conn = openApi(context, "https://api.github.com/repos/$RELEASES_REPO/releases?per_page=30&page=$page")
-            val text = conn.inputStream.bufferedReader().use { it.readText() }
-            conn.disconnect()
+            val text = try {
+                val code = conn.responseCode
+                if (code == 403 || code == 429) throw RateLimitedException()
+                if (code != 200) throw java.io.IOException("HTTP $code")
+                conn.inputStream.bufferedReader().use { it.readText() }
+            } finally { conn.disconnect() }
             val releases = org.json.JSONArray(text)
             if (releases.length() == 0) break // no more pages
-            for (i in 0 until releases.length()) {
-                val r = releases.optJSONObject(i) ?: continue
-                // Drafts AND prereleases are skipped: a prerelease with a higher tag would
-                // otherwise be offered as a stable update to every auto-checking client.
-                if (r.optBoolean("draft") || r.optBoolean("prerelease")) continue
-                val tag = r.optString("tag_name")
-                if (!accept(tag)) continue
-                val assets = r.optJSONArray("assets") ?: continue
-                for (j in 0 until assets.length()) {
-                    val a = assets.optJSONObject(j) ?: continue
-                    val name = a.optString("name")
-                    if (!name.endsWith(".apk")) continue
+            when (val p = pickFromPage(releases, belongs, newer)) {
+                is Pick.Found -> {
+                    val r = p.release
+                    val a = p.asset
+                    val tag = r.optString("tag_name")
                     // The API asset URL (not browser_download_url): with Accept: octet-stream +
                     // auth it 302s to a signed host. browser_download_url without auth just 404s
                     // on a private repo, and sending the bearer token to a redirect host leaks it.
-                    return Update(tag, r.optString("name", tag), r.optString("body", ""), a.optString("browser_download_url"), a.optString("url"), a.optLong("size"), sha256Of(a.optString("digest")), name)
+                    return Update(tag, r.optString("name", tag), r.optString("body", ""), a.optString("browser_download_url"), a.optString("url"), a.optLong("size"), sha256Of(a.optString("digest")), a.optString("name"))
                 }
+                Pick.Stop -> return null
+                Pick.Continue -> {}
             }
         }
         return null
@@ -230,6 +279,19 @@ object AppUpdater {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) info.longVersionCode
         else @Suppress("DEPRECATION") info.versionCode.toLong()
     }.getOrElse { throw IllegalStateException("not a valid APK") }
+
+    /**
+     * The versionCode of [apk], but ONLY when it really is the app [expectedPackage] — null for anything else
+     * (not an APK, or a different app). Without the package check an `AlpBrowser-*.apk` asset that is actually an
+     * AlpDroid build (or the reverse) would pass the downgrade guard on its version number alone; Android's
+     * installer still enforces the signature, but the user should be refused here, with the right message.
+     */
+    fun verifiedVersionCode(context: Context, apk: File, expectedPackage: String): Long? = runCatching {
+        val info = context.packageManager.getPackageArchiveInfo(apk.absolutePath, 0) ?: return@runCatching null
+        if (info.packageName != expectedPackage) return@runCatching null
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) info.longVersionCode
+        else @Suppress("DEPRECATION") info.versionCode.toLong()
+    }.getOrNull()
 
     /** Hands [apk] to the system installer. Returns false when install permission is missing
      *  (user gets sent to Settings to grant it, then taps Update again). */

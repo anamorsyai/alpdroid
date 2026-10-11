@@ -289,10 +289,11 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Newest downloaded APK newer than the installed app, if any — the resume-install source. */
     /** A downloaded APK still worth installing: an AlpDroid APK newer than this app, or an AlpBrowser APK
-     *  newer than the installed browser (any, if it isn't installed). Channel-aware so a pending browser
-     *  install is never gated against the app's version, or shown as an app update. */
+     *  newer than the installed browser (any, if it isn't installed) — the resume-install source. Channel-aware
+     *  so a pending browser install is never gated against the app's version, or shown as an app update, and
+     *  each file must really be the app its name claims. Parses APKs (tens of MB each): never call on the main
+     *  thread — use [findPendingUpdateApkAsync]. */
     private fun findPendingUpdateApk(): java.io.File? {
         val dir = getExternalFilesDir(null)?.let { java.io.File(it, "updates") } ?: return null
         val (_, appCode) = AppUpdater.currentVersion(this)
@@ -300,13 +301,26 @@ class MainActivity : Activity() {
         return dir.listFiles { f -> f.isFile && f.name.endsWith(".apk") }
             ?.sortedByDescending { it.lastModified() }
             ?.firstOrNull { apk ->
-                val code = runCatching { AppUpdater.apkVersionCode(this, apk) }.getOrNull() ?: return@firstOrNull false
                 when {
-                    apk.name.startsWith("AlpBrowser-") -> browserCode == null || code > browserCode
-                    apk.name.startsWith("AlpDroid-") || apk.name.startsWith("AlpineTerm-") -> code > appCode
+                    apk.name.startsWith("AlpBrowser-") -> {
+                        val code = AppUpdater.verifiedVersionCode(this, apk, BrowserInstall.PACKAGE) ?: return@firstOrNull false
+                        browserCode == null || code > browserCode
+                    }
+                    apk.name.startsWith("AlpDroid-") || apk.name.startsWith("AlpineTerm-") -> {
+                        val code = AppUpdater.verifiedVersionCode(this, apk, packageName) ?: return@firstOrNull false
+                        code > appCode
+                    }
                     else -> false
                 }
             }
+    }
+
+    /** [findPendingUpdateApk] off the main thread (it parses whole APKs), result delivered back on it. */
+    private fun findPendingUpdateApkAsync(onFound: (java.io.File) -> Unit) {
+        (application as AlpineTermApp).updateExecutor.execute {
+            val apk = runCatching { findPendingUpdateApk() }.getOrNull() ?: return@execute
+            mainHandler.post { if (!isFinishing && !isDestroyed) onFound(apk) }
+        }
     }
 
     private fun showPendingInstallDialog(apk: java.io.File) {
@@ -365,6 +379,12 @@ class MainActivity : Activity() {
         super.onResume()
         updateStorageBanner()
         refreshStorageRow()
+        // Keep the agent's browserctl link current: right after AlpBrowser is installed or updated (its token or
+        // ports may be new) the next resume here re-reads them — already-open tabs pick it up too, since browserctl
+        // re-reads the env file on every call. A cheap no-op when nothing changed, and never blocks (async).
+        AlpineRootfs.rootDir(this).takeIf { it.isDirectory }?.let {
+            BrowserLink.refreshEnvAsync(this, java.io.File(it, "etc/alpdroid/alpbrowser.env"))
+        }
         // Back from the install-permission Settings screen: re-offer the waiting install
         // instead of stranding the user with no way to continue.
         if (sentToInstallSettings) {
@@ -372,8 +392,10 @@ class MainActivity : Activity() {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
                 // Prefer the exact file we were mid-install on (app or browser); fall back to a scan if
                 // the process was killed while on the Settings screen and lost that reference.
-                (pendingInstallApk?.takeIf { it.isFile } ?: findPendingUpdateApk())?.let { showPendingInstallDialog(it) }
+                val known = pendingInstallApk?.takeIf { it.isFile }
                 pendingInstallApk = null
+                if (known != null) showPendingInstallDialog(known)
+                else findPendingUpdateApkAsync { showPendingInstallDialog(it) } // scan parses APKs: off the main thread
             } else {
                 android.widget.Toast.makeText(this, "Install permission still off — tap Update to try again", android.widget.Toast.LENGTH_LONG).show()
             }
@@ -3042,6 +3064,10 @@ class MainActivity : Activity() {
 
     private var updateStatusText: TextView? = null
     private var updateCheckInFlight = false
+    /** When the last release check (app or browser) failed — automatic checks wait 5 minutes after it. */
+    @Volatile private var lastCheckFailureAtMs = 0L
+    private val failureBackoffActive: Boolean
+        get() = System.currentTimeMillis() - lastCheckFailureAtMs < 5L * 60 * 1000
 
     private fun lastUpdateStatus(): String {
         val last = settingsStore.lastUpdateCheckMs
@@ -3059,12 +3085,23 @@ class MainActivity : Activity() {
         if (updateCheckInFlight) return
         updateCheckInFlight = true
         if (manual) updateStatusText?.text = "Checking…"
-        (application as AlpineTermApp).backgroundExecutor.execute {
-            val update = AppUpdater.checkForUpdate(this)
+        (application as AlpineTermApp).updateExecutor.execute {
+            val result = AppUpdater.checkForUpdate(this)
             mainHandler.post {
                 updateCheckInFlight = false
                 if (isFinishing || isDestroyed) return@post
+                if (result.failed) {
+                    // Could not tell. Do NOT stamp the check as done (that would silence the next 15 minutes of
+                    // auto-checks after a mere network blip or rate limit) and never claim "No updates found" —
+                    // but remember the failure so automatic checks back off briefly instead of retrying on every resume.
+                    lastCheckFailureAtMs = System.currentTimeMillis()
+                    updateStatusText?.text = if (result.rateLimited) "GitHub is rate-limiting update checks — try again in a while."
+                    else "Couldn't check for updates (offline?) — try again later."
+                    if (manual) android.widget.Toast.makeText(this, updateStatusText?.text, android.widget.Toast.LENGTH_SHORT).show()
+                    return@post
+                }
                 settingsStore.lastUpdateCheckMs = System.currentTimeMillis()
+                val update = result.update
                 if (update == null) {
                     updateStatusText?.text = lastUpdateStatus()
                     if (manual) {
@@ -3088,6 +3125,7 @@ class MainActivity : Activity() {
     // a daily throttle is what silently swallowed the very first auto-check in testing.
     private val updateCheckThrottleMs = 15L * 60 * 1000
     private fun maybeAutoUpdateCheck() {
+        if (failureBackoffActive) return // the last check failed (offline / rate-limited): don't hammer on every resume
         // AlpBrowser rides the same cadence (its own throttle), so an installed companion app
         // surfaces its updates just like AlpDroid does.
         maybeAutoBrowserCheck()
@@ -3145,7 +3183,7 @@ class MainActivity : Activity() {
     }
 
     private fun downloadAndInstallUpdate(update: AppUpdater.Update) {
-        downloadApkWithAnimation(update) { apk, apkCode, cancelled ->
+        downloadApkWithAnimation(update, packageName) { apk, apkCode, cancelled ->
             if (apk == null) {
                 if (!cancelled) {
                     updateStatusText?.text = "Update check failed — try again later."
@@ -3173,7 +3211,7 @@ class MainActivity : Activity() {
      * finished file — or null on cancel/failure — to [onReady] on the main thread. Shared by the
      * app self-update and the AlpBrowser install/update so both look and behave identically.
      */
-    private fun downloadApkWithAnimation(update: AppUpdater.Update, onReady: (apk: java.io.File?, apkCode: Long?, cancelled: Boolean) -> Unit) {
+    private fun downloadApkWithAnimation(update: AppUpdater.Update, expectedPackage: String, onReady: (apk: java.io.File?, apkCode: Long?, cancelled: Boolean) -> Unit) {
         // A per-download cancel flag (not a shared field): two downloads must never un-cancel or
         // cancel each other — the Cancel button here affects only this download.
         val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -3200,7 +3238,9 @@ class MainActivity : Activity() {
             .setNegativeButton("Cancel") { _, _ -> cancelled.set(true) }
             .setCancelable(false)
             .show()
-        (application as AlpineTermApp).backgroundExecutor.execute {
+        // Its own executor: a download can take minutes, and on the shared single-thread executor every new tab
+        // would wait on "Starting shell…" until it finished.
+        (application as AlpineTermApp).updateExecutor.execute {
             var lastMs = 0L
             val apk = runCatching {
                 AppUpdater.download(this, update, { done, total ->
@@ -3218,8 +3258,9 @@ class MainActivity : Activity() {
                 }, { cancelled.get() })
             }.getOrNull()
             // Parse the APK's versionCode here, off the main thread (getPackageArchiveInfo reads the
-            // whole file) — the callers only post the final decision to the UI.
-            val apkCode = apk?.let { runCatching { AppUpdater.apkVersionCode(this, it) }.getOrNull() }
+            // whole file) — the callers only post the final decision to the UI. Null when the file is not
+            // actually the expected app (a mislabelled asset), which the callers treat as invalid.
+            val apkCode = apk?.let { AppUpdater.verifiedVersionCode(this, it, expectedPackage) }
             mainHandler.post {
                 runCatching { dialog.dismiss() }
                 if (isFinishing || isDestroyed) return@post
@@ -3250,11 +3291,20 @@ class MainActivity : Activity() {
         if (browserCheckInFlight) return
         browserCheckInFlight = true
         if (manual) browserStatusText?.text = "Checking…"
-        (application as AlpineTermApp).backgroundExecutor.execute {
-            val update = AppUpdater.checkForBrowserUpdate(this)
+        (application as AlpineTermApp).updateExecutor.execute {
+            val result = AppUpdater.checkForBrowserUpdate(this)
             mainHandler.post {
                 browserCheckInFlight = false
                 if (isFinishing || isDestroyed) return@post
+                if (result.failed) {
+                    // Same rule as the app check: a failure is neither "up to date" nor a completed check.
+                    lastCheckFailureAtMs = System.currentTimeMillis()
+                    browserStatusText?.text = if (result.rateLimited) "GitHub is rate-limiting update checks — try again in a while."
+                    else "Couldn't check for AlpBrowser updates (offline?) — try again later."
+                    if (manual) android.widget.Toast.makeText(this, browserStatusText?.text, android.widget.Toast.LENGTH_SHORT).show()
+                    return@post
+                }
+                val update = result.update
                 settingsStore.lastBrowserCheckMs = System.currentTimeMillis()
                 if (update == null) {
                     browserStatusText?.text = browserStatusLine()
@@ -3293,7 +3343,7 @@ class MainActivity : Activity() {
     }
 
     private fun downloadAndInstallBrowser(update: AppUpdater.Update) {
-        downloadApkWithAnimation(update) { apk, apkCode, cancelled ->
+        downloadApkWithAnimation(update, BrowserInstall.PACKAGE) { apk, apkCode, cancelled ->
             if (apk == null) {
                 if (!cancelled) {
                     browserStatusText?.text = browserStatusLine()

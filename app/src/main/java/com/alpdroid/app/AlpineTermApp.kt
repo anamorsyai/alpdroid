@@ -11,14 +11,22 @@ class AlpineTermApp : Application() {
         // Both are fire-and-forget maintenance: a notification-service IPC and a storage
         // enumeration + deletes that used to run synchronously here, stalling the first
         // frame on every cold start. Order-independent vs pluginJobs.start() below.
+        // The shared guest /tmp is never meant to survive a "boot" (on a real Linux box it wouldn't), and
+        // leaving stale build/download junk there is exactly how it grew to tens of GB of "cache". But a
+        // recursive delete of a huge tree is far too slow to run on the single background executor that
+        // every session start also queues on (the first tab would sit on "Starting shell…" for the whole
+        // delete), and it must not run while a plugin job's proot already has /tmp mounted. So: move the
+        // old tree aside with ONE instant rename right here — synchronously, before pluginJobs.start() or
+        // anything else can start a guest — and delete the renamed copy lazily on its own low-priority
+        // thread. The resource tick keeps /tmp bounded afterwards.
+        runCatching { TmpReaper.retire(File(cacheDir, "guest-tmp")) }
+        Thread({
+            runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) }
+            runCatching { TmpReaper.sweepRetired(cacheDir) }
+        }, "alpdroid-tmp-sweep").apply { isDaemon = true }.start()
         backgroundExecutor.execute {
             OperationNotifications.clearStale(this)
             sweepStaleProotScratch()
-            // Wipe the shared guest /tmp: /tmp is never meant to survive a "boot", and on a real
-            // Linux box it wouldn't. Nothing can be using it yet — every guest session is a child
-            // of this just-started process — and leaving stale build/download junk here is exactly
-            // how it grew to tens of GB of "cache". The resource tick keeps it bounded afterward.
-            runCatching { TmpReaper.wipe(File(cacheDir, "guest-tmp")) }
         }
         pluginJobs.start()
         resourceManager.start()
@@ -57,6 +65,11 @@ class AlpineTermApp : Application() {
      *  Daemon threads: after the deliberate "Exit" path (tabs destroyed, service stopped)
      *  idle leftovers must never keep the process itself alive behind a gone UI. */
     val backgroundExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "alpdroid-bg").apply { isDaemon = true } }
+
+    /** Release checks and APK downloads (app and AlpBrowser) have their own thread. A download can take minutes on a
+     *  slow connection and a release check pages through GitHub with long timeouts — on [backgroundExecutor], which
+     *  every tab start also queues on, either one would leave a new tab on "Starting shell…" until it finished. */
+    val updateExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "alpdroid-update").apply { isDaemon = true } }
 
     /** Backup/restore have their own thread: a 5-minute rootfs backup on the single
      *  backgroundExecutor used to wedge "+" (new tab) with no feedback until it finished. */

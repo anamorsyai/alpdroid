@@ -1,7 +1,8 @@
 #!/bin/sh
 # browserctl — drive AlpBrowser from the AlpDroid agent's Alpine shell (control API on 127.0.0.1, reachable from proot).
 # AlpDroid installs this and provisions the token automatically (read from AlpBrowser over a signed channel), so you
-# normally just run `browserctl ping`. If the token isn't set yet, open the AlpBrowser app once and retry.
+# normally just run `browserctl ping`. If it says AlpBrowser is not linked, open the AlpBrowser app once, then start a
+# new shell (or retry).
 #
 # General:   ping | ca | trust | mode [bugbounty|webdev] | navigate <url> | eval '<js>' | clear [cookies|cache|storage|all]
 # History:   history [host] | get <id>
@@ -10,59 +11,139 @@
 # Web dev:   console [limit]
 #
 # Every command's real exit status reflects whether the HTTP call actually succeeded — never trust a printed
-# "ok"-looking message over the exit code (`echo $?` after any command, or `browserctl ping || echo unreachable`).
+# "ok"-looking message over the exit code (`browserctl ping || echo unreachable`).
 
-# Token/port come from AlpBrowser via AlpDroid; this env file is refreshed on every session start.
-[ -z "$ALPBROWSER_TOKEN" ] && [ -f /etc/alpdroid/alpbrowser.env ] && . /etc/alpdroid/alpbrowser.env
-
-BASE="http://127.0.0.1:${ALPBROWSER_PORT:-8899}/v1"
+# ---- connection details --------------------------------------------------------------------------------------
+# The token/port come from AlpBrowser via AlpDroid, in a file refreshed on every session start. It is PARSED, never
+# sourced: the file lives in the guest where any program can write it, and sourcing it would run whatever it holds.
+ENVFILE="${BROWSERCTL_ENV:-/etc/alpdroid/alpbrowser.env}"
+if [ -z "${ALPBROWSER_TOKEN:-}" ] && [ -r "$ENVFILE" ]; then
+  while IFS='=' read -r k v; do
+    case "$k" in
+      ALPBROWSER_TOKEN) ALPBROWSER_TOKEN=$v ;;
+      ALPBROWSER_PORT)  [ -z "${ALPBROWSER_PORT:-}" ] && ALPBROWSER_PORT=$v ;;
+    esac
+  done < "$ENVFILE"
+fi
 TOK="${ALPBROWSER_TOKEN:-}"
+PORT="${ALPBROWSER_PORT:-8899}"
 if [ -z "$TOK" ]; then
-  echo "AlpBrowser is not linked yet. Install it from AlpDroid → Settings → About → AlpBrowser and open it once, then retry." >&2
+  echo "AlpBrowser is not linked yet. Install it from AlpDroid → Settings → About → AlpBrowser, open it once, then start a new shell." >&2
   exit 3
 fi
+# Only a plain token and a plain port ever reach a URL or header.
+case "$TOK" in *[!A-Za-z0-9]*) echo "browserctl: the AlpBrowser token looks malformed" >&2; exit 3 ;; esac
+case "$PORT" in ''|*[!0-9]*) echo "browserctl: the AlpBrowser port looks malformed" >&2; exit 3 ;; esac
+BASE="http://127.0.0.1:$PORT/v1"
 H="Authorization: Bearer $TOK"
-# wget's own exit status is preserved and returned (the trailing `echo` for a readable trailing newline would
-# otherwise reset $? to 0 on every call, silently turning every failed request into an apparent success).
+
+die() { echo "browserctl: $*" >&2; exit 2; }
+
+# ---- HTTP ----------------------------------------------------------------------------------------------------
+# wget's own exit status is preserved and returned (the trailing `echo` that gives a readable trailing newline
+# would otherwise reset $? to 0 on every call, silently turning every failed request into an apparent success).
+fail_hint() { echo "browserctl: request failed (exit $1) — is AlpBrowser open and linked? try: browserctl ping" >&2; }
 get() {
-  wget -qO- --header "$H" "$BASE$1"
+  wget -qO- --header "$H" "$BASE$1" 2>/dev/null
   st=$?
-  echo
+  [ $st -eq 0 ] && echo || fail_hint $st
   return $st
 }
 post() {
-  wget -qO- --header "$H" --header "Content-Type: application/json" --post-data "$2" "$BASE$1"
+  wget -qO- --header "$H" --header "Content-Type: application/json" --post-data "$2" "$BASE$1" 2>/dev/null
   st=$?
-  echo
+  [ $st -eq 0 ] && echo || fail_hint $st
   return $st
 }
-jstr() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/'; }
+
+# ---- JSON ----------------------------------------------------------------------------------------------------
+# A JSON string literal for ANY text — empty, multi-line, with tabs, quotes or backslashes. The whole input is
+# slurped into one pattern space first, so a newline becomes \n instead of closing and reopening the string.
+# `$!N` (append the next line only when there IS one) matters: a bare `N` on the last line makes busybox sed quit
+# without running the substitutions, so every single-line argument came out unquoted and unescaped.
+TAB=$(printf '\t')
+CR=$(printf '\r')
+jstr() {
+  [ -z "$1" ] && { printf '""'; return; }
+  printf '%s' "$1" | tr -d '\000-\010\013\014\016-\037' | sed -e ':a' -e '$!N' -e '$!ba' \
+    -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e "s/$TAB/\\\\t/g" -e "s/$CR/\\\\r/g" -e 's/\n/\\n/g' \
+    -e 's/^/"/' -e 's/$/"/'
+}
+
+# ---- CA ------------------------------------------------------------------------------------------------------
+# The control API returns the PEM inside a JSON string. Android's org.json escapes EVERY "/" as "\/" (and base64
+# is full of them), so undo "\/" as well as "\n" — leaving "\/" in would silently corrupt the certificate.
+ca_pem() {
+  raw=$(wget -qO- --header "$H" "$BASE/ca" 2>/dev/null) || return 1
+  printf '%s' "$raw" | sed -n 's/.*"pem":"\([^"]*\)".*/\1/p' | sed -e 's#\\/#/#g' -e 's/\\n/\
+/g'
+}
+# A structurally sound PEM certificate and nothing else: BEGIN/END markers and base64 lines in between.
+valid_pem() {
+  case "$1" in *"-----BEGIN CERTIFICATE-----"*"-----END CERTIFICATE-----"*) ;; *) return 1 ;; esac
+  printf '%s\n' "$1" | grep -v -e '^-----BEGIN CERTIFICATE-----$' -e '^-----END CERTIFICATE-----$' -e '^[A-Za-z0-9+/=]*$' >/dev/null && return 1
+  return 0
+}
+BUNDLE="${BROWSERCTL_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}"
+CADIR="${BROWSERCTL_CADIR:-/usr/local/share/ca-certificates}"
+trust_ca() {
+  pem=$(ca_pem) || die "could not fetch the proxy CA — AlpBrowser may not be reachable (try: browserctl ping)"
+  valid_pem "$pem" || die "AlpBrowser did not return a valid CA certificate — nothing was changed"
+  if command -v update-ca-certificates >/dev/null 2>&1; then
+    # The proper route: survives `apk upgrade ca-certificates`, which regenerates the bundle and would drop an appended cert.
+    mkdir -p "$CADIR" || die "cannot create $CADIR"
+    printf '%s\n' "$pem" > "$CADIR/alpbrowser.crt" || die "cannot write the CA file"
+    update-ca-certificates >/dev/null 2>&1 || die "update-ca-certificates failed"
+    echo "CA installed (update-ca-certificates)"
+    return 0
+  fi
+  # Minimal Alpine (no update-ca-certificates): append to the bundle, once. Already present = nothing to do.
+  first=$(printf '%s\n' "$pem" | sed -n '2p')
+  if [ -f "$BUNDLE" ] && grep -qxF -- "$first" "$BUNDLE" 2>/dev/null; then
+    echo "CA already trusted"
+    return 0
+  fi
+  printf '%s\n' "$pem" >> "$BUNDLE" || die "cannot write $BUNDLE"
+  echo "CA appended to the Alpine bundle"
+}
+
+# ---- argument checks -----------------------------------------------------------------------------------------
+# Anything that goes into a URL path/query is restricted to a safe alphabet; enums are matched exactly.
+safe() { case "$1" in ''|*[!A-Za-z0-9._*:-]*) die "unsupported characters in '$1'" ;; esac; }
+
 case "$1" in
   ping)      get "/ping" ;;
-  ca)        raw=$(get "/ca") || { echo "error: could not reach AlpBrowser (is it open? try: browserctl ping)" >&2; exit 1; }
-             printf '%s' "$raw" | sed -n 's/.*"pem":"\(.*\)".*/\1/p' | sed 's/\\n/\n/g' ;;
-  trust)     pem=$(browserctl ca) || { echo "error: could not fetch the proxy CA — AlpBrowser may not be reachable" >&2; exit 1; }
-             case "$pem" in
-               *"BEGIN CERTIFICATE"*) ;;
-               *) echo "error: AlpBrowser did not return a CA certificate — nothing was appended" >&2; exit 1 ;;
-             esac
-             printf '%s\n' "$pem" >> /etc/ssl/certs/ca-certificates.crt && echo "CA appended to Alpine bundle" ;;
-  mode)      if [ -n "$2" ]; then post "/mode" "{\"mode\":\"$2\"}"; else get "/mode"; fi ;;
-  navigate)  post "/navigate" "{\"url\":\"$2\"}" ;;
-  eval)      post "/eval" "{\"js\":$(jstr "$2")}" ;;
-  clear)     post "/clear" "{\"what\":\"${2:-all}\"}" ;;
-  history)   if [ -n "$2" ]; then get "/history?host=$2"; else get "/history"; fi ;;
-  get)       get "/history/$2" ;;
+  ca)        pem=$(ca_pem) || die "could not fetch the proxy CA — AlpBrowser may not be reachable (try: browserctl ping)"
+             printf '%s\n' "$pem" ;;
+  trust)     trust_ca ;;
+  mode)      if [ -n "$2" ]; then
+               case "$2" in bugbounty|webdev) post "/mode" "{\"mode\":\"$2\"}" ;; *) die "mode must be bugbounty or webdev" ;; esac
+             else get "/mode"; fi ;;
+  navigate)  [ -n "$2" ] || die "usage: browserctl navigate <url>"
+             post "/navigate" "{\"url\":$(jstr "$2")}" ;;
+  eval)      [ -n "$2" ] || die "usage: browserctl eval '<js>'"
+             post "/eval" "{\"js\":$(jstr "$2")}" ;;
+  clear)     case "${2:-all}" in cookies|cache|storage|all) post "/clear" "{\"what\":\"${2:-all}\"}" ;; *) die "clear takes cookies|cache|storage|all" ;; esac ;;
+  history)   if [ -n "$2" ]; then safe "$2"; get "/history?host=$2"; else get "/history"; fi ;;
+  get)       safe "$2"; get "/history/$2" ;;
   scope)     if [ -n "$2" ]; then P=""; shift; for p in "$@"; do P="$P$(jstr "$p"),"; done; post "/scope" "{\"patterns\":[${P%,}]}"; else get "/scope"; fi ;;
-  intercept) post "/intercept" "{\"enabled\":$([ "$2" = on ] && echo true || echo false),\"hostFilter\":\"${3:-}\"}" ;;
+  intercept) case "$2" in
+               on)  post "/intercept" "{\"enabled\":true,\"hostFilter\":$(jstr "${3:-}")}" ;;
+               off) post "/intercept" "{\"enabled\":false}" ;;
+               *)   die "usage: browserctl intercept on|off [hostFilter]" ;;
+             esac ;;
   pending)   get "/intercept" ;;
-  resolve)   post "/intercept/resolve" "{\"holdId\":\"$2\",\"action\":\"${3:-forward}\"}" ;;
+  resolve)   [ -n "$2" ] || die "usage: browserctl resolve <holdId> [forward|drop]"
+             case "${3:-forward}" in forward|drop) post "/intercept/resolve" "{\"holdId\":$(jstr "$2"),\"action\":\"${3:-forward}\"}" ;; *) die "action must be forward or drop" ;; esac ;;
   rule)      case "$2" in
-               add) post "/rules" "{\"part\":\"$3\",\"find\":$(jstr "$4"),\"replace\":$(jstr "$5"),\"hostContains\":\"${6:-}\"}" ;;
-               del) post "/rules/delete" "{\"id\":\"$3\"}" ;;
-               *)   echo "usage: browserctl rule add <PART> <find> <replace> [host] | rule del <id>" >&2; exit 2 ;;
+               add) case "$3" in REQ_HEADER|REQ_BODY|RES_HEADER|RES_BODY) ;; *) die "part must be REQ_HEADER, REQ_BODY, RES_HEADER or RES_BODY" ;; esac
+                    post "/rules" "{\"part\":\"$3\",\"find\":$(jstr "$4"),\"replace\":$(jstr "$5"),\"hostContains\":$(jstr "${6:-}")}" ;;
+               del) [ -n "$3" ] || die "usage: browserctl rule del <id>"
+                    post "/rules/delete" "{\"id\":$(jstr "$3")}" ;;
+               *)   die "usage: browserctl rule add <PART> <find> <replace> [host] | rule del <id>" ;;
              esac ;;
   rules)     get "/rules" ;;
-  console)   get "/console?limit=${2:-200}" ;;
+  console)   case "${2:-200}" in ''|*[!0-9]*) die "console takes a number" ;; esac
+             get "/console?limit=${2:-200}" ;;
   *) echo "usage: browserctl {ping|ca|trust|mode|navigate|eval|clear|history|get|scope|intercept|pending|resolve|rule|rules|console}" >&2; exit 2 ;;
 esac

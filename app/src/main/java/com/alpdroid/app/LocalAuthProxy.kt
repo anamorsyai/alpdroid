@@ -42,6 +42,9 @@ class LocalAuthProxy(
     @Volatile private var server: ServerSocket? = null
     /** At most this many connections at once — a flood from the Wi-Fi (or a local app) cannot exhaust threads and fds. */
     private val slots = Semaphore(MAX_CONNECTIONS)
+    /** Of those, at most this many may come from other devices: idle or slow-dripping Wi-Fi peers can never take every
+     *  slot, so this phone's own browser (the whole point of the proxy) always has room. */
+    private val lanSlots = Semaphore(MAX_LAN_CONNECTIONS)
     private val open = ConcurrentHashMap.newKeySet<Socket>()
 
     /** The port actually bound (differs from [listenPort] only when that was 0, as in tests). */
@@ -59,10 +62,12 @@ class LocalAuthProxy(
             while (!s.isClosed) {
                 try {
                     val client = s.accept()
+                    val fromPhone = (client.remoteSocketAddress as? InetSocketAddress)?.address?.isLoopbackAddress == true
                     if (!slots.tryAcquire()) { runCatching { client.close() }; continue }
+                    if (!fromPhone && !lanSlots.tryAcquire()) { slots.release(); runCatching { client.close() }; continue }
                     open += client
                     pool.execute {
-                        try { handle(client) } finally { open -= client; slots.release() }
+                        try { handle(client, fromPhone) } finally { open -= client; slots.release(); if (!fromPhone) lanSlots.release() }
                     }
                 } catch (_: Exception) {
                     // A persistent error (out of file descriptors) must not turn this loop into a busy spin.
@@ -80,11 +85,21 @@ class LocalAuthProxy(
         open.toList().forEach { runCatching { it.close() } }
     }
 
-    private fun handle(client: Socket) {
+    private fun handle(client: Socket, fromPhone: Boolean) {
         var upstream: Socket? = null
         try {
-            val fromPhone = (client.remoteSocketAddress as? InetSocketAddress)?.address?.isLoopbackAddress == true
             var head: ByteArray? = null
+            var firstByte = -1
+            if (!fromPhone) {
+                // Another device on the Wi-Fi is piped through untouched (the server asks it for the password), but it
+                // must still say SOMETHING promptly: a peer that connects and sends nothing would otherwise hold a slot
+                // and an upstream connection forever. Once it has sent a byte the timeout is lifted (a WebSocket or an
+                // event stream legitimately goes quiet in this direction).
+                client.soTimeout = LAN_FIRST_BYTE_TIMEOUT_MS
+                firstByte = client.getInputStream().read()
+                if (firstByte < 0) { runCatching { client.close() }; return }
+                client.soTimeout = 0
+            }
             if (fromPhone) {
                 // A request head must arrive promptly; a client that connects and sends nothing is dropped. The
                 // server is only contacted once there is a request to forward, so idle clients cost it nothing.
@@ -94,6 +109,7 @@ class LocalAuthProxy(
             }
             upstream = Socket().apply { connect(InetSocketAddress("127.0.0.1", upstreamPort), 3000) }
             if (head != null) upstream.getOutputStream().write(rewriteHead(head, bound()))
+            else if (firstByte >= 0) upstream.getOutputStream().write(firstByte)
             val up = upstream
             // When the server's answer ends (it closes after each request), close both sides so the loop below,
             // blocked reading the browser, ends too instead of waiting for the browser to hang up.
@@ -141,6 +157,10 @@ class LocalAuthProxy(
         val fetchSite = headers["sec-fetch-site"]
         val siteOk = fetchSite == null || fetchSite == "same-origin" || fetchSite == "none"
         val upgrade = headers.containsKey("upgrade")
+        // The map above keeps the LAST of any repeated header, while the real server may route on the first. A request
+        // that repeats a header the same-origin decision rests on is ambiguous, so it gets no login.
+        val names = lines.drop(1).filter { ':' in it }.map { it.substringBefore(':').trim().lowercase() }
+        val ambiguous = listOf("host", "origin", "sec-fetch-site").any { n -> names.count { it == n } > 1 }
         val out = ArrayList<String>()
         out += lines[0]
         for (line in lines.drop(1)) {
@@ -148,14 +168,16 @@ class LocalAuthProxy(
             if (name == "authorization" || name == "connection") continue
             out += line
         }
-        if (hostOk && originOk && siteOk) out += "Authorization: $authHeader"
+        if (hostOk && originOk && siteOk && !ambiguous) out += "Authorization: $authHeader"
         out += if (upgrade) "Connection: Upgrade" else "Connection: close"
         return (out.joinToString("\r\n") + "\r\n\r\n").toByteArray(Charsets.ISO_8859_1) + rest
     }
 
     private companion object {
         const val MAX_CONNECTIONS = 128
+        const val MAX_LAN_CONNECTIONS = 64
         const val HEAD_TIMEOUT_MS = 10_000
+        const val LAN_FIRST_BYTE_TIMEOUT_MS = 30_000
     }
 
     private fun indexOfBlankLine(b: ByteArray): Int {

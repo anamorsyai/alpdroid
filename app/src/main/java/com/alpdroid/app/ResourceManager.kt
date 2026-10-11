@@ -188,21 +188,28 @@ class ResourceManager(private val app: AlpineTermApp) {
     /** When guest /tmp was last size-checked (a full tree walk, so throttled well below the tick). */
     private var lastTmpReapAtMs = 0L
 
+    /** How long to wait before the next /tmp check — grows with how slow the last walk was. */
+    private var tmpReapIntervalMs = TMP_REAP_SECONDS * 1000
+
     /** Guest /tmp size at the last check, for the Settings status line. */
     @Volatile private var lastTmpSizeBytes = 0L
 
     /**
      * Keeps the guest `/tmp` from filling the phone (see [TmpReaper]). Walking the tree is far
-     * heavier than the per-tick /proc read, so it runs at most once every [TMP_REAP_SECONDS] and
-     * only while a session could be writing there (tabs or background services alive) — with
-     * nothing running there is nothing adding to it, and the next cold start wipes it anyway. The
-     * second walk inside reap() only happens on the rare tick that is actually over budget.
+     * heavier than the per-tick /proc read, so it runs at most once per interval and only while a
+     * session could be writing there (tabs or background services alive) — with nothing running there
+     * is nothing adding to it. The interval ADAPTS: a /tmp holding a node_modules or build tree of
+     * hundreds of thousands of files can take many seconds to walk on this thread, so the next check
+     * waits at least 30x as long as the last one took (floor [TMP_REAP_SECONDS]) — the walk can never
+     * use more than a few percent of the resource thread, however big the tree gets. The second walk
+     * inside reap() only happens on the rare check that is actually over budget.
      */
     private fun maybeReapTmp(now: Long) {
-        if (now - lastTmpReapAtMs < TMP_REAP_SECONDS * 1000) return
+        if (now - lastTmpReapAtMs < tmpReapIntervalMs) return
         lastTmpReapAtMs = now
         if (app.tabs.isEmpty() && app.services.list().isEmpty()) return
         val dir = File(app.cacheDir, "guest-tmp")
+        val started = System.nanoTime()
         val size = runCatching { TmpReaper.treeSize(dir) }.getOrDefault(0L)
         if (size > TmpReaper.HIGH_WATER_BYTES) {
             val freed = runCatching { TmpReaper.reap(dir, now = now) }.getOrDefault(0L)
@@ -211,6 +218,8 @@ class ResourceManager(private val app: AlpineTermApp) {
         } else {
             lastTmpSizeBytes = size
         }
+        val tookMs = (System.nanoTime() - started) / 1_000_000
+        tmpReapIntervalMs = maxOf(TMP_REAP_SECONDS * 1000, tookMs * 30)
     }
 
     private fun tick() {

@@ -104,6 +104,19 @@ class LocalAuthProxyTest {
         assertFalse(auth("Sec-Fetch-Site: same-site"))
     }
 
+    @Test fun aRequestRepeatingASecurityRelevantHeaderGetsNoLogin() {
+        // The proxy would see one value while the server may route on the other: ambiguous, so no login.
+        val proxy = LocalAuthProxy(4096, 4097, false, "opencode", "secret")
+        fun auth(vararg lines: String): Boolean {
+            val head = ("GET /api/session HTTP/1.1\r\n" + lines.joinToString("") { "$it\r\n" } + "\r\n").toByteArray()
+            return String(proxy.rewriteHead(head, 4096), Charsets.ISO_8859_1).contains("Authorization: ")
+        }
+        assertTrue(auth("Host: 127.0.0.1:4096"))
+        assertFalse(auth("Host: evil.example", "Host: 127.0.0.1:4096"))
+        assertFalse(auth("Host: 127.0.0.1:4096", "Host: evil.example"))
+        assertFalse(auth("Host: 127.0.0.1:4096", "Origin: http://127.0.0.1:4096", "Origin: http://evil.example"))
+    }
+
     @Test fun aClientThatSendsNothingIsDroppedAndTheProxyKeepsServing() {
         val heads = LinkedBlockingQueue<List<String>>()
         val p = startProxy(upstream(heads).localPort)

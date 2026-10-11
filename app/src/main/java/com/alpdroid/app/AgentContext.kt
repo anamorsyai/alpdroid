@@ -96,7 +96,7 @@ Field types: text, number, toggle, select (with "options"). Each field reaches t
 Reach it with the `browserctl` command (loopback 127.0.0.1, token-authenticated). It is already installed and AlpDroid provisions the token for you automatically (read from AlpBrowser over a same-signature channel) — no manual token copy. Just:
   browserctl ping                        # check it is reachable
   browserctl trust                       # make Alpine's curl/python trust the intercepted HTTPS (appends the proxy CA)
-If ping says AlpBrowser is not linked, the app isn't installed yet — the user installs it from AlpDroid -> Settings -> About -> AlpBrowser, opens it once, then it links on the next shell.
+Every browserctl command exits non-zero when it did not really succeed (check the exit status, not just the text). If ping says AlpBrowser is not linked, the app is not installed yet — the user installs it from AlpDroid -> Settings -> About -> AlpBrowser. Once it is installed AlpDroid links to it automatically (within a few seconds, also in shells that are already open); `navigate`, `eval` and `clear` need a page, so if they report an error the user has to open AlpBrowser once so it has a page.
 
 Two modes (set the one that fits the task): `browserctl mode bugbounty` or `browserctl mode webdev`.
 
@@ -110,7 +110,7 @@ Both modes:
 Bug bounty (intercept & tamper):
 - browserctl scope <pattern> ...        only capture these hosts (globs, e.g. '*.target.com'); empty = everything
 - browserctl intercept on [hostFilter]  pause matching traffic; browserctl pending shows parked messages
-- browserctl resolve <holdId> [forward|drop]   release a parked message (or edit it via the /intercept/resolve API)
+- browserctl resolve <holdId> [forward|drop]   release a parked message (editing a parked message is only possible through the /intercept/resolve API)
 - browserctl rule add <REQ_HEADER|REQ_BODY|RES_HEADER|RES_BODY> <find> <replace> [host]   auto match-and-replace
 - browserctl rules / browserctl rule del <id>
 - Repeater: re-send a request via the /resend API (method, url, headers, body) and read the response.

@@ -270,8 +270,12 @@ class ProxyEngine(
             return
         }
 
+        // Ask for an uncompressed answer: a gzip/br body can't be shown, searched or rewritten by rules. (A server that
+        // compresses anyway is decoded below.) An Upgrade handshake is left untouched.
+        val outHeaders = if (wantsUpgrade) req.headers
+        else req.headers.filterNot { it.first.equals("Accept-Encoding", ignoreCase = true) } + ("Accept-Encoding" to "identity")
         writeRequestLine(upOut, req.method, req.target, requestLine.version)
-        writeHeaders(upOut, forwardHeaders(req.headers, req.body, connectionClose = !wantsUpgrade))
+        writeHeaders(upOut, forwardHeaders(outHeaders, req.body, connectionClose = !wantsUpgrade))
         req.body?.let { upOut.write(it) }
         upOut.flush()
 
@@ -314,7 +318,8 @@ class ProxyEngine(
             val body = if (responseHasNoBody(req.method, statusCode)) BodyResult(null, false)
             else readMessageBody(upIn, responseHeaders, BODY_BUFFER_CAP, allowEofBody = true)
             if (body.truncated) tooLarge = true
-            resp = RespEdit(statusLine, statusCode, responseHeaders, body.bytes)
+            val (plainHeaders, plainBody) = decodeContentEncoding(responseHeaders, body.bytes, BODY_BUFFER_CAP)
+            resp = RespEdit(statusLine, statusCode, plainHeaders, plainBody)
         } catch (e: IOException) {
             sendError(clientOut, 502, "Bad Gateway", "Upstream error: ${e.javaClass.simpleName}")
             return

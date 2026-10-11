@@ -15,6 +15,10 @@
   uploads too large to inspect now return a clear error instead of a truncated file, and a
   misbehaving server can no longer stall or stop the proxy.
 - AlpBrowser remembers the capture scope you set across restarts.
+- Captured responses are now shown and rewritten as readable text (compressed replies are decoded), so
+  match-and-replace rules work on real traffic.
+- `browserctl` gained `resend` (Repeater), `resolve <id> edit` (change a parked request or response before
+  releasing it) and `rule header` (set a header on matching traffic).
 - AlpBrowser now has a Proxy screen: turn Intercept on and each request or response pauses so you can
   edit its method, path, status, headers or body, then forward or drop it — plus a searchable History of
   everything captured.

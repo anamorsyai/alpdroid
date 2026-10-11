@@ -115,7 +115,7 @@ class BrowserctlScriptTest {
      *  never leak into the test; [extra] adds fake tools (e.g. a recording update-ca-certificates). */
     private fun toolPath(extra: Map<String, String> = emptyMap()): String {
         val bin = File(work, "bin").apply { mkdirs() }
-        for (tool in listOf("wget", "sed", "tr", "grep", "mkdir", "cat")) {
+        for (tool in listOf("wget", "sed", "tr", "grep", "mkdir", "cat", "base64")) {
             val real = listOf("/usr/bin", "/bin", "/usr/local/bin").map { File(it, tool) }.firstOrNull { it.exists() } ?: continue
             val link = File(bin, tool)
             if (!link.exists()) java.nio.file.Files.createSymbolicLink(link.toPath(), real.toPath())
@@ -273,5 +273,47 @@ class BrowserctlScriptTest {
         val r = run("ping", token = "")
         assertEquals(3, r.code)
         assertTrue(r.err.contains("not linked"))
+    }
+
+    private fun lastPost(path: String): JSONObject = JSONObject(posts.last { it.first == path }.second)
+
+    @Test fun resendBuildsTheRepeaterRequest() {
+        val r = run("resend", "POST", "https://t.test/a?b=1", "--header", "Content-Type: application/json", "--header", "X-A: b: c",
+            "--body", "{\"k\":\"line1\nline2\"}")
+        assertEquals(r.err, 0, r.code)
+        val j = lastPost("/v1/resend")
+        assertEquals("POST", j.getString("method"))
+        assertEquals("https://t.test/a?b=1", j.getString("url"))
+        assertEquals("X-A", j.getJSONArray("headers").getJSONObject(1).getString("name"))
+        assertEquals("b: c", j.getJSONArray("headers").getJSONObject(1).getString("value"))
+        assertEquals("{\"k\":\"line1\nline2\"}", String(java.util.Base64.getDecoder().decode(j.getString("body"))))
+    }
+
+    @Test fun resendRefusesNonHttpUrls() {
+        assertNotEquals(0, run("resend", "GET", "file:///etc/passwd").code)
+        assertTrue(posts.none { it.first == "/v1/resend" })
+    }
+
+    @Test fun resolveEditSendsOnlyTheRequestedChanges() {
+        val r = run("resolve", "h7", "edit", "--method", "PUT", "--status", "403", "--header", "X-Test: 1", "--body", "hi")
+        assertEquals(r.err, 0, r.code)
+        val j = lastPost("/v1/intercept/resolve")
+        assertEquals("h7", j.getString("holdId"))
+        assertEquals("edit", j.getString("action"))
+        assertEquals("PUT", j.getString("method"))
+        assertEquals(403, j.getInt("status"))
+        assertEquals("X-Test", j.getJSONArray("setHeaders").getJSONObject(0).getString("name"))
+        assertFalse(j.has("target"))
+        assertEquals("hi", String(java.util.Base64.getDecoder().decode(j.getString("body"))))
+    }
+
+    @Test fun ruleHeaderAddsAHeaderRule() {
+        assertEquals(0, run("rule", "header", "req", "X-Bunny: yes", "target.test").code)
+        val j = lastPost("/v1/rules")
+        assertEquals("REQ_HEADER", j.getString("part"))
+        assertEquals("", j.getString("find"))
+        assertEquals("X-Bunny: yes", j.getString("replace"))
+        assertEquals("target.test", j.getString("hostContains"))
+        assertNotEquals(0, run("rule", "header", "req", "no-colon").code)
     }
 }

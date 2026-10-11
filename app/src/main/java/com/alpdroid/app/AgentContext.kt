@@ -110,10 +110,13 @@ Both modes:
 Bug bounty (intercept & tamper):
 - browserctl scope <pattern> ...        only capture these hosts (globs, e.g. '*.target.com'); empty = everything
 - browserctl intercept on [hostFilter]  pause matching traffic; browserctl pending shows parked messages
-- browserctl resolve <holdId> [forward|drop]   release a parked message (editing a parked message is only possible through the /intercept/resolve API)
+- browserctl resolve <holdId> [forward|drop]   release a parked message
+- browserctl resolve <holdId> edit [--method M] [--target PATH] [--status N] [--header 'Name: v']... [--body TEXT]   change a parked message, then release it
 - browserctl rule add <REQ_HEADER|REQ_BODY|RES_HEADER|RES_BODY> <find> <replace> [host]   auto match-and-replace
+- browserctl rule header <req|res> 'Name: value' [host]   set or add a header on all matching traffic
 - browserctl rules / browserctl rule del <id>
-- Repeater: re-send a request via the /resend API (method, url, headers, body) and read the response.
+  (For `rule add`, REQ_HEADER/RES_HEADER with a <find> rewrites header VALUES containing that text; to set a whole header use `rule header`. Response bodies are delivered uncompressed so body rules match.)
+- browserctl resend <METHOD> <url> [--header 'Name: v']... [--body TEXT]   Repeater: send a request again and print the response (status, headers, base64 body)
 
 Web development:
 - browserctl console [limit]            read the page's console.log/warn/error and uncaught JS errors

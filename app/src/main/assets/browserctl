@@ -7,7 +7,10 @@
 # General:   ping | ca | trust | mode [bugbounty|webdev] | navigate <url> | eval '<js>' | clear [cookies|cache|storage|all]
 # History:   history [host] | get <id>
 # Bug bounty: scope [<pattern> ...] | intercept on|off [hostFilter] | pending | resolve <holdId> [forward|drop]
+#             resolve <holdId> edit [--method M] [--target PATH] [--status N] [--header 'Name: v']... [--body TEXT]
 #             rule add <REQ_HEADER|REQ_BODY|RES_HEADER|RES_BODY> <find> <replace> [host] | rules | rule del <id>
+#             rule header <req|res> 'Name: value' [host]      set/add a header on all matching traffic
+# Repeater:  resend <METHOD> <url> [--header 'Name: v']... [--body TEXT]   re-send a request, print the response
 # Web dev:   console [limit]
 #
 # Every command's real exit status reflects whether the HTTP call actually succeeded — never trust a printed
@@ -111,6 +114,28 @@ trust_ca() {
 # Anything that goes into a URL path/query is restricted to a safe alphabet; enums are matched exactly.
 safe() { case "$1" in ''|*[!A-Za-z0-9._*:-]*) die "unsupported characters in '$1'" ;; esac; }
 
+# Options shared by `resolve ... edit` and `resend`: --method --target --status --header 'N: v' (repeatable) --body TEXT.
+# Sets O_METHOD O_TARGET O_STATUS O_BODY (text) and O_HDRS (a JSON array body, without brackets).
+parse_opts() {
+  O_METHOD=; O_TARGET=; O_STATUS=; O_BODY=; O_HDRS=; O_HAS_BODY=0
+  while [ $# -gt 0 ]; do
+    [ $# -ge 2 ] || die "option $1 needs a value"
+    case "$1" in
+      --method) O_METHOD=$2 ;;
+      --target) O_TARGET=$2 ;;
+      --status) case "$2" in ''|*[!0-9]*) die "--status takes a number" ;; esac; O_STATUS=$2 ;;
+      --body)   command -v base64 >/dev/null 2>&1 || die "--body needs the base64 command"
+                O_BODY=$2; O_HAS_BODY=1 ;;
+      --header) case "$2" in *:*) ;; *) die "--header needs 'Name: value'" ;; esac
+                hn=${2%%:*}; hv=${2#*:}; hv=${hv# }
+                O_HDRS="$O_HDRS{\"name\":$(jstr "$hn"),\"value\":$(jstr "$hv")}," ;;
+      *) die "unknown option $1" ;;
+    esac
+    shift 2
+  done
+}
+b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
+
 case "$1" in
   ping)      get "/ping" ;;
   ca)        pem=$(ca_pem) || die "could not fetch the proxy CA — AlpBrowser may not be reachable (try: browserctl ping)"
@@ -133,17 +158,37 @@ case "$1" in
                *)   die "usage: browserctl intercept on|off [hostFilter]" ;;
              esac ;;
   pending)   get "/intercept" ;;
-  resolve)   [ -n "$2" ] || die "usage: browserctl resolve <holdId> [forward|drop]"
-             case "${3:-forward}" in forward|drop) post "/intercept/resolve" "{\"holdId\":$(jstr "$2"),\"action\":\"${3:-forward}\"}" ;; *) die "action must be forward or drop" ;; esac ;;
+  resolve)   [ -n "$2" ] || die "usage: browserctl resolve <holdId> [forward|drop|edit ...]"
+             case "${3:-forward}" in
+               forward|drop) post "/intercept/resolve" "{\"holdId\":$(jstr "$2"),\"action\":\"${3:-forward}\"}" ;;
+               edit) id=$2; shift 3; parse_opts "$@"
+                     J="{\"holdId\":$(jstr "$id"),\"action\":\"edit\""
+                     [ -n "$O_METHOD" ] && J="$J,\"method\":$(jstr "$O_METHOD")"
+                     [ -n "$O_TARGET" ] && J="$J,\"target\":$(jstr "$O_TARGET")"
+                     [ -n "$O_STATUS" ] && J="$J,\"status\":$O_STATUS"
+                     [ -n "$O_HDRS" ] && J="$J,\"setHeaders\":[${O_HDRS%,}]"
+                     [ "$O_HAS_BODY" = 1 ] && J="$J,\"body\":\"$(b64 "$O_BODY")\""
+                     post "/intercept/resolve" "$J}" ;;
+               *) die "action must be forward, drop or edit" ;;
+             esac ;;
+  resend)    case "$2" in ''|*[!A-Za-z]*) die "usage: browserctl resend <METHOD> <url> [--header 'N: v']... [--body TEXT]" ;; esac
+             case "$3" in http://*|https://*) ;; *) die "resend needs an http:// or https:// url" ;; esac
+             m=$2; u=$3; shift 3; parse_opts "$@"
+             J="{\"method\":$(jstr "$m"),\"url\":$(jstr "$u"),\"headers\":[${O_HDRS%,}]"
+             [ "$O_HAS_BODY" = 1 ] && J="$J,\"body\":\"$(b64 "$O_BODY")\""
+             post "/resend" "$J}" ;;
   rule)      case "$2" in
                add) case "$3" in REQ_HEADER|REQ_BODY|RES_HEADER|RES_BODY) ;; *) die "part must be REQ_HEADER, REQ_BODY, RES_HEADER or RES_BODY" ;; esac
                     post "/rules" "{\"part\":\"$3\",\"find\":$(jstr "$4"),\"replace\":$(jstr "$5"),\"hostContains\":$(jstr "${6:-}")}" ;;
+               header) case "$3" in req) part=REQ_HEADER ;; res) part=RES_HEADER ;; *) die "usage: browserctl rule header <req|res> 'Name: value' [host]" ;; esac
+                       case "$4" in *:*) ;; *) die "give the header as 'Name: value'" ;; esac
+                       post "/rules" "{\"part\":\"$part\",\"find\":\"\",\"replace\":$(jstr "$4"),\"hostContains\":$(jstr "${5:-}")}" ;;
                del) [ -n "$3" ] || die "usage: browserctl rule del <id>"
                     post "/rules/delete" "{\"id\":$(jstr "$3")}" ;;
-               *)   die "usage: browserctl rule add <PART> <find> <replace> [host] | rule del <id>" ;;
+               *)   die "usage: browserctl rule add <PART> <find> <replace> [host] | rule header <req|res> 'Name: value' [host] | rule del <id>" ;;
              esac ;;
   rules)     get "/rules" ;;
   console)   case "${2:-200}" in ''|*[!0-9]*) die "console takes a number" ;; esac
              get "/console?limit=${2:-200}" ;;
-  *) echo "usage: browserctl {ping|ca|trust|mode|navigate|eval|clear|history|get|scope|intercept|pending|resolve|rule|rules|console}" >&2; exit 2 ;;
+  *) echo "usage: browserctl {ping|ca|trust|mode|navigate|eval|clear|history|get|scope|intercept|pending|resolve|resend|rule|rules|console}" >&2; exit 2 ;;
 esac

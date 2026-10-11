@@ -198,3 +198,35 @@ private class ByteArrayBuilder {
 /** Responses that never carry a body whatever their headers say (RFC 9110 §6.4.1): reading one would block. */
 internal fun responseHasNoBody(requestMethod: String, status: Int?): Boolean =
     requestMethod.equals("HEAD", ignoreCase = true) || status == 204 || status == 304 || (status != null && status in 100..199)
+
+/**
+ * Undoes gzip/deflate on a buffered response body so capture, rules and interception see the real text instead of
+ * compressed bytes (a find-and-replace can never match inside a gzip stream). The Content-Encoding header is dropped
+ * and the caller re-frames Content-Length. Anything else (br, zstd, a corrupt stream, a result over [cap]) is left
+ * exactly as received.
+ */
+internal fun decodeContentEncoding(headers: List<Pair<String, String>>, body: ByteArray?, cap: Int): Pair<List<Pair<String, String>>, ByteArray?> {
+    if (body == null || body.isEmpty()) return headers to body
+    val enc = headerValue(headers, "Content-Encoding")?.trim()?.lowercase() ?: return headers to body
+    val decoded = runCatching {
+        val input: InputStream = when (enc) {
+            "gzip", "x-gzip" -> java.util.zip.GZIPInputStream(body.inputStream())
+            "deflate" -> java.util.zip.InflaterInputStream(body.inputStream())
+            else -> return headers to body
+        }
+        input.use { readCappedOrNull(it, cap) }
+    }.getOrNull() ?: return headers to body
+    return headers.filterNot { it.first.equals("Content-Encoding", ignoreCase = true) } to decoded
+}
+
+private fun readCappedOrNull(input: InputStream, cap: Int): ByteArray? {
+    val out = java.io.ByteArrayOutputStream()
+    val buf = ByteArray(16 * 1024)
+    while (true) {
+        val n = input.read(buf)
+        if (n < 0) break
+        if (out.size() + n > cap) return null
+        out.write(buf, 0, n)
+    }
+    return out.toByteArray()
+}

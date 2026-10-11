@@ -100,4 +100,34 @@ class ProxyHardeningTest {
         assertTrue(responseHasNoBody("GET", 304))
         assertTrue(!responseHasNoBody("GET", 200))
     }
+
+    @Test fun `a gzip answer is decoded for the client and the request asks for identity`() {
+        val seen = java.util.concurrent.LinkedBlockingQueue<String>()
+        val gz = java.io.ByteArrayOutputStream().also { o -> java.util.zip.GZIPOutputStream(o).use { it.write("hello httpbin".toByteArray()) } }.toByteArray()
+        val server = ServerSocket(0).also { servers += it }
+        thread(isDaemon = true) {
+            while (!server.isClosed) {
+                try {
+                    server.accept().use { c ->
+                        val r = c.getInputStream().bufferedReader(Charsets.ISO_8859_1)
+                        seen.put(generateSequence { r.readLine() }.takeWhile { it.isNotEmpty() }.joinToString("\n"))
+                        c.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: ${gz.size}\r\n\r\n".toByteArray() + gz)
+                    }
+                } catch (_: Exception) { }
+            }
+        }
+        val store = TransactionStore()
+        val e = ProxyEngine(0, TrafficSource.BROWSER, store, ScopeFilter(), respectScope = false)
+        e.start(scope); Thread.sleep(150)
+        val out = Socket("127.0.0.1", e.boundPort).use { c ->
+            c.soTimeout = 5000
+            c.getOutputStream().write("GET http://127.0.0.1:${server.localPort}/x HTTP/1.1\r\nHost: h\r\nAccept-Encoding: gzip, br\r\n\r\n".toByteArray())
+            c.getInputStream().readBytes().toString(Charsets.ISO_8859_1)
+        }
+        assertTrue(out.endsWith("hello httpbin"), out)
+        assertTrue(!out.contains("Content-Encoding", ignoreCase = true), out)
+        assertTrue(seen.poll(2, java.util.concurrent.TimeUnit.SECONDS)!!.contains("Accept-Encoding: identity"))
+        Thread.sleep(100)
+        assertEquals("hello httpbin", store.transactions.value.single().responseBody!!.toString(Charsets.UTF_8))
+    }
 }

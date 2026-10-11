@@ -233,11 +233,15 @@ class BrowserBridge(
         val held = intercept.get(holdId) ?: return 404 to error("no such hold (already resolved?)")
         val action = body.optString("action", "forward")
         val bodyBytes = if (body.has("body")) runCatching { Base64.getDecoder().decode(body.optString("body")) }.getOrNull() else null
-        val headers = if (body.has("headers")) jsonToHeaders(body.optJSONArray("headers")) else null
+        // "headers" replaces the whole list; "setHeaders" only adds/overrides the named ones (the easy way to tweak one).
+        val headers = if (body.has("headers")) jsonToHeaders(body.optJSONArray("headers"))
+        else jsonToHeaders(body.optJSONArray("setHeaders"))?.let { set ->
+            held.headers.filterNot { h -> set.any { it.first.equals(h.first, ignoreCase = true) } } + set
+        }
         val ok = if (held.kind == "request") {
             val a = when (action) {
                 "drop" -> RequestAction.Drop
-                "replace" -> RequestAction.Replace(
+                "replace", "edit" -> RequestAction.Replace(
                     method = body.optStringOrNull("method"),
                     target = body.optStringOrNull("target"),
                     headers = headers,
@@ -249,7 +253,7 @@ class BrowserBridge(
         } else {
             val a = when (action) {
                 "drop" -> ResponseAction.Drop
-                "replace" -> ResponseAction.Replace(
+                "replace", "edit" -> ResponseAction.Replace(
                     status = if (body.has("status")) body.optInt("status") else null,
                     headers = headers,
                     body = bodyBytes,

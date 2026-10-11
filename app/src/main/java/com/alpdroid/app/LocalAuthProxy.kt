@@ -82,7 +82,7 @@ class LocalAuthProxy(
         runCatching { server?.close() }
         server = null
         // Connections already open (a page's event stream, a WebSocket) end with the server they belong to.
-        open.toList().forEach { runCatching { it.close() } }
+        open.forEach { runCatching { it.close() } } // weakly-consistent iteration: handlers remove themselves while this runs
     }
 
     private fun handle(client: Socket, fromPhone: Boolean) {

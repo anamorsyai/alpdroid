@@ -24,6 +24,14 @@ class BrowserBridgeTest {
     private var mode = "bugbounty"
     private val console = ConsoleBuffer()
     private val token = "secret-token"
+    private var capture = false
+    private val fakeTabs = mutableListOf(TabInfo(1, "One", "https://a.test/", true))
+    private val tabsHost = object : TabsHost {
+        override fun list() = fakeTabs.toList()
+        override fun open(url: String): Int? = if (fakeTabs.size >= 3) null else (fakeTabs.maxOf { it.id } + 1).also { fakeTabs.add(TabInfo(it, "", url, false)) }
+        override fun switchTo(id: Int) = fakeTabs.any { it.id == id }
+        override fun close(id: Int) = fakeTabs.removeAll { it.id == id }
+    }
 
     @Before fun setUp() {
         store = TransactionStore()
@@ -47,6 +55,7 @@ class BrowserBridgeTest {
             modeSet = { mode = it },
             onClear = { cleared.add(it) },
             preferredPort = 0,
+            captureGet = { capture }, captureSet = { capture = it }, tabs = tabsHost,
         )
         bridge.start()
     }
@@ -159,5 +168,36 @@ class BrowserBridgeTest {
     @Test fun `clear reaches its callback`() {
         call("POST", "/v1/clear", body = org.json.JSONObject().put("what", "cookies").toString())
         assertEquals("cookies", cleared.single())
+    }
+
+    @Test fun `capture can be read and switched`() {
+        assertEquals(false, call("GET", "/v1/capture").second.getBoolean("capture"))
+        assertEquals(true, call("POST", "/v1/capture", body = """{"enabled":true}""").second.getBoolean("capture"))
+        assertEquals(400, call("POST", "/v1/capture", body = "{}").first)
+    }
+
+    @Test fun `tabs can be listed opened switched and closed`() {
+        assertEquals(1, call("GET", "/v1/tabs").second.getJSONArray("tabs").length())
+        val (code, opened) = call("POST", "/v1/tabs", body = """{"action":"new","url":"https://b.test"}""")
+        assertEquals(200, code)
+        assertEquals(2, opened.getInt("id"))
+        assertEquals(200, call("POST", "/v1/tabs", body = """{"action":"switch","id":2}""").first)
+        assertEquals(404, call("POST", "/v1/tabs", body = """{"action":"switch","id":99}""").first)
+        assertEquals(200, call("POST", "/v1/tabs", body = """{"action":"close","id":2}""").first)
+        assertEquals(400, call("POST", "/v1/tabs", body = """{"action":"nope"}""").first)
+        call("POST", "/v1/tabs", body = """{"action":"new"}"""); call("POST", "/v1/tabs", body = """{"action":"new"}""")
+        assertEquals(409, call("POST", "/v1/tabs", body = """{"action":"new"}""").first)
+    }
+
+    @Test fun `intercept settings include the response and asset switches`() {
+        val j = call("POST", "/v1/intercept", body = """{"enabled":true,"responses":true,"skipStatic":false}""").second
+        assertEquals(true, j.getBoolean("responses"))
+        assertEquals(false, j.getBoolean("skipStatic"))
+    }
+
+    @Test fun `a rule can be switched off through the api`() {
+        val id = call("POST", "/v1/rules", body = """{"part":"RES_BODY","find":"a","replace":"b"}""").second.getString("id")
+        assertEquals(200, call("POST", "/v1/rules/enable", body = """{"id":"$id","enabled":false}""").first)
+        assertEquals(404, call("POST", "/v1/rules/enable", body = """{"id":"nope"}""").first)
     }
 }

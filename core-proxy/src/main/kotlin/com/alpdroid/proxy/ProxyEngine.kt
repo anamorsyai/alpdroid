@@ -12,8 +12,8 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -46,7 +46,7 @@ class ProxyEngine(
     /**
      * Provider (not a value): the CA is generated on first use, and RSA keygen must never
      * run on the main thread — engines are constructed in Application.onCreate, but this
-     * lambda only runs on Dispatchers.IO when the first CONNECT arrives.
+     * lambda only runs on connDispatcher when the first CONNECT arrives.
      */
     private val tlsMitmProvider: () -> TlsMitm? = { null },
     /**
@@ -64,13 +64,13 @@ class ProxyEngine(
 
     /**
      * Returns immediately — binding the socket is itself blocking I/O, so it (and the accept
-     * loop) runs entirely on [Dispatchers.IO], not on whatever thread calls [start]. This
+     * loop) runs entirely on [connDispatcher], not on whatever thread calls [start]. This
      * matters because [start] gets called straight from [android.app.Application.onCreate] on
      * the main thread for two engine instances; a blocking bind() there was a real (if small)
      * main-thread I/O violation on every app launch.
      */
     fun start(coroutineScope: CoroutineScope) {
-        job = coroutineScope.launch(Dispatchers.IO) {
+        job = coroutineScope.launch(connDispatcher) {
             val server = ServerSocket()
             server.reuseAddress = true
             server.bind(InetSocketAddress("127.0.0.1", port))
@@ -88,7 +88,7 @@ class ProxyEngine(
                 }
                 // A throwable escaping a child would cancel this whole accept loop (structured concurrency)
                 // and silently kill the proxy, so every failure of one connection is contained to it.
-                launch(Dispatchers.IO) {
+                launch(connDispatcher) {
                     try {
                         client.soTimeout = IDLE_TIMEOUT_MS
                         handleClient(client)
@@ -168,7 +168,7 @@ class ProxyEngine(
     /** Copies both directions until either ends, then tears both sockets down so the other blocking read returns. */
     private suspend fun bridge(
         clientIn: InputStream, clientOut: OutputStream, upIn: InputStream, upOut: OutputStream, closeAll: () -> Unit,
-    ) = withContext(Dispatchers.IO) {
+    ) = withContext(connDispatcher) {
         val toUpstream = launch { pump(clientIn, upOut) }
         val toClient = launch { pump(upIn, clientOut) }
         val tearDown: (Throwable?) -> Unit = { closeAll() }
@@ -179,35 +179,39 @@ class ProxyEngine(
     }
 
     /**
-     * Terminates the client's TLS with our leaf certificate, opens a real TLS session
-     * upstream, and relays the decrypted HTTP with full capture. After CONNECT the client
-     * speaks origin-form (`GET /path`), not proxy absolute-form — the target comes from
-     * the CONNECT itself, not the request line.
+     * Terminates the client's TLS with our leaf certificate and relays the decrypted HTTP with full capture. After
+     * CONNECT the client speaks origin-form (`GET /path`), not proxy absolute-form — the target comes from the
+     * CONNECT itself. The tunnel is kept open for several requests (HTTP keep-alive) and the upstream TLS session is
+     * reused with it: a browser fetches dozens of subresources per page, and paying a CONNECT plus two TLS handshakes
+     * for each one was the main reason intercepted browsing felt slow.
      */
-    private suspend fun handleMitmTunnel(client: Socket, target: Target, mitm: TlsMitm) = withContext(Dispatchers.IO) {
+    private suspend fun handleMitmTunnel(client: Socket, target: Target, mitm: TlsMitm) = withContext(connDispatcher) {
         client.getOutputStream().write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
         client.getOutputStream().flush()
-        // Create + handshake inside the try so a throw anywhere (an untrusted/rejected upstream cert, a
-        // hostname-verification failure, a handshake error) closes BOTH sockets.
+        // Create + handshake inside the try so a throw anywhere (a rejected client handshake, an untrusted upstream
+        // certificate, a hostname mismatch) closes BOTH sockets.
         val tlsClient = mitm.wrapClient(client, target.host)
-        var upstream: SSLSocket? = null
+        val upstream = Upstream(IDLE_TIMEOUT_MS) { mitm.upstreamSocket(target.host, target.port).also { it.startHandshake() } }
         try {
             tlsClient.startHandshake()
-            upstream = mitm.upstreamSocket(target.host, target.port)
-            upstream.soTimeout = IDLE_TIMEOUT_MS
-            upstream.startHandshake()
             val clientInput = BufferedInputStream(tlsClient.inputStream)
-            val requestLine = readLine(clientInput)?.let(::parseRequestLine) ?: return@withContext
-            val requestHeaders = readHeaders(clientInput)
-            val up = upstream
-            exchange(
-                clientInput, tlsClient.outputStream, up.inputStream, up.outputStream,
-                requestLine, requestHeaders, "https", target, requestLine.target.ifEmpty { "/" },
-                setIdle = { ms -> tlsClient.soTimeout = ms; up.soTimeout = ms },
-                closeAll = { up.closeQuietly(); tlsClient.closeQuietly() },
-            )
+            var served = 0
+            while (served < MAX_REQUESTS_PER_TUNNEL) {
+                // Between requests the client may sit idle; don't hold a thread for the full request timeout.
+                tlsClient.soTimeout = if (served == 0) IDLE_TIMEOUT_MS else KEEPALIVE_IDLE_MS
+                val line = try { readLine(clientInput) } catch (e: java.net.SocketTimeoutException) { null } ?: break
+                val requestLine = parseRequestLine(line) ?: break
+                val requestHeaders = readHeaders(clientInput)
+                tlsClient.soTimeout = IDLE_TIMEOUT_MS
+                served++
+                val keepOpen = exchange(
+                    clientInput, tlsClient.outputStream, tlsClient, requestLine, requestHeaders,
+                    "https", target, requestLine.target.ifEmpty { "/" }, upstream, allowReuse = true,
+                )
+                if (!keepOpen) break
+            }
         } finally {
-            upstream?.closeQuietly()
+            upstream.close()
             tlsClient.closeQuietly()
         }
     }
@@ -219,35 +223,77 @@ class ProxyEngine(
         requestHeaders: List<Pair<String, String>>,
         target: Target,
     ) {
-        val upstream = try {
-            Socket().apply { connect(InetSocketAddress(target.host, target.port), CONNECT_TIMEOUT_MS); soTimeout = IDLE_TIMEOUT_MS }
+        val socket = try {
+            Socket().apply { connect(InetSocketAddress(target.host, target.port), CONNECT_TIMEOUT_MS) }
         } catch (e: IOException) {
             sendError(client.getOutputStream(), 502, "Bad Gateway", "Could not reach ${target.host}:${target.port}")
             return
         }
-        upstream.use {
+        val upstream = Upstream(IDLE_TIMEOUT_MS) { socket }
+        try {
             exchange(
-                clientInput, client.getOutputStream(), BufferedInputStream(upstream.getInputStream()), upstream.getOutputStream(),
-                requestLine, requestHeaders, target.scheme, target, target.path.ifEmpty { "/" },
-                setIdle = { ms -> client.soTimeout = ms; upstream.soTimeout = ms },
-                closeAll = { upstream.closeQuietly(); client.closeQuietly() },
+                clientInput, client.getOutputStream(), client, requestLine, requestHeaders,
+                target.scheme, target, target.path.ifEmpty { "/" }, upstream, allowReuse = false,
             )
+        } finally { upstream.close() }
+    }
+
+    /** The connection to the real server for one tunnel: opened on first use, reopened after it was closed. */
+    private class Upstream(private val soTimeoutMs: Int, private val open: () -> Socket) {
+        private var socket: Socket? = null
+        private var input: InputStream? = null
+        private var output: OutputStream? = null
+        /** True once a full exchange completed on this connection — a failure then may just be a stale idle socket. */
+        var used = false
+
+        val isOpen: Boolean get() = socket != null
+
+        fun streams(): Pair<InputStream, OutputStream> {
+            if (socket == null) {
+                val s = open()
+                s.soTimeout = soTimeoutMs
+                socket = s; input = BufferedInputStream(s.getInputStream()); output = s.getOutputStream(); used = false
+            }
+            return input!! to output!!
+        }
+
+        fun setTimeout(ms: Int) { runCatching { socket?.soTimeout = ms } }
+
+        fun close() {
+            try { socket?.close() } catch (_: IOException) { }
+            socket = null; input = null; output = null; used = false
         }
     }
 
+    private class ResponseHead(val statusLine: String, val status: Int?, val headers: List<Pair<String, String>>)
+
+    /** Reads the status line and headers of the final response, skipping interim 1xx answers; null if the peer closed. */
+    private fun readResponseHead(upIn: InputStream): ResponseHead? {
+        var statusLine = readLine(upIn) ?: return null
+        var code = statusLine.split(' ').getOrNull(1)?.toIntOrNull()
+        while (code != null && code in 100..199 && code != 101) {
+            readHeaders(upIn)
+            statusLine = readLine(upIn) ?: return null
+            code = statusLine.split(' ').getOrNull(1)?.toIntOrNull()
+        }
+        return ResponseHead(statusLine, code, readHeaders(upIn))
+    }
+
     /**
-     * One request/response over an already-open upstream — the single relay used by both the plain-HTTP and the
-     * decrypted-HTTPS paths, so framing, interception, capture and error handling cannot drift apart.
+     * One request/response over [upstream] — the single relay used by both the plain-HTTP and the decrypted-HTTPS
+     * paths, so framing, interception, capture and error handling cannot drift apart. Returns true when the client
+     * connection may carry another request (only ever with [allowReuse]).
      */
     private suspend fun exchange(
-        clientIn: InputStream, clientOut: OutputStream, upIn: InputStream, upOut: OutputStream,
+        clientIn: InputStream, clientOut: OutputStream, clientSocket: Socket,
         requestLine: RequestLine, requestHeaders: List<Pair<String, String>>,
         scheme: String, target: Target, requestTarget: String,
-        setIdle: (Int) -> Unit, closeAll: () -> Unit,
-    ) {
+        upstream: Upstream, allowReuse: Boolean,
+    ): Boolean {
         val start = Instant.now()
-        val wantsUpgrade = headerValue(requestHeaders, "Upgrade") != null &&
-            headerValue(requestHeaders, "Connection")?.contains("upgrade", ignoreCase = true) == true
+        val connTokens = headerValue(requestHeaders, "Connection")?.lowercase().orEmpty()
+        val wantsUpgrade = headerValue(requestHeaders, "Upgrade") != null && connTokens.contains("upgrade")
+        val clientWantsClose = connTokens.contains("close") || (requestLine.version == "HTTP/1.0" && !connTokens.contains("keep-alive"))
 
         // A client that sent Expect: 100-continue waits for this before sending the body — without it, it stalls.
         val expects = headerValue(requestHeaders, "Expect")?.contains("100-continue", ignoreCase = true) == true
@@ -256,7 +302,7 @@ class ProxyEngine(
         val requestBody = readMessageBody(clientIn, requestHeaders, BODY_BUFFER_CAP, allowEofBody = false)
         if (requestBody.truncated) {
             sendError(clientOut, 413, "Payload Too Large", "Request body is larger than the ${BODY_BUFFER_CAP / (1024 * 1024)} MiB the proxy can intercept")
-            return
+            return false
         }
 
         val txId = UUID.randomUUID().toString()
@@ -267,78 +313,108 @@ class ProxyEngine(
         applyRequestIntercept(txId, scheme, target.host, target.port, req)
         if (req.drop) {
             recordDropped(txId, start, req.method, scheme, target.host, target.port, req.target, req.headers, req.body)
-            return
+            return false
         }
 
-        // Ask for an uncompressed answer: a gzip/br body can't be shown, searched or rewritten by rules. (A server that
-        // compresses anyway is decoded below.) An Upgrade handshake is left untouched.
-        val outHeaders = if (wantsUpgrade) req.headers
-        else req.headers.filterNot { it.first.equals("Accept-Encoding", ignoreCase = true) } + ("Accept-Encoding" to "identity")
-        writeRequestLine(upOut, req.method, req.target, requestLine.version)
-        writeHeaders(upOut, forwardHeaders(outHeaders, req.body, connectionClose = !wantsUpgrade))
-        req.body?.let { upOut.write(it) }
-        upOut.flush()
+        // Only gzip/deflate are asked for (we can decode those for capture and rules; br/zstd we could not).
+        val outHeaders = if (wantsUpgrade) req.headers else narrowAcceptEncoding(req.headers)
 
-        val resp: RespEdit
-        var tooLarge = false
-        try {
-            var statusLine = readLine(upIn)
-            var statusCode = statusLine?.split(' ')?.getOrNull(1)?.toIntOrNull()
-            // Interim 1xx responses (100 Continue, 103 Early Hints) are not the final answer: skip to the real one.
-            while (statusCode != null && statusCode in 100..199 && statusCode != 101) {
-                readHeaders(upIn)
-                statusLine = readLine(upIn)
-                statusCode = statusLine?.split(' ')?.getOrNull(1)?.toIntOrNull()
+        // Send, and read the head of the answer. A connection reused from an earlier exchange may have been closed by
+        // the server while idle; that shows up as a failed write/read, and is retried once on a fresh connection.
+        var head: ResponseHead? = null
+        var attempt = 0
+        while (head == null) {
+            val reusing = upstream.isOpen && upstream.used
+            try {
+                val (upIn, upOut) = upstream.streams()
+                writeRequestLine(upOut, req.method, req.target, requestLine.version)
+                writeHeaders(upOut, forwardHeaders(outHeaders, req.body, connectionClose = !allowReuse))
+                req.body?.let { upOut.write(it) }
+                upOut.flush()
+                head = readResponseHead(upIn) ?: throw IOException("connection closed")
+            } catch (e: IOException) {
+                upstream.close()
+                if (reusing && attempt++ == 0) continue
+                val timedOut = e is java.net.SocketTimeoutException
+                sendError(clientOut, if (timedOut) 504 else 502, if (timedOut) "Gateway Timeout" else "Bad Gateway", "Upstream error: ${e.javaClass.simpleName}")
+                return false
             }
-            if (statusLine == null) {
-                sendError(clientOut, 502, "Bad Gateway", "The server closed the connection without answering")
-                return
-            }
-            val responseHeaders = readHeaders(upIn)
+        }
+        val (upIn, upOut) = upstream.streams()
 
-            if (statusCode == 101 && wantsUpgrade) {
-                // Protocol switch (WebSocket): relay the 101 as-is and pipe bytes both ways, uncaptured.
-                clientOut.write("$statusLine\r\n".toByteArray(Charsets.US_ASCII))
-                writeHeaders(clientOut, responseHeaders)
-                clientOut.flush()
-                recordIfInScope(
-                    HttpTransaction(
-                        id = txId, source = source, timestamp = start, method = req.method, scheme = scheme,
-                        host = target.host, port = target.port, path = req.target, requestHeaders = req.headers,
-                        responseStatus = 101, responseHeaders = responseHeaders,
-                        durationMs = Instant.now().toEpochMilli() - start.toEpochMilli(),
-                    ),
-                    target.host,
-                )
-                setIdle(0)
-                bridge(clientIn, clientOut, upIn, upOut, closeAll)
-                return
-            }
+        if (head.status == 101 && wantsUpgrade) {
+            // Protocol switch (WebSocket): relay the 101 as-is and pipe bytes both ways, uncaptured.
+            clientOut.write("${head.statusLine}\r\n".toByteArray(Charsets.US_ASCII))
+            writeHeaders(clientOut, head.headers)
+            clientOut.flush()
+            recordIfInScope(
+                HttpTransaction(
+                    id = txId, source = source, timestamp = start, method = req.method, scheme = scheme,
+                    host = target.host, port = target.port, path = req.target, requestHeaders = req.headers,
+                    responseStatus = 101, responseHeaders = head.headers,
+                    durationMs = Instant.now().toEpochMilli() - start.toEpochMilli(),
+                ),
+                target.host,
+            )
+            runCatching { clientSocket.soTimeout = 0 }
+            upstream.setTimeout(0)
+            bridge(clientIn, clientOut, upIn, upOut) { upstream.close(); try { clientSocket.close() } catch (_: IOException) { } }
+            return false
+        }
 
-            val body = if (responseHasNoBody(req.method, statusCode)) BodyResult(null, false)
-            else readMessageBody(upIn, responseHeaders, BODY_BUFFER_CAP, allowEofBody = true)
-            if (body.truncated) tooLarge = true
-            val (plainHeaders, plainBody) = decodeContentEncoding(responseHeaders, body.bytes, BODY_BUFFER_CAP)
-            resp = RespEdit(statusLine, statusCode, plainHeaders, plainBody)
+        val noBody = responseHasNoBody(req.method, head.status)
+        val body = try {
+            if (noBody) BodyResult(null, false) else readMessageBody(upIn, head.headers, BODY_BUFFER_CAP, allowEofBody = true)
         } catch (e: IOException) {
-            sendError(clientOut, 502, "Bad Gateway", "Upstream error: ${e.javaClass.simpleName}")
-            return
+            upstream.close()
+            sendError(clientOut, if (e is java.net.SocketTimeoutException) 504 else 502, "Bad Gateway", "Upstream error: ${e.javaClass.simpleName}")
+            return false
         }
 
-        if (tooLarge) {
+        // Is the upstream connection still good for the next request? Not when the body ran to EOF, or the server said close.
+        val respTokens = headerValue(head.headers, "Connection")?.lowercase().orEmpty()
+        val eofDelimited = !noBody && headerValue(head.headers, "Content-Length") == null &&
+            headerValue(head.headers, "Transfer-Encoding")?.contains("chunked", ignoreCase = true) != true
+        val upstreamReusable = allowReuse && !eofDelimited && !respTokens.contains("close") && !head.statusLine.startsWith("HTTP/1.0")
+        if (upstreamReusable) upstream.used = true else upstream.close()
+
+        if (body.truncated) {
             // Forwarding the first 25 MiB as a complete 200 would hand the client a silently corrupt download.
+            upstream.close()
             sendError(clientOut, 502, "Bad Gateway", "Response is larger than the ${BODY_BUFFER_CAP / (1024 * 1024)} MiB the proxy can intercept")
             recordDropped(txId, start, req.method, scheme, target.host, target.port, req.target, req.headers, req.body)
-            return
+            return false
         }
 
+        val (plainHeaders, plainBody) = decodeContentEncoding(head.headers, body.bytes, BODY_BUFFER_CAP)
+        val resp = RespEdit(head.statusLine, head.status, plainHeaders, plainBody)
         applyResponseIntercept(txId, target.host, target.port, resp)
-        if (!resp.drop) {
-            resp.statusLine?.let { clientOut.write("$it\r\n".toByteArray(Charsets.US_ASCII)) }
-            writeHeaders(clientOut, forwardHeaders(resp.headers, resp.body, connectionClose = true))
-            resp.body?.let { clientOut.write(it) }
-            clientOut.flush()
+        if (resp.drop) {
+            recordIfInScope(
+                HttpTransaction(
+                    id = txId, source = source, timestamp = start, method = req.method, scheme = scheme,
+                    host = target.host, port = target.port, path = req.target, requestHeaders = req.headers,
+                    requestBody = req.body?.take(maxCapturedBodyBytes),
+                    durationMs = Instant.now().toEpochMilli() - start.toEpochMilli(),
+                ),
+                target.host,
+            )
+            return false
         }
+
+        // Nobody touched a compressed answer: send the original compressed bytes (smaller, and byte-for-byte what the
+        // server produced) instead of the decoded copy kept for capture.
+        val untouched = plainHeaders !== head.headers && resp.body === plainBody && resp.headers === plainHeaders && resp.status == head.status
+        val outBody = if (untouched) body.bytes else resp.body
+        var outRespHeaders = if (untouched) head.headers else resp.headers
+        // A body that ended at EOF (or was empty) has no length on the wire; give the client one so it can keep going.
+        if (outBody == null && !noBody && headerValue(outRespHeaders, "Content-Length") == null) outRespHeaders = withContentLength(outRespHeaders, 0)
+
+        val keepClient = allowReuse && !clientWantsClose && !respTokens.contains("close")
+        resp.statusLine?.let { clientOut.write("$it\r\n".toByteArray(Charsets.US_ASCII)) }
+        writeHeaders(clientOut, forwardHeaders(outRespHeaders, outBody, connectionClose = !keepClient))
+        outBody?.let { clientOut.write(it) }
+        clientOut.flush()
 
         recordIfInScope(
             HttpTransaction(
@@ -352,13 +428,14 @@ class ProxyEngine(
                 path = req.target,
                 requestHeaders = req.headers,
                 requestBody = req.body?.take(maxCapturedBodyBytes),
-                responseStatus = if (resp.drop) null else resp.status,
-                responseHeaders = if (resp.drop) emptyList() else resp.headers,
-                responseBody = if (resp.drop) null else resp.body?.take(maxCapturedBodyBytes),
+                responseStatus = resp.status,
+                responseHeaders = resp.headers,
+                responseBody = resp.body?.take(maxCapturedBodyBytes),
                 durationMs = Instant.now().toEpochMilli() - start.toEpochMilli(),
             ),
             target.host,
         )
+        return keepClient
     }
 
     private fun sendError(out: OutputStream, code: Int, reason: String, message: String) {
@@ -445,7 +522,7 @@ class ProxyEngine(
         return if (connectionClose) h + ("Connection" to "close") else h
     }
 
-    private suspend fun pump(from: InputStream, to: OutputStream) = withContext(Dispatchers.IO) {
+    private suspend fun pump(from: InputStream, to: OutputStream) = withContext(connDispatcher) {
         val buffer = ByteArray(8192)
         try {
             while (isActive) {
@@ -473,5 +550,17 @@ class ProxyEngine(
         const val CONNECT_TIMEOUT_MS = 10_000
         /** A peer that goes silent this long mid-message is dropped instead of pinning a thread and socket forever. */
         const val IDLE_TIMEOUT_MS = 60_000
+        /** How long an idle keep-alive tunnel is held (it pins a thread while it waits for the next request). */
+        const val KEEPALIVE_IDLE_MS = 20_000
+        const val MAX_REQUESTS_PER_TUNNEL = 200
+
+        /**
+         * Connection handlers block on socket reads, so they get their own cached (unbounded, daemon) pool rather than
+         * Dispatchers.IO's 64 threads: a browser holding many idle keep-alive tunnels must never starve new requests.
+         * The connection cap in [MAX_CONNECTIONS] bounds the real thread count.
+         */
+        val connDispatcher: kotlinx.coroutines.CoroutineDispatcher =
+            java.util.concurrent.Executors.newCachedThreadPool { r -> Thread(r, "alpproxy-conn").apply { isDaemon = true } }
+                .asCoroutineDispatcher()
     }
 }

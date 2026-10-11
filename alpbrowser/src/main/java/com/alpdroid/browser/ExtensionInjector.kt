@@ -13,24 +13,25 @@ import androidx.webkit.WebViewFeature
  * loading instead (so `document-start` scripts then run a little late). Call [refresh] after any install / toggle /
  * remove and [onPageFinished] from the WebViewClient.
  */
-class ExtensionInjector(private val store: ExtensionStore, private val webView: () -> WebView?) {
+class ExtensionInjector(private val store: ExtensionStore, private val webViews: () -> List<WebView>) {
     private val main = Handler(Looper.getMainLooper())
-    private val handles = ArrayList<ScriptHandler>()
+    private val handles = java.util.WeakHashMap<WebView, MutableList<ScriptHandler>>()
     private val supportsStart: Boolean get() = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
 
-    /** Re-registers every enabled script on the current WebView. Safe from any thread. */
+    /** Re-registers every enabled script on every open tab. Safe from any thread. */
     fun refresh() {
-        main.post { webView()?.let(::registerNow) }
+        main.post { webViews().forEach(::registerNow) }
     }
 
     /** Main thread only. Used directly before the first page load so even that page sees the scripts. */
     fun registerNow(wv: WebView) {
-        handles.forEach { runCatching { it.remove() } }
-        handles.clear()
+        handles.remove(wv)?.forEach { runCatching { it.remove() } }
         if (!supportsStart) return
+        val mine = ArrayList<ScriptHandler>()
         for (s in store.list().filter { it.enabled }) {
-            runCatching { handles += WebViewCompat.addDocumentStartJavaScript(wv, UserScriptRunner.wrap(s), setOf("*")) }
+            runCatching { mine += WebViewCompat.addDocumentStartJavaScript(wv, UserScriptRunner.wrap(s), setOf("*")) }
         }
+        handles[wv] = mine
     }
 
     /** Fallback path for WebViews without document-start scripts. */

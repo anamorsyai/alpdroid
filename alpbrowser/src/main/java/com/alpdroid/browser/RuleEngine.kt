@@ -29,10 +29,39 @@ class RuleEngine {
 
     private val rules = CopyOnWriteArrayList<Rule>()
 
+    /** Called after every change so the owner can persist the list (rules survive a restart). */
+    @Volatile var onChange: (() -> Unit)? = null
+
     fun all(): List<Rule> = rules.toList()
-    fun add(rule: Rule) { rules.removeAll { it.id == rule.id }; rules.add(rule) }
-    fun remove(id: String): Boolean = rules.removeAll { it.id == id }
-    fun clear() = rules.clear()
+    fun add(rule: Rule) { rules.removeAll { it.id == rule.id }; rules.add(rule); onChange?.invoke() }
+    fun remove(id: String): Boolean = rules.removeAll { it.id == id }.also { if (it) onChange?.invoke() }
+    fun clear() { rules.clear(); onChange?.invoke() }
+    fun setEnabled(id: String, enabled: Boolean): Boolean {
+        val i = rules.indexOfFirst { it.id == id }
+        if (i < 0) return false
+        rules[i] = rules[i].copy(enabled = enabled)
+        onChange?.invoke()
+        return true
+    }
+
+    fun toJson(): String = org.json.JSONArray().also { arr ->
+        rules.forEach { r ->
+            arr.put(org.json.JSONObject().put("id", r.id).put("part", r.part.name).put("find", r.find).put("replace", r.replace)
+                .put("hostContains", r.hostContains).put("regex", r.regex).put("enabled", r.enabled))
+        }
+    }.toString()
+
+    /** Replaces the rules with the saved list; unreadable input leaves them untouched. Does not call [onChange]. */
+    fun loadJson(text: String) {
+        val arr = runCatching { org.json.JSONArray(text) }.getOrNull() ?: return
+        val loaded = (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val part = runCatching { Part.valueOf(o.optString("part")) }.getOrNull() ?: return@mapNotNull null
+            Rule(o.optString("id"), part, o.optString("find"), o.optString("replace"), o.optString("hostContains"),
+                o.optBoolean("regex"), o.optBoolean("enabled", true))
+        }.filter { it.id.isNotBlank() }
+        rules.clear(); rules.addAll(loaded)
+    }
 
     /** The request edits the rules call for, or null when nothing matches (forward unchanged). */
     fun applyRequest(req: InterceptedRequest): RequestAction.Replace? {

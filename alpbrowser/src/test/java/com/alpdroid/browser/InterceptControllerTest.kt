@@ -74,4 +74,48 @@ class InterceptControllerTest {
         r.await()
         assertTrue(c.pendingFlow.value.isEmpty())
     }
+
+    private fun res(id: String = "tx1", ct: String? = null) = com.alpdroid.proxy.InterceptedResponse(
+        id, TrafficSource.BROWSER, "example.com", 443, 200, ct?.let { listOf("Content-Type" to it) } ?: emptyList(), null,
+    )
+
+    @Test fun `responses are only held when asked for`() = runTest {
+        val c = InterceptController()
+        c.enabled = true
+        assertTrue(c.interceptor.onResponse(res()) is ResponseAction.Forward)
+        assertTrue(c.pending().isEmpty())
+        c.interceptResponses = true
+        val held = async { c.interceptor.onResponse(res()) }
+        var tries = 0
+        while (c.pending().isEmpty() && tries++ < 50) delay(5)
+        assertEquals("response", c.pending().single().kind)
+        c.releaseAll()
+        assertTrue(held.await() is ResponseAction.Forward)
+    }
+
+    @Test fun `images stylesheets and scripts are skipped unless asked for`() = runTest {
+        val c = InterceptController()
+        c.enabled = true
+        c.interceptResponses = true
+        fun r(target: String) = InterceptedRequest("t", TrafficSource.BROWSER, "GET", "https", "example.com", 443, target, emptyList(), null)
+        assertTrue(c.interceptor.onRequest(r("/a/logo.png?x=1")) is RequestAction.Forward)
+        assertTrue(c.interceptor.onRequest(r("/static/app.js")) is RequestAction.Forward)
+        assertTrue(c.interceptor.onResponse(res("t")) is ResponseAction.Forward) // belongs to a skipped request
+        assertTrue(c.interceptor.onResponse(res("other", "image/png")) is ResponseAction.Forward)
+        assertTrue(c.pending().isEmpty())
+        c.skipStatic = false
+        val held = async { c.interceptor.onRequest(r("/a/logo.png")) }
+        var tries = 0
+        while (c.pending().isEmpty() && tries++ < 50) delay(5)
+        assertEquals(1, c.pending().size)
+        c.releaseAll(); held.await()
+    }
+
+    @Test fun `switching intercept tells the app so it can route through the proxy`() {
+        val c = InterceptController()
+        val seen = mutableListOf<Boolean>()
+        c.onEnabledChange = { seen.add(it) }
+        c.enabled = true; c.enabled = true; c.enabled = false
+        assertEquals(listOf(true, false), seen)
+    }
 }

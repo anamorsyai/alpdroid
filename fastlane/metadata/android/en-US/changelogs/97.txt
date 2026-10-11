@@ -1,0 +1,1 @@
+A much faster AlpBrowser: direct browsing by default, tabs, response interception and a Rules tab, and a lighter proxy when capturing.

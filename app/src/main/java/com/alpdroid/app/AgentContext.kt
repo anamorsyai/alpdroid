@@ -98,18 +98,21 @@ Reach it with the `browserctl` command (loopback 127.0.0.1, token-authenticated)
   browserctl trust                       # make Alpine's curl/python trust the intercepted HTTPS (appends the proxy CA)
 Every browserctl command exits non-zero when it did not really succeed (check the exit status, not just the text). If ping says AlpBrowser is not linked, the app is not installed yet — the user installs it from AlpDroid -> Settings -> About -> AlpBrowser. Once it is installed AlpDroid links to it automatically (within a few seconds, also in shells that are already open); `navigate`, `eval` and `clear` need a page, so if they report an error the user has to open AlpBrowser once so it has a page.
 
+By default AlpBrowser browses directly (fast) and History lists only the URLs loaded. For decrypted requests/responses (and rules or interception) route it through the proxy first: `browserctl capture on` (`browserctl mode bugbounty` does this too; `intercept on` implies it). Turn it off again with `browserctl capture off` when you only need to browse.
+
 Two modes (set the one that fits the task): `browserctl mode bugbounty` or `browserctl mode webdev`.
 
 Both modes:
 - browserctl navigate <url>             open a page
 - browserctl eval '<js>'                run JavaScript in the live page (returns the result)
 - browserctl history [host]             captured requests; browserctl get <id> for one in full (TLS-decrypted bodies)
+- browserctl tabs / browserctl tab new [url] | tab switch <id> | tab close <id>   several pages at once; navigate/eval act on the tab in front
 - browserctl clear [cookies|cache|storage|all]
 - browserctl ca                         print the proxy root CA (PEM)
 
 Bug bounty (intercept & tamper):
 - browserctl scope <pattern> ...        only capture these hosts (globs, e.g. '*.target.com'); empty = everything
-- browserctl intercept on [hostFilter]  pause matching traffic; browserctl pending shows parked messages
+- browserctl intercept on [hostFilter] [--responses] [--all-assets]  pause matching requests (add --responses to also pause replies; images/CSS/JS are skipped unless --all-assets); browserctl pending shows parked messages
 - browserctl resolve <holdId> [forward|drop]   release a parked message
 - browserctl resolve <holdId> edit [--method M] [--target PATH] [--status N] [--header 'Name: v']... [--body TEXT]   change a parked message, then release it
 - browserctl rule add <REQ_HEADER|REQ_BODY|RES_HEADER|RES_BODY> <find> <replace> [host]   auto match-and-replace

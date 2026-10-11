@@ -79,8 +79,7 @@ object TlsCa {
      * appropriate) because modern TLS stacks ignore CN — a CN-only leaf would fail
      * hostname verification everywhere even with the CA trusted.
      */
-    fun issueLeaf(ca: CaMaterial, host: String): LeafMaterial {
-        val keyPair = generateKeyPair()
+    fun issueLeaf(ca: CaMaterial, host: String, keyPair: KeyPair = generateKeyPair()): LeafMaterial {
         val now = Date()
         val builder = JcaX509v3CertificateBuilder(
             X500Name(ca.certificate.subjectX500Principal.name),

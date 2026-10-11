@@ -2,6 +2,9 @@ package com.alpdroid.browser
 
 import android.app.Application
 import android.os.Handler
+import androidx.webkit.ProxyConfig
+import androidx.webkit.ProxyController
+import androidx.webkit.WebViewFeature
 import android.os.Looper
 import android.util.Log
 import com.alpdroid.proxy.BrowserCommandBus
@@ -38,7 +41,7 @@ class AlpBrowserApp : Application() {
 
     /** Installed extensions (userscripts), kept in private storage so they stay installed until removed. */
     val extensions by lazy { ExtensionStore(java.io.File(filesDir, "extensions")) }
-    val extensionInjector by lazy { ExtensionInjector(extensions) { browserWebViewHolder.current } }
+    val extensionInjector by lazy { ExtensionInjector(extensions) { browserWebViewHolder.allWebViews } }
 
     private val prefs by lazy { getSharedPreferences("alpbrowser", MODE_PRIVATE) }
 
@@ -57,11 +60,62 @@ class AlpBrowserApp : Application() {
     fun devtoolsEnabled(): Boolean = prefs.getBoolean("devtools", false)
     fun setDevtoolsEnabled(on: Boolean) = prefs.edit().putBoolean("devtools", on).apply()
 
+    /**
+     * Capture: route the page through the intercepting proxy so History holds full, decrypted requests and responses.
+     * OFF by default — with it off the WebView talks to the network directly (full Chromium speed, HTTP/2, QUIC) and
+     * History only lists the URLs it loaded. Intercept being on also needs the proxy, whatever this says.
+     */
+    fun captureEnabled(): Boolean = prefs.getBoolean("capture", false)
+    fun setCaptureEnabled(on: Boolean, reload: Boolean = true) {
+        prefs.edit().putBoolean("capture", on).apply()
+        applyProxyMode(reload)
+    }
+    fun proxyActive(): Boolean = captureEnabled() || intercept.enabled
+
+    private var proxyApplied: Boolean? = null
+
+    /** Points the WebView at the proxy or straight at the network, to match [proxyActive]. Safe from any thread. */
+    fun applyProxyMode(reload: Boolean = false) {
+        val block = Runnable {
+            val want = proxyActive()
+            if (proxyApplied != want && WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+                proxyApplied = want
+                if (want) {
+                    engineScope.launch { runCatching { tlsMitm?.prewarm() } }
+                    val config = ProxyConfig.Builder().addProxyRule("127.0.0.1:${browserEngine.boundPort}").removeImplicitRules().build()
+                    ProxyController.getInstance().setProxyOverride(config, { it.run() }, {})
+                } else {
+                    ProxyController.getInstance().clearProxyOverride({ it.run() }, {})
+                }
+                if (reload) browserWebViewHolder.allWebViews.forEach { it.reload() }
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) block.run() else main.post(block)
+    }
+
+    /** Direct mode: no proxy sees the traffic, so note the request itself (URL, method, headers) in History. */
+    fun recordDirect(url: android.net.Uri, method: String, headers: Map<String, String>) {
+        val scheme = url.scheme ?: return
+        if (scheme != "http" && scheme != "https") return
+        val host = url.host ?: return
+        if (!scopeFilter.matches(host)) return
+        val port = if (url.port != -1) url.port else if (scheme == "https") 443 else 80
+        val path = (url.encodedPath ?: "/").ifEmpty { "/" } + (url.encodedQuery?.let { "?$it" } ?: "")
+        transactionStore.record(
+            com.alpdroid.proxy.HttpTransaction(
+                id = java.util.UUID.randomUUID().toString(), source = TrafficSource.BROWSER, timestamp = java.time.Instant.now(),
+                method = method, scheme = scheme, host = host, port = port, path = path,
+                requestHeaders = headers.map { it.key to it.value },
+            ),
+        )
+    }
+
     /** "bugbounty" (intercept + rules + scope, default) or "webdev" (console + eval + cache control). */
     fun mode(): String = prefs.getString("mode", "bugbounty") ?: "bugbounty"
     fun setMode(m: String) {
         prefs.edit().putString("mode", m).apply()
-        if (m == "webdev") intercept.enabled = false // web dev watches, it does not pause traffic
+        if (m == "webdev") { intercept.enabled = false; setCaptureEnabled(false) } // web dev watches, it does not pause traffic
+        else setCaptureEnabled(true) // bug bounty needs the decrypted traffic
     }
 
     // Loaded on first use, not in the constructor: SharedPreferences is unavailable before the Application has a
@@ -109,6 +163,28 @@ class AlpBrowserApp : Application() {
         )
     }
 
+    private val tabsHost = object : TabsHost {
+        private val holder get() = browserWebViewHolder
+        override fun list() = holder.info()
+        override fun open(url: String): Int? = onMainBlocking {
+            com.alpdroid.browser.ui.browser.openTab(
+                this@AlpBrowserApp, this@AlpBrowserApp,
+                com.alpdroid.browser.ui.browser.normalizeUrl(url.ifBlank { BrowserWebViewHolder.DEFAULT_URL }),
+            )?.id
+        }
+        override fun switchTo(id: Int) = onMainBlocking { holder.switchTo(id) } ?: false
+        override fun close(id: Int) = onMainBlocking { holder.close(id) } ?: false
+    }
+
+    /** Runs [block] on the main thread and waits (briefly) for its result; WebViews may only be touched there. */
+    private fun <T> onMainBlocking(block: () -> T): T? {
+        if (Looper.myLooper() == Looper.getMainLooper()) return block()
+        var out: T? = null
+        val latch = CountDownLatch(1)
+        main.post { try { out = block() } finally { latch.countDown() } }
+        return if (latch.await(5, TimeUnit.SECONDS)) out else null
+    }
+
     val bridge by lazy {
         BrowserBridge(
             token = controlToken,
@@ -124,6 +200,9 @@ class AlpBrowserApp : Application() {
             console = console,
             modeGet = ::mode,
             modeSet = ::setMode,
+            captureGet = ::captureEnabled,
+            captureSet = { setCaptureEnabled(it) },
+            tabs = tabsHost,
             onClear = ::clearBrowserData,
             preferredPort = CONTROL_PORT,
         )
@@ -136,11 +215,26 @@ class AlpBrowserApp : Application() {
     override fun onCreate() {
         super.onCreate()
         if (scopePatterns.isNotEmpty()) scopeFilter.setPatterns(scopePatterns)
+        intercept.onEnabledChange = { applyProxyMode() }
+        // Match & replace rules are kept across restarts: load first, then start saving every change.
+        intercept.rules.loadJson(prefs.getString("rules", "") ?: "")
+        intercept.rules.onChange = { prefs.edit().putString("rules", intercept.rules.toJson()).apply() }
         adBlocker.enabled = adblockEnabled()
         adBlocker.loadAsync()
         browserEngine.start(engineScope)
         engineScope.launch { runCatching { bridge.start() } }
         Log.i(TAG, "AlpBrowser proxy on 127.0.0.1:$PROXY_PORT, control API starting on 127.0.0.1:$CONTROL_PORT")
+    }
+
+    private var keepAliveStarted = false
+
+    /** Starts [BrowserKeepAliveService] the first time there is a page to keep alive (a no-op afterwards). */
+    fun startKeepAliveOnce(context: android.content.Context) {
+        if (keepAliveStarted) return
+        keepAliveStarted = true
+        runCatching {
+            androidx.core.content.ContextCompat.startForegroundService(context, android.content.Intent(context, BrowserKeepAliveService::class.java))
+        }
     }
 
     /** Runs [script] in the live page and blocks the (bridge) caller until the result arrives. Never on the UI thread. */
@@ -197,7 +291,7 @@ class AlpBrowserApp : Application() {
                     android.webkit.CookieManager.getInstance().flush()
                 }
                 if (what == "storage" || what == "all") android.webkit.WebStorage.getInstance().deleteAllData()
-                if (what == "cache" || what == "all") browserWebViewHolder.current?.clearCache(true)
+                if (what == "cache" || what == "all") browserWebViewHolder.allWebViews.firstOrNull()?.clearCache(true)
             }
         }
     }

@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.7.76 — A much faster AlpBrowser, with tabs (AlpBrowser 0.4.0)
+
+- AlpBrowser now browses directly by default, at normal WebView speed. Pages only go through the
+  intercepting proxy when you turn on Capture or Intercept (Proxy tab, or `browserctl capture on`).
+- When the proxy is on it is much lighter too: connections are reused instead of re-negotiating TLS
+  for every request, certificates no longer need a slow key generation per site, and compressed pages
+  stay compressed on the wire.
+- New tabs: open several pages, switch between them from the tab button, close them, and open links
+  that ask for a new window as a tab. Your open tabs are remembered. `browserctl tabs` / `tab` let the
+  agent use them.
+- Proxy: separate switches for intercepting requests and responses, images/CSS/JS skipped by default,
+  and a Rules tab for match-and-replace (rules are saved and can be switched on and off).
+- Large responses open smoothly in History and the Repeater instead of freezing the app.
+
 ## 1.7.75 — Faster, steadier updates, terminals and browser proxy (AlpBrowser 0.3.0)
 
 - Opening a terminal tab is faster and no longer waits behind cleanup work: old temporary files are

@@ -55,3 +55,31 @@ fun rawMessage(firstLine: String, headers: List<Pair<String, String>>, body: Byt
         append(clipped)
     }
 }
+
+/**
+ * Splits [text] into pieces of roughly [size] characters at line breaks. Shown as separate lazy list items so a
+ * multi-hundred-KB response is laid out a screenful at a time — one giant Text composable takes seconds on the
+ * main thread and gets the app reported as "not responding". Beyond [maxChars] the rest is not rendered (copy it).
+ */
+fun chunkText(text: String, size: Int = 1500, maxChars: Int = 2_000_000): List<String> {
+    val shown = if (text.length > maxChars) text.substring(0, maxChars) + "\n[… ${text.length - maxChars} more characters not shown — use Copy]" else text
+    if (shown.length <= size) return listOf(shown)
+    val out = ArrayList<String>(shown.length / size + 1)
+    var i = 0
+    while (i < shown.length) {
+        var end = minOf(i + size, shown.length)
+        if (end < shown.length) {
+            val nl = shown.lastIndexOf('\n', end)
+            if (nl > i) end = nl + 1
+        }
+        out.add(shown.substring(i, end))
+        i = end
+    }
+    return out
+}
+
+/** A monospace block of chunks, to be used inside a LazyColumn via `items(chunks)`. */
+@Composable
+fun MonoChunk(text: String) {
+    Text(text, style = MaterialTheme.typography.bodySmall.copy(fontFamily = RoninMono), modifier = Modifier.fillMaxWidth())
+}

@@ -36,6 +36,15 @@ import org.json.JSONObject
  *  - POST /eval                      {js} run JavaScript in the live page, returns its result
  *  - POST /resend                    {method,url,headers,body} replay a request, returns the response (repeater)
  */
+/** What the control API needs from the browser's tabs (implemented by the app, on the main thread). */
+interface TabsHost {
+    fun list(): List<TabInfo>
+    /** Opens a tab and returns its id, or null when the tab limit is reached. */
+    fun open(url: String): Int?
+    fun switchTo(id: Int): Boolean
+    fun close(id: Int): Boolean
+}
+
 class BrowserBridge(
     private val token: String,
     private val store: TransactionStore,
@@ -52,6 +61,9 @@ class BrowserBridge(
     private val modeSet: (String) -> Unit,
     private val onClear: (String) -> Unit,
     private val preferredPort: Int = 8899,
+    private val captureGet: () -> Boolean = { true },
+    private val captureSet: (Boolean) -> Unit = {},
+    private val tabs: TabsHost? = null,
 ) {
     data class ResendRequest(val method: String, val url: String, val headers: List<Pair<String, String>>, val body: ByteArray?)
     data class ResendResponse(val status: Int, val headers: List<Pair<String, String>>, val body: ByteArray?, val error: String? = null)
@@ -171,12 +183,36 @@ class BrowserBridge(
             path == "/v1/rules/delete" && method == "POST" -> {
                 val id = body.optString("id"); return if (intercept.rules.remove(id)) 200 to ok() else 404 to error("no such rule")
             }
+            path == "/v1/rules/enable" && method == "POST" -> {
+                val id = body.optString("id")
+                return if (intercept.rules.setEnabled(id, body.optBoolean("enabled", true))) 200 to ok() else 404 to error("no such rule")
+            }
             path == "/v1/console" && method == "GET" -> return 200 to consoleJson(q["limit"]?.toIntOrNull()?.coerceIn(1, 1000) ?: 200)
             path == "/v1/console/clear" && method == "POST" -> { console.clear(); return 200 to ok() }
             path == "/v1/mode" && method == "GET" -> return 200 to modeJson()
             path == "/v1/mode" && method == "POST" -> {
                 val m = body.optString("mode"); if (m != "bugbounty" && m != "webdev") return 400 to error("mode must be bugbounty or webdev")
                 modeSet(m); return 200 to modeJson()
+            }
+            path == "/v1/tabs" && method == "GET" -> {
+                val host = tabs ?: return 404 to error("tabs are not available")
+                val arr = JSONArray()
+                host.list().forEach { arr.put(JSONObject().put("id", it.id).put("title", it.title).put("url", it.url).put("active", it.active)) }
+                return 200 to JSONObject().put("tabs", arr)
+            }
+            path == "/v1/tabs" && method == "POST" -> {
+                val host = tabs ?: return 404 to error("tabs are not available")
+                return when (body.optString("action")) {
+                    "new" -> host.open(body.optString("url")).let { id -> if (id == null) 409 to error("tab limit reached") else 200 to JSONObject().put("ok", true).put("id", id) }
+                    "switch" -> if (host.switchTo(body.optInt("id", -1))) 200 to ok() else 404 to error("no such tab")
+                    "close" -> if (host.close(body.optInt("id", -1))) 200 to ok() else 404 to error("no such tab")
+                    else -> 400 to error("action must be new, switch or close")
+                }
+            }
+            path == "/v1/capture" && method == "GET" -> return 200 to captureJson()
+            path == "/v1/capture" && method == "POST" -> {
+                if (!body.has("enabled")) return 400 to error("enabled required")
+                captureSet(body.optBoolean("enabled")); return 200 to captureJson()
             }
             path == "/v1/clear" && method == "POST" -> { onClear(body.optString("what", "all")); return 200 to ok() }
             else -> return 404 to error("unknown endpoint")
@@ -214,12 +250,15 @@ class BrowserBridge(
         }
         return JSONObject().put("enabled", intercept.enabled)
             .put("hostFilter", intercept.hostFilter).put("methodFilter", intercept.methodFilter)
+            .put("responses", intercept.interceptResponses).put("skipStatic", intercept.skipStatic)
             .put("pending", arr)
     }
 
     private fun setIntercept(body: JSONObject): Pair<Int, JSONObject> {
         if (body.has("hostFilter")) intercept.hostFilter = body.optString("hostFilter")
         if (body.has("methodFilter")) intercept.methodFilter = body.optString("methodFilter")
+        if (body.has("responses")) intercept.interceptResponses = body.optBoolean("responses")
+        if (body.has("skipStatic")) intercept.skipStatic = body.optBoolean("skipStatic")
         if (body.has("enabled")) {
             val on = body.optBoolean("enabled")
             intercept.enabled = on
@@ -309,12 +348,16 @@ class BrowserBridge(
         return JSONObject().put("console", arr)
     }
 
+    private fun captureJson(): JSONObject = JSONObject().put("capture", captureGet())
+        .put("note", if (captureGet()) "traffic goes through the proxy: History has full decrypted requests and responses"
+        else "direct browsing: History lists URLs only; turn capture on (or intercept on) for decrypted traffic")
+
     private fun modeJson(): JSONObject {
         val mode = modeGet()
         val caps = if (mode == "bugbounty")
             "intercept breakpoints, match-and-replace rules, scope, repeater, full request/response history (TLS decrypted)"
         else "console capture, JS eval / DOM, network history with timings, cache/cookie clearing, CDP remote debugging"
-        return JSONObject().put("mode", mode).put("capabilities", caps)
+        return JSONObject().put("mode", mode).put("capabilities", caps).put("capture", captureGet())
     }
 
     // --- JSON helpers ---

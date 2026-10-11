@@ -17,8 +17,23 @@ import javax.net.ssl.SSLSocketFactory
  *
  * Pure JVM (javax.net.ssl), no Android dependency — the engine's unit-test story stays intact.
  */
-class TlsMitm(val ca: CaMaterial) {
+class TlsMitm(
+    val ca: CaMaterial,
+    /** Test seam: replaces how the real upstream is reached (default = system trust store + hostname check). */
+    private val upstreamOverride: ((String, Int) -> SSLSocket)? = null,
+) {
     private val serverContexts = ConcurrentHashMap<String, SSLContext>()
+
+    /**
+     * One key pair shared by every leaf certificate. A 2048-bit RSA keygen is the single most expensive step of
+     * intercepting a new host (hundreds of ms to seconds on a phone CPU, and a page easily touches a dozen hosts),
+     * and it ran once per host. The leaf certificates still differ per host (own SAN, own signature by the CA); only
+     * the key is common, which is harmless here because every leaf is private to this one proxy and never leaves it.
+     */
+    private val leafKeys by lazy { TlsCa.generateKeyPair() }
+
+    /** Generates the shared leaf key now, off the request path (call once from a background thread). */
+    fun prewarm() { leafKeys }
 
     /** Server-mode context presenting a leaf certificate for [host]. */
     fun serverContext(host: String): SSLContext {
@@ -29,7 +44,7 @@ class TlsMitm(val ca: CaMaterial) {
         // computeIfAbsent (not getOrPut): atomic per key, so a burst of parallel first-hits for one new
         // host runs the ~100ms RSA leaf keygen exactly once instead of once per connection.
         return serverContexts.computeIfAbsent(host) { h ->
-            val leaf = TlsCa.issueLeaf(ca, h)
+            val leaf = TlsCa.issueLeaf(ca, h, leafKeys)
             val ks = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
                 load(null, null)
                 setKeyEntry("leaf", leaf.keyPair.private, CharArray(0), arrayOf(leaf.certificate, ca.certificate))
@@ -51,6 +66,7 @@ class TlsMitm(val ca: CaMaterial) {
      * plain socket is connected with a timeout first so a black-holed host cannot pin a thread forever.
      */
     fun upstreamSocket(host: String, port: Int): SSLSocket {
+        upstreamOverride?.let { return it(host, port) }
         val plain = java.net.Socket()
         plain.connect(InetSocketAddress(host, port), UPSTREAM_CONNECT_TIMEOUT_MS)
         val factory = SSLSocketFactory.getDefault() as SSLSocketFactory

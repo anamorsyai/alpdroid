@@ -24,7 +24,14 @@ import kotlinx.coroutines.flow.asStateFlow
 class InterceptController {
     /** Match-and-replace rules applied automatically to all traffic (bug-bounty workflow), before any breakpoint. */
     val rules = RuleEngine()
+    /** Master switch: hold matching REQUESTS. Switching it also tells the app to route the page through the proxy. */
     @Volatile var enabled = false
+        set(value) { if (field != value) { field = value; onEnabledChange?.invoke(value) } }
+    @Volatile var onEnabledChange: ((Boolean) -> Unit)? = null
+    /** Also hold RESPONSES (as in Burp, off by default: a request and its response would otherwise both stop every page). */
+    @Volatile var interceptResponses = false
+    /** Never hold images, stylesheets, scripts and fonts — they are most of a page's traffic and rarely interesting. */
+    @Volatile var skipStatic = true
     /** Only hold messages whose host contains this (case-insensitive). Blank = any host. */
     @Volatile var hostFilter: String = ""
     /** Only hold messages whose method equals this (case-insensitive). Blank = any method. */
@@ -58,7 +65,9 @@ class InterceptController {
         override suspend fun onRequest(req: InterceptedRequest): RequestAction {
             val ruleEdit = rules.applyRequest(req) // automatic match-and-replace (may be null)
             val ruleAction: RequestAction = ruleEdit ?: RequestAction.Forward
-            if (!enabled || !matches(req.host, req.method)) return ruleAction
+            val isStatic = skipStatic && looksStatic(req.target)
+            if (isStatic && interceptResponses && enabled) { if (staticIds.size > 4000) staticIds.clear(); staticIds.add(req.id) }
+            if (!enabled || isStatic || !matches(req.host, req.method)) return ruleAction
             // Breakpoint on: park the rule-applied view so the agent sees exactly what would be sent.
             val effHeaders = ruleEdit?.headers ?: req.headers
             val effBody = if (ruleEdit != null && ruleEdit.body != null) ruleEdit.body else req.body
@@ -80,7 +89,8 @@ class InterceptController {
         override suspend fun onResponse(res: InterceptedResponse): ResponseAction {
             val ruleEdit = rules.applyResponse(res)
             val ruleAction: ResponseAction = ruleEdit ?: ResponseAction.Forward
-            if (!enabled || !matches(res.host, null)) return ruleAction
+            val requestWasStatic = staticIds.remove(res.id)
+            if (!enabled || !interceptResponses || requestWasStatic || (skipStatic && staticContentType(res.headers)) || !matches(res.host, null)) return ruleAction
             val effHeaders = ruleEdit?.headers ?: res.headers
             val effBody = if (ruleEdit != null && ruleEdit.body != null) ruleEdit.body else res.body
             val holdId = "h${seq.getAndIncrement()}"
@@ -94,6 +104,20 @@ class InterceptController {
                 when (val chosen = d.await()) { ResponseAction.Forward -> ruleAction; else -> chosen }
             } finally { resHolds.remove(holdId); info.remove(holdId); publish() }
         }
+    }
+
+    private val staticIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    private fun looksStatic(target: String): Boolean {
+        val path = target.substringBefore('?').substringBefore('#').lowercase()
+        val ext = path.substringAfterLast('.', "")
+        return ext in STATIC_EXTENSIONS
+    }
+
+    private fun staticContentType(headers: List<Pair<String, String>>): Boolean {
+        val ct = headers.firstOrNull { it.first.equals("Content-Type", ignoreCase = true) }?.second?.lowercase() ?: return false
+        return ct.startsWith("image/") || ct.startsWith("font/") || ct.startsWith("text/css") || ct.contains("javascript") ||
+            ct.startsWith("audio/") || ct.startsWith("video/") || ct.contains("font")
     }
 
     private fun matches(host: String, method: String?): Boolean {
@@ -117,5 +141,12 @@ class InterceptController {
     fun releaseAll() {
         reqHolds.values.toList().forEach { it.complete(RequestAction.Forward) }
         resHolds.values.toList().forEach { it.complete(ResponseAction.Forward) }
+    }
+
+    private companion object {
+        val STATIC_EXTENSIONS = setOf(
+            "png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "ico", "bmp", "css", "js", "mjs", "map",
+            "woff", "woff2", "ttf", "otf", "eot", "mp3", "mp4", "webm", "ogg", "wav",
+        )
     }
 }

@@ -230,3 +230,14 @@ private fun readCappedOrNull(input: InputStream, cap: Int): ByteArray? {
     }
     return out.toByteArray()
 }
+
+/** Limits Accept-Encoding to what the proxy can decode (gzip, deflate); br/zstd are dropped. No header stays none. */
+internal fun narrowAcceptEncoding(headers: List<Pair<String, String>>): List<Pair<String, String>> {
+    val value = headerValue(headers, "Accept-Encoding") ?: return headers
+    val keep = value.split(',').map { it.trim() }.filter {
+        val n = it.substringBefore(';').trim().lowercase()
+        n == "gzip" || n == "deflate" || n == "identity"
+    }
+    val rest = headers.filterNot { it.first.equals("Accept-Encoding", ignoreCase = true) }
+    return if (keep.isEmpty()) rest else rest + ("Accept-Encoding" to keep.joinToString(", "))
+}

@@ -5,8 +5,10 @@
 # new shell (or retry).
 #
 # General:   ping | ca | trust | mode [bugbounty|webdev] | navigate <url> | eval '<js>' | clear [cookies|cache|storage|all]
+# Capture:   capture [on|off]     route the page through the proxy (needed for decrypted History); off = fast direct browsing
+# Tabs:      tabs | tab new [url] | tab switch <id> | tab close <id>
 # History:   history [host] | get <id>
-# Bug bounty: scope [<pattern> ...] | intercept on|off [hostFilter] | pending | resolve <holdId> [forward|drop]
+# Bug bounty: scope [<pattern> ...] | intercept on [hostFilter] [--responses] [--all-assets] | intercept off | pending | resolve <holdId> [forward|drop]
 #             resolve <holdId> edit [--method M] [--target PATH] [--status N] [--header 'Name: v']... [--body TEXT]
 #             rule add <REQ_HEADER|REQ_BODY|RES_HEADER|RES_BODY> <find> <replace> [host] | rules | rule del <id>
 #             rule header <req|res> 'Name: value' [host]      set/add a header on all matching traffic
@@ -144,6 +146,19 @@ case "$1" in
   mode)      if [ -n "$2" ]; then
                case "$2" in bugbounty|webdev) post "/mode" "{\"mode\":\"$2\"}" ;; *) die "mode must be bugbounty or webdev" ;; esac
              else get "/mode"; fi ;;
+  capture)   case "${2:-}" in
+               '')  get "/capture" ;;
+               on)  post "/capture" '{"enabled":true}' ;;
+               off) post "/capture" '{"enabled":false}' ;;
+               *)   die "usage: browserctl capture [on|off]" ;;
+             esac ;;
+  tabs)      get "/tabs" ;;
+  tab)       case "$2" in
+               new)    post "/tabs" "{\"action\":\"new\",\"url\":$(jstr "${3:-}")}" ;;
+               switch|close) case "$3" in ''|*[!0-9]*) die "usage: browserctl tab $2 <id>" ;; esac
+                       post "/tabs" "{\"action\":\"$2\",\"id\":$3}" ;;
+               *)      die "usage: browserctl tab new [url] | tab switch <id> | tab close <id>" ;;
+             esac ;;
   navigate)  [ -n "$2" ] || die "usage: browserctl navigate <url>"
              post "/navigate" "{\"url\":$(jstr "$2")}" ;;
   eval)      [ -n "$2" ] || die "usage: browserctl eval '<js>'"
@@ -153,9 +168,13 @@ case "$1" in
   get)       safe "$2"; get "/history/$2" ;;
   scope)     if [ -n "$2" ]; then P=""; shift; for p in "$@"; do P="$P$(jstr "$p"),"; done; post "/scope" "{\"patterns\":[${P%,}]}"; else get "/scope"; fi ;;
   intercept) case "$2" in
-               on)  post "/intercept" "{\"enabled\":true,\"hostFilter\":$(jstr "${3:-}")}" ;;
+               on)  shift 2; ihost=; iresp=false; iskip=true
+                    for a in "$@"; do
+                      case "$a" in --responses) iresp=true ;; --all-assets) iskip=false ;; -*) die "unknown option $a" ;; *) ihost=$a ;; esac
+                    done
+                    post "/intercept" "{\"enabled\":true,\"hostFilter\":$(jstr "$ihost"),\"responses\":$iresp,\"skipStatic\":$iskip}" ;;
                off) post "/intercept" "{\"enabled\":false}" ;;
-               *)   die "usage: browserctl intercept on|off [hostFilter]" ;;
+               *)   die "usage: browserctl intercept on [hostFilter] [--responses] [--all-assets] | intercept off" ;;
              esac ;;
   pending)   get "/intercept" ;;
   resolve)   [ -n "$2" ] || die "usage: browserctl resolve <holdId> [forward|drop|edit ...]"
@@ -190,5 +209,5 @@ case "$1" in
   rules)     get "/rules" ;;
   console)   case "${2:-200}" in ''|*[!0-9]*) die "console takes a number" ;; esac
              get "/console?limit=${2:-200}" ;;
-  *) echo "usage: browserctl {ping|ca|trust|mode|navigate|eval|clear|history|get|scope|intercept|pending|resolve|resend|rule|rules|console}" >&2; exit 2 ;;
+  *) echo "usage: browserctl {ping|ca|trust|mode|capture|tabs|tab|navigate|eval|clear|history|get|scope|intercept|pending|resolve|resend|rule|rules|console}" >&2; exit 2 ;;
 esac

@@ -53,4 +53,18 @@ class RuleEngineTest {
         assertTrue(e.remove("r1"))
         assertEquals(0, e.all().size)
     }
+
+    @Test fun `rules survive a save and load and can be switched off`() {
+        val a = RuleEngine()
+        a.add(RuleEngine.Rule("r1", RuleEngine.Part.RES_BODY, "x", "y", "t.test", regex = true))
+        a.add(RuleEngine.Rule("r2", RuleEngine.Part.REQ_HEADER, "", "X-A: 1"))
+        assertTrue(a.setEnabled("r2", false))
+        val b = RuleEngine()
+        b.loadJson(a.toJson())
+        assertEquals(a.all(), b.all())
+        assertEquals(false, b.all()[1].enabled)
+        b.loadJson("not json")
+        assertEquals(2, b.all().size)
+        assertTrue(!b.setEnabled("nope", true))
+    }
 }

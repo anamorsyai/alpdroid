@@ -1,5 +1,6 @@
 package com.alpdroid.proxy
 
+import java.io.BufferedInputStream
 import java.net.ServerSocket
 import java.net.Socket
 import kotlin.concurrent.thread
@@ -101,7 +102,7 @@ class ProxyHardeningTest {
         assertTrue(!responseHasNoBody("GET", 200))
     }
 
-    @Test fun `a gzip answer is decoded for the client and the request asks for identity`() {
+    @Test fun `a gzip answer reaches the client compressed, but history keeps the readable text`() {
         val seen = java.util.concurrent.LinkedBlockingQueue<String>()
         val gz = java.io.ByteArrayOutputStream().also { o -> java.util.zip.GZIPOutputStream(o).use { it.write("hello httpbin".toByteArray()) } }.toByteArray()
         val server = ServerSocket(0).also { servers += it }
@@ -122,12 +123,91 @@ class ProxyHardeningTest {
         val out = Socket("127.0.0.1", e.boundPort).use { c ->
             c.soTimeout = 5000
             c.getOutputStream().write("GET http://127.0.0.1:${server.localPort}/x HTTP/1.1\r\nHost: h\r\nAccept-Encoding: gzip, br\r\n\r\n".toByteArray())
-            c.getInputStream().readBytes().toString(Charsets.ISO_8859_1)
+            c.getInputStream().readBytes()
         }
-        assertTrue(out.endsWith("hello httpbin"), out)
-        assertTrue(!out.contains("Content-Encoding", ignoreCase = true), out)
-        assertTrue(seen.poll(2, java.util.concurrent.TimeUnit.SECONDS)!!.contains("Accept-Encoding: identity"))
+        val text = out.toString(Charsets.ISO_8859_1)
+        assertTrue(text.contains("Content-Encoding: gzip", ignoreCase = true), text)
+        assertTrue(out.copyOfRange(out.size - gz.size, out.size).contentEquals(gz))
+        assertTrue(seen.poll(2, java.util.concurrent.TimeUnit.SECONDS)!!.contains("Accept-Encoding: gzip"))
         Thread.sleep(100)
         assertEquals("hello httpbin", store.transactions.value.single().responseBody!!.toString(Charsets.UTF_8))
+    }
+
+    @Test fun `an edited compressed answer is sent decoded with the edit applied`() {
+        val gz = java.io.ByteArrayOutputStream().also { o -> java.util.zip.GZIPOutputStream(o).use { it.write("hello httpbin".toByteArray()) } }.toByteArray()
+        val o = origin { "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: ${gz.size}\r\n\r\n".toByteArray() + gz }
+        val interceptor = object : ProxyInterceptor {
+            override suspend fun onRequest(req: InterceptedRequest) = RequestAction.Forward
+            override suspend fun onResponse(res: InterceptedResponse) =
+                ResponseAction.Replace(body = res.body!!.toString(Charsets.UTF_8).replace("httpbin", "HTTPBIN-RULE-OK").toByteArray())
+        }
+        val e = ProxyEngine(0, TrafficSource.BROWSER, TransactionStore(), ScopeFilter(), respectScope = false, interceptor = interceptor)
+        e.start(scope); Thread.sleep(150)
+        val out = roundTrip(e.boundPort, "GET", o)
+        assertTrue(out.endsWith("hello HTTPBIN-RULE-OK"), out)
+        assertTrue(!out.contains("Content-Encoding", ignoreCase = true), out)
+    }
+
+    @Test fun `one tunnel carries several HTTPS requests over a single upstream connection`() {
+        val mitm = freshTestMitm()
+        val origin = mitm.serverContext("localhost").serverSocketFactory.createServerSocket(0).also { servers += it }
+        val accepted = java.util.concurrent.atomic.AtomicInteger()
+        thread(isDaemon = true) {
+            while (!origin.isClosed) {
+                try {
+                    val c = origin.accept(); accepted.incrementAndGet()
+                    thread(isDaemon = true) {
+                        c.use {
+                            val r = BufferedInputStream(it.getInputStream())
+                            while (true) {
+                                readLine(r) ?: return@use
+                                val h = readHeaders(r)
+                                val body = "page-${h.size}".toByteArray()
+                                it.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: ${body.size}\r\n\r\n".toByteArray() + body)
+                                it.getOutputStream().flush()
+                            }
+                        }
+                    }
+                } catch (_: Exception) { }
+            }
+        }
+        val trust = java.security.KeyStore.getInstance(java.security.KeyStore.getDefaultType()).apply { load(null, null); setCertificateEntry("ca", mitm.ca.certificate) }
+        val tmf = javax.net.ssl.TrustManagerFactory.getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm()).apply { init(trust) }
+        val ctx = javax.net.ssl.SSLContext.getInstance("TLS").apply { init(null, tmf.trustManagers, null) }
+        val proxyMitm = TlsMitm(mitm.ca) { _, port ->
+            ctx.socketFactory.createSocket(Socket("127.0.0.1", port), "localhost", port, true) as javax.net.ssl.SSLSocket
+        }
+        val store = TransactionStore()
+        val e = ProxyEngine(0, TrafficSource.BROWSER, store, ScopeFilter(), respectScope = false, tlsMitmProvider = { proxyMitm })
+        e.start(scope); Thread.sleep(150)
+
+        Socket("127.0.0.1", e.boundPort).use { raw ->
+            raw.soTimeout = 8000
+            raw.getOutputStream().write("CONNECT localhost:${origin.localPort} HTTP/1.1\r\nHost: localhost\r\n\r\n".toByteArray())
+            raw.getOutputStream().flush()
+            val rin = BufferedInputStream(raw.getInputStream())
+            assertTrue(readLine(rin)!!.contains("200"))
+            readHeaders(rin)
+            val tls = ctx.socketFactory.createSocket(raw, "localhost", raw.port, true) as javax.net.ssl.SSLSocket
+            tls.startHandshake()
+            val tin = BufferedInputStream(tls.inputStream)
+            repeat(3) { i ->
+                tls.outputStream.write("GET /p$i HTTP/1.1\r\nHost: localhost\r\n\r\n".toByteArray()); tls.outputStream.flush()
+                assertTrue(readLine(tin)!!.startsWith("HTTP/1.1 200"))
+                val h = readHeaders(tin)
+                val n = h.first { it.first.equals("Content-Length", true) }.second.toInt()
+                assertTrue(!h.any { it.first.equals("Connection", true) && it.second.contains("close", true) })
+                tin.readNBytes(n)
+            }
+        }
+        Thread.sleep(150)
+        assertEquals(1, accepted.get())
+        assertEquals(3, store.transactions.value.count { !it.opaque })
+    }
+
+    @Test fun `accept-encoding is narrowed to what the proxy can decode`() {
+        assertEquals(listOf("Accept-Encoding" to "gzip, deflate"), narrowAcceptEncoding(listOf("Accept-Encoding" to "gzip, deflate, br, zstd")))
+        assertTrue(narrowAcceptEncoding(listOf("Accept-Encoding" to "br")).isEmpty())
+        assertTrue(narrowAcceptEncoding(emptyList()).isEmpty())
     }
 }

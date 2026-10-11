@@ -131,7 +131,7 @@ class LocalAuthProxyTest {
         val heads = LinkedBlockingQueue<List<String>>()
         val p = startProxy(upstream(heads).localPort)
         val idle = Socket("127.0.0.1", p.boundPort).apply { soTimeout = 3000 }
-        Thread.sleep(200)
+        Thread.sleep(600) // let the accept loop register the idle connection, even on a busy machine
         p.stop()
         // The proxy closed its side: reading ends (EOF) instead of waiting for a request that will never come.
         assertEquals(-1, idle.getInputStream().read())

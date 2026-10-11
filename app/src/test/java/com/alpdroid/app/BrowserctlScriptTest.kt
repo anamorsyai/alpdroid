@@ -316,4 +316,26 @@ class BrowserctlScriptTest {
         assertEquals("target.test", j.getString("hostContains"))
         assertNotEquals(0, run("rule", "header", "req", "no-colon").code)
     }
+
+    @Test fun captureTabsAndInterceptOptionsSendTheRightRequests() {
+        assertEquals(0, run("capture", "on").code)
+        assertEquals(true, lastPost("/v1/capture").getBoolean("enabled"))
+        assertNotEquals(0, run("capture", "maybe").code)
+
+        assertEquals(0, run("tab", "new", "https://x.test/a b").code)
+        assertEquals("new", lastPost("/v1/tabs").getString("action"))
+        assertEquals("https://x.test/a b", lastPost("/v1/tabs").getString("url"))
+        assertEquals(0, run("tab", "switch", "3").code)
+        assertEquals(3, lastPost("/v1/tabs").getInt("id"))
+        assertNotEquals(0, run("tab", "close", "x").code)
+
+        assertEquals(0, run("intercept", "on", "target.test", "--responses", "--all-assets").code)
+        val j = lastPost("/v1/intercept")
+        assertEquals("target.test", j.getString("hostFilter"))
+        assertEquals(true, j.getBoolean("responses"))
+        assertEquals(false, j.getBoolean("skipStatic"))
+        assertEquals(0, run("intercept", "on").code)
+        assertEquals(false, lastPost("/v1/intercept").getBoolean("responses"))
+        assertEquals(true, lastPost("/v1/intercept").getBoolean("skipStatic"))
+    }
 }

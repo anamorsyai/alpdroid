@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.92 — Proxy and browser reliability fixes (AlpBrowser 0.6.11)
 
 - Proxy: a response that the server cuts short is now reported as an error instead of being passed on as a complete download; response trailers no longer corrupt the next response on a reused connection; `ws://` upgrades keep their `Connection: Upgrade` header; non-ASCII bytes in headers are forwarded unchanged; a HEAD request to an event-stream URL no longer hangs.
 - AlpBrowser: turning intercept off (for example by switching to web-dev mode) releases the requests it was holding; a pop-up opened from a profile tab stays in that profile; the first-launch certificate can no longer be generated twice at once; the page status resets on every navigation; the Remote DevTools listener survives a transient accept error; a malformed request no longer drops the connection without an answer; and an SSL error is accepted only when the certificate is proven to be signed by AlpBrowser's own CA while Capture is on.

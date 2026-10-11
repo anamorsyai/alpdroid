@@ -1,0 +1,1 @@
+Adds per-tab profiles, full cookie attributes, and WebSocket/event-stream capture in AlpBrowser.

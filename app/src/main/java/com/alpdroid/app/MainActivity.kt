@@ -3005,7 +3005,7 @@ class MainActivity : Activity() {
             )
             panel.addView(
                 pillButton().apply {
-                    text = "Check for browser updates"
+                    text = "Update AlpBrowser"
                     setOnClickListener { checkForBrowserUpdate(manual = true) }
                 },
             )

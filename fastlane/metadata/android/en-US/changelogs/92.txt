@@ -1,0 +1,1 @@
+AlpBrowser now has its own icon (a browser globe with a small AlpDroid badge), and once it's installed Settings shows an Update button instead of Install.

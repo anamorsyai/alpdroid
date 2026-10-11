@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AlpBrowser mark: a browser globe in AlpDroid's teal, with a small badge in the corner carrying
+     AlpDroid's own mountain + snow motif — the visual cue that this is the AlpDroid companion
+     browser, not a standalone app. Same palette as app/.../ic_launcher_foreground.xml (teal
+     #3ED0B8, dim teal #2A8577, snow #EAFBF6). Content stays inside the ~72dp adaptive-icon safe
+     zone (18..90 on this 108 canvas) so no launcher mask crops the globe or the badge. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Globe disc (deep teal) so the grid reads against the dark background -->
+    <path
+        android:fillColor="#0E2E29"
+        android:pathData="M24,50 a24,24 0 1,0 48,0 a24,24 0 1,0 -48,0 Z" />
+    <!-- Latitude lines -->
+    <path android:strokeColor="#3ED0B8" android:strokeWidth="3" android:strokeLineCap="round"
+        android:pathData="M28,38 L68,38" />
+    <path android:strokeColor="#3ED0B8" android:strokeWidth="3.5" android:strokeLineCap="round"
+        android:pathData="M24,50 L72,50" />
+    <path android:strokeColor="#3ED0B8" android:strokeWidth="3" android:strokeLineCap="round"
+        android:pathData="M28,62 L68,62" />
+    <!-- Meridian (vertical ellipse) -->
+    <path android:strokeColor="#3ED0B8" android:strokeWidth="3.5"
+        android:pathData="M48,26 a10,24 0 1,0 0,48 a10,24 0 1,0 0,-48 Z" />
+    <!-- Globe outline, drawn last so it sits cleanly over the grid -->
+    <path android:strokeColor="#3ED0B8" android:strokeWidth="5"
+        android:pathData="M24,50 a24,24 0 1,0 48,0 a24,24 0 1,0 -48,0 Z" />
+    <!-- Separation ring: punch a dark disc so the badge stands off the globe edge -->
+    <path
+        android:fillColor="#12161C"
+        android:pathData="M62,76 a14,14 0 1,0 28,0 a14,14 0 1,0 -28,0 Z" />
+    <!-- Badge disc + teal ring -->
+    <path android:fillColor="#182029" android:strokeColor="#3ED0B8" android:strokeWidth="2.5"
+        android:pathData="M65,76 a11,11 0 1,0 22,0 a11,11 0 1,0 -22,0 Z" />
+    <!-- AlpDroid mountain inside the badge -->
+    <path android:fillColor="#3ED0B8" android:pathData="M78,69 L85,82 L71,82 Z" />
+    <path android:fillColor="#EAFBF6" android:pathData="M78,69 L80.5,73.5 L75.5,73.5 Z" />
+</vector>

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.71 — AlpBrowser icon and a clearer Update button
+
+- AlpBrowser now has its own icon — a browser globe in AlpDroid's teal with a small AlpDroid mountain
+  badge, so it reads as the AlpDroid companion rather than a stock app.
+- Settings → About → AlpBrowser: once it is installed the button reads **Update AlpBrowser** (it
+  checks and offers a newer version, or says you're up to date) instead of implying a fresh install;
+  **Install AlpBrowser** shows only when it is not installed yet.
+
 ## 1.7.70 — install, open and update AlpBrowser from Settings
 
 AlpBrowser (the standalone, agent-controlled browser) is now a first-class citizen inside AlpDroid.

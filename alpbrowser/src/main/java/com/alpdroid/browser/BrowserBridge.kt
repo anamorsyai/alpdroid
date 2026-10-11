@@ -375,6 +375,9 @@ class BrowserBridge(
         .put("responseHeaders", headersJson(tx.responseHeaders))
         .put("responseBody", tx.responseBody?.let { Base64.getEncoder().encodeToString(it) } ?: JSONObject.NULL)
         .put("responseBodyText", tx.responseBody?.let { textOrNull(it) } ?: JSONObject.NULL)
+        // Indented JSON / HTML / form fields when the body is one of those (null otherwise): easier to read than the raw text.
+        .put("requestBodyPretty", BodyFormat.pretty(tx.requestHeaders, tx.requestBody) ?: JSONObject.NULL)
+        .put("responseBodyPretty", BodyFormat.pretty(tx.responseHeaders, tx.responseBody) ?: JSONObject.NULL)
 
     private fun headersJson(headers: List<Pair<String, String>>): JSONArray {
         val arr = JSONArray()

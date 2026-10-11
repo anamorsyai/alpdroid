@@ -13,6 +13,11 @@
 - Proxy: separate switches for intercepting requests and responses, images/CSS/JS skipped by default,
   and a Rules tab for match-and-replace (rules are saved and can be switched on and off).
 - Large responses open smoothly in History and the Repeater instead of freezing the app.
+- Request and response bodies are shown prettified — JSON indented, HTML/XML laid out, form posts one
+  field per line — with a Pretty/Raw switch in History and the Repeater, and a Prettify button when
+  editing a paused message. `browserctl get <id>` also returns the prettified text.
+- History now says clearly when browsing is direct (URLs only) and offers a one-tap Capture button; Capture
+  is also in the browser menu. Captured bodies are kept up to 512 KB each, within a memory budget.
 
 ## 1.7.75 — Faster, steadier updates, terminals and browser proxy (AlpBrowser 0.3.0)
 

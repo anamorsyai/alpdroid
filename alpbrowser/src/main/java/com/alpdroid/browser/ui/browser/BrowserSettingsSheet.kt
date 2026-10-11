@@ -50,6 +50,7 @@ fun BrowserSettingsSheet(
     var js by remember { mutableStateOf(app.jsEnabled()) }
     var desktop by remember { mutableStateOf(app.desktopMode()) }
     var devtools by remember { mutableStateOf(app.devtoolsEnabled()) }
+    var capture by remember { mutableStateOf(app.captureEnabled()) }
     var mode by remember { mutableStateOf(app.mode()) }
     var blocked by remember { mutableIntStateOf(app.adBlocker.blockedCount.get().toInt()) }
 
@@ -77,6 +78,13 @@ fun BrowserSettingsSheet(
             ToggleRow("Desktop site", if (desktop) "Request the desktop version of pages" else "Mobile pages", desktop) {
                 desktop = it; app.setDesktopMode(it); onApplyDesktop(it)
             }
+
+            ToggleRow(
+                title = "Capture traffic (proxy)",
+                subtitle = if (capture) "On — History shows full decrypted requests and responses (a bit slower)"
+                else "Off — direct, fastest browsing; History lists URLs only",
+                checked = capture,
+            ) { capture = it; app.setCaptureEnabled(it) }
 
             ToggleRow(
                 title = "Remote DevTools (CDP)",

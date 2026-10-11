@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -48,6 +49,15 @@ class RepeaterModel {
     var responseText by mutableStateOf("")
     var responseStatus by mutableStateOf<Int?>(null)
     var responseInfo by mutableStateOf("")
+    /** The last response as received, so Pretty/Raw can be switched without sending again. */
+    var respStatus: Int = 0
+    var respHeaders: List<Pair<String, String>> = emptyList()
+    var respBody: ByteArray? = null
+    var pretty by mutableStateOf(true)
+    var hasRaw by mutableStateOf(false)
+
+    fun renderResponse() { if (hasRaw) responseText = rawMessage("HTTP $respStatus", respHeaders, respBody, pretty) }
+
     val log = mutableStateListOf<Entry>()
 
     fun load(method: String, url: String, headers: List<Pair<String, String>>, body: ByteArray?) {
@@ -93,7 +103,8 @@ fun RepeaterScreen(app: AlpBrowserApp, modifier: Modifier = Modifier) {
                                 m.responseStatus = res.status
                                 val bytes = res.body
                                 m.responseInfo = "${ms} ms · ${bytes?.size ?: 0} bytes"
-                                m.responseText = rawMessage("HTTP ${res.status}", res.headers, bytes)
+                                m.respStatus = res.status; m.respHeaders = res.headers; m.respBody = bytes; m.hasRaw = true
+                                m.responseText = withContext(Dispatchers.Default) { rawMessage("HTTP ${res.status}", res.headers, bytes, m.pretty) }
                                 m.log.add(0, RepeaterModel.Entry(m.method, m.url, m.headers, m.body, res.status, ms, bytes?.size ?: 0, m.responseText))
                                 if (m.log.size > 30) m.log.removeAt(m.log.size - 1)
                             }
@@ -109,6 +120,10 @@ fun RepeaterScreen(app: AlpBrowserApp, modifier: Modifier = Modifier) {
                 Text("Response", style = MaterialTheme.typography.titleSmall)
                 StatusChip(m.responseStatus)
                 Text(m.responseInfo, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                if (m.hasRaw) FilterChip(selected = m.pretty, onClick = {
+                    m.pretty = !m.pretty
+                    scope.launch { val t = withContext(Dispatchers.Default) { rawMessage("HTTP ${m.respStatus}", m.respHeaders, m.respBody, m.pretty) }; m.responseText = t }
+                }, label = { Text("Pretty") })
                 if (m.responseText.isNotEmpty()) OutlinedButton(onClick = { clipboard.setText(AnnotatedString(m.responseText)) }) { Text("Copy") }
             }
             if (chunks.isEmpty()) Text("Send a request to see the response here.", style = MaterialTheme.typography.bodySmall.copy(fontFamily = RoninMono),
@@ -126,6 +141,7 @@ fun RepeaterScreen(app: AlpBrowserApp, modifier: Modifier = Modifier) {
                     Modifier.fillMaxWidth().clickable {
                         m.method = e.method; m.url = e.url; m.headers = e.headers; m.body = e.body
                         m.responseStatus = e.status; m.responseText = e.responseText; m.responseInfo = "${e.ms} ms · ${e.size} bytes"
+                        m.hasRaw = false
                     }.padding(vertical = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {

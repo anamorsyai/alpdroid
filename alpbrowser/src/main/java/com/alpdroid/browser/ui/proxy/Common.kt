@@ -44,10 +44,14 @@ fun StatusChip(status: Int?) {
     )
 }
 
-/** Raw, copy-friendly rendering of one HTTP message, capped so a huge body cannot freeze the UI. */
-fun rawMessage(firstLine: String, headers: List<Pair<String, String>>, body: ByteArray?): String {
-    val text = com.alpdroid.browser.RawHttp.bodyToText(body) ?: "[binary body, ${body?.size ?: 0} bytes]"
-    val clipped = if (text.length > 200_000) text.take(200_000) + "\n[… truncated for display]" else text
+/**
+ * Rendering of one HTTP message, capped so a huge body cannot freeze the UI. With [pretty], a recognised body (JSON,
+ * HTML/XML, form post) is laid out readably; otherwise, and for anything unrecognised, the body is shown as it is.
+ */
+fun rawMessage(firstLine: String, headers: List<Pair<String, String>>, body: ByteArray?, pretty: Boolean = false): String {
+    val shown = (if (pretty) com.alpdroid.browser.BodyFormat.pretty(headers, body) else null)
+        ?: com.alpdroid.browser.RawHttp.bodyToText(body) ?: "[binary body, ${body?.size ?: 0} bytes]"
+    val clipped = if (shown.length > 2_000_000) shown.take(2_000_000) + "\n[… truncated for display]" else shown
     return buildString {
         appendLine(firstLine)
         headers.forEach { appendLine("${it.first}: ${it.second}") }

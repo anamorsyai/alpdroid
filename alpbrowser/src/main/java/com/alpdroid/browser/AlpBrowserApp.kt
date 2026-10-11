@@ -157,6 +157,7 @@ class AlpBrowserApp : Application() {
             source = TrafficSource.BROWSER,
             store = transactionStore,
             scope = scopeFilter,
+            maxCapturedBodyBytes = 512 * 1024, // enough to read a typical API response or page in full (the store has a memory budget)
             respectScope = true, // empty scope = capture everything; set a scope to narrow it (bug-bounty)
             tlsMitmProvider = { tlsMitm },
             interceptor = intercept.interceptor,

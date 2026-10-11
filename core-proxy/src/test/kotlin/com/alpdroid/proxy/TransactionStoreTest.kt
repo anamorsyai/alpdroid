@@ -83,4 +83,17 @@ class TransactionStoreTest {
         port = 443,
         path = "/",
     )
+
+    @Test
+    fun `old entries are dropped when the bodies outgrow the memory budget`() {
+        val store = TransactionStore(maxSize = 100, maxBytes = 10_000)
+        fun tx(id: String, size: Int) = HttpTransaction(
+            id = id, source = TrafficSource.BROWSER, timestamp = java.time.Instant.now(), method = "GET",
+            scheme = "https", host = "h", port = 443, path = "/", responseBody = ByteArray(size),
+        )
+        store.record(tx("a", 4000)); store.record(tx("b", 4000)); store.record(tx("c", 4000))
+        assertEquals(listOf("b", "c"), store.transactions.value.map { it.id })
+        store.record(tx("huge", 50_000)) // the newest entry is always kept, even when it alone exceeds the budget
+        assertEquals(listOf("huge"), store.transactions.value.map { it.id })
+    }
 }

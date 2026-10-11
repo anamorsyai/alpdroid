@@ -2,6 +2,8 @@ package com.alpdroid.browser.ui.proxy
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -27,6 +29,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -156,6 +161,9 @@ private fun HeldEditor(app: AlpBrowserApp, h: InterceptController.Held, onDone: 
             )
         } else {
             MonoField(body, { body = it }, "Body", minLines = 3)
+            OutlinedButton(onClick = {
+                body = com.alpdroid.browser.BodyFormat.pretty(RawHttp.parseHeaders(headers), body.toByteArray()) ?: body
+            }) { Text("Prettify body") }
         }
         Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = {
@@ -194,6 +202,8 @@ private fun HistoryTab(app: AlpBrowserApp, onSendToRepeater: () -> Unit) {
     var filter by remember { mutableStateOf("") }
     var hideTunnels by remember { mutableStateOf(true) }
     var openId by remember { mutableStateOf<String?>(null) }
+    var capturePulse by remember { mutableStateOf(0) } // read below so the banner disappears right after Capture is turned on
+    @Suppress("UNUSED_EXPRESSION") capturePulse
     val open = all.firstOrNull { it.id == openId }
     val rows = remember(all, filter, hideTunnels) {
         val f = filter.trim()
@@ -209,6 +219,18 @@ private fun HistoryTab(app: AlpBrowserApp, onSendToRepeater: () -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             MonoField(filter, { filter = it }, "Filter: host, path, method or status", Modifier.weight(1f), singleLine = true)
             OutlinedButton(onClick = { app.transactionStore.clear() }) { Text("Clear") }
+        }
+        if (!app.proxyActive()) {
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 6.dp).background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(10.dp)).padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    "Direct browsing: only the URLs are listed. Turn on Capture to see decrypted requests and responses.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.weight(1f),
+                )
+                Button(onClick = { capturePulse++; app.setCaptureEnabled(true) }) { Text("Capture") }
+            }
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.Center) {
             FilterChip(selected = hideTunnels, onClick = { hideTunnels = !hideTunnels }, label = { Text("Hide CONNECT tunnels") })
@@ -235,16 +257,22 @@ private fun HistoryTab(app: AlpBrowserApp, onSendToRepeater: () -> Unit) {
 @Composable
 private fun TxDetail(app: AlpBrowserApp, tx: HttpTransaction, onBack: () -> Unit, onSendToRepeater: () -> Unit) {
     val clipboard = LocalClipboardManager.current
-    val request = remember(tx.id) { rawMessage("${tx.method} ${tx.path.ifEmpty { "/" }} (${tx.scheme}://${tx.host}:${tx.port})", tx.requestHeaders, tx.requestBody) }
-    val response = remember(tx.id) {
-        if (tx.responseStatus == null) "(no response recorded — direct browsing keeps only the request; turn on Capture)"
-        else rawMessage("HTTP ${tx.responseStatus}", tx.responseHeaders, tx.responseBody)
+    var pretty by remember { mutableStateOf(true) }
+    // Laying out a big JSON/HTML body takes real work; do it off the main thread so the screen never stalls.
+    val rendered by produceState(initialValue = "" to "", tx.id, pretty) {
+        value = withContext(Dispatchers.Default) {
+            rawMessage("${tx.method} ${tx.path.ifEmpty { "/" }} (${tx.scheme}://${tx.host}:${tx.port})", tx.requestHeaders, tx.requestBody, pretty) to
+                if (tx.responseStatus == null) "(no response recorded — direct browsing keeps only the request; turn on Capture)"
+                else rawMessage("HTTP ${tx.responseStatus}", tx.responseHeaders, tx.responseBody, pretty)
+        }
     }
+    val request = rendered.first
+    val response = rendered.second
     val reqChunks = remember(request) { chunkText(request) }
     val resChunks = remember(response) { chunkText(response) }
     LazyColumn(Modifier.fillMaxSize()) {
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(onClick = onBack) { Text("Back") }
                 if (!tx.opaque) Button(onClick = {
                     app.repeater.load(tx.method, RawHttp.displayUrl(tx.scheme, tx.host, tx.port, tx.path), tx.requestHeaders, tx.requestBody)
@@ -252,6 +280,11 @@ private fun TxDetail(app: AlpBrowserApp, tx: HttpTransaction, onBack: () -> Unit
                 }) { Text("Repeater") }
                 OutlinedButton(onClick = { clipboard.setText(AnnotatedString(request + "\n\n" + response)) }) { Text("Copy") }
                 OutlinedButton(onClick = { app.transactionStore.delete(tx.id); onBack() }) { Text("Delete") }
+            }
+            Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = pretty, onClick = { pretty = !pretty }, label = { Text("Pretty") })
+                Text("JSON, HTML and forms laid out; Raw shows the bytes as sent", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Text("Request", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 10.dp))
         }

@@ -339,7 +339,8 @@ class BrowserctlIntegrationTest {
         assertEquals(0, ctl("--group", "alice", "click", "#go").code)
         assertTrue(groupCalls.toString(), groupCalls.contains("cmd:alice"))
         val bobTab = groupTabs.entries.first { it.value == "bob" }.key
-        assertEquals(1, ctl("--group", "alice", "tab", "close", bobTab.toString()).code)
+        val refused = ctl("--group", "alice", "tab", "close", bobTab.toString())
+        assertTrue("a group must not close another group's tab (wget reports its own failure code, so only non-zero is checked): ${refused.err}", refused.code != 0)
         assertEquals(0, ctl("--group", "bob", "tab", "close", bobTab.toString()).code)
         // console is per group
         consoleBuf.add("LOG", "alice says hi", "a.js", 1, tab = 10, group = "alice")

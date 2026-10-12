@@ -12,7 +12,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** One browser tab. Its WebView is created lazily, so a restored or background tab costs no memory until it is opened. */
-class BrowserTab(val id: Int, initialUrl: String, val profile: String = "") {
+class BrowserTab(val id: Int, initialUrl: String, val profile: String = "", val group: String = "") {
     var webView by mutableStateOf<WebView?>(null)
     var url by mutableStateOf(initialUrl)
     var title by mutableStateOf("")
@@ -31,7 +31,7 @@ class BrowserTab(val id: Int, initialUrl: String, val profile: String = "") {
     @Volatile var lastActiveAt: Long = System.currentTimeMillis()
 }
 
-data class TabInfo(val id: Int, val title: String, val url: String, val active: Boolean, val loading: Boolean = false, val lastActiveAt: Long = 0L, val profile: String = "")
+data class TabInfo(val id: Int, val title: String, val url: String, val active: Boolean, val loading: Boolean = false, val lastActiveAt: Long = 0L, val profile: String = "", val group: String = "")
 
 /**
  * Owns the browser's tabs and their WebViews for the whole app process, instead of one per visit to the Browser
@@ -54,21 +54,40 @@ class BrowserWebViewHolder(private val appContext: Context) {
 
     val allWebViews: List<WebView> get() = tabs.mapNotNull { it.webView }
 
-    fun info(): List<TabInfo> = tabs.map { TabInfo(it.id, it.title.ifEmpty { it.url }, it.url, it.id == activeId, it.loading, it.lastActiveAt, it.profile) }
+    fun info(): List<TabInfo> = tabs.map { TabInfo(it.id, it.title.ifEmpty { it.url }, it.url, it.id == activeId, it.loading, it.lastActiveAt, it.profile, it.group) }
 
     /** Adds a tab (and brings it to the front unless [activate] is false). Null when [MAX_TABS] is reached. */
-    fun open(url: String, activate: Boolean = true, profile: String = ""): BrowserTab? {
+    fun open(url: String, activate: Boolean = true, profile: String = "", group: String = ""): BrowserTab? {
         if (tabs.size >= MAX_TABS) return null
-        val tab = BrowserTab(nextId++, url, profile)
+        val tab = BrowserTab(nextId++, url, profile, group)
         tabs.add(tab)
+        if (group.isNotEmpty()) groupActive[group] = tab.id
         if (activate) activeId = tab.id
         persist()
         return tab
     }
 
+    /** The tabs of one group each agent works in: its own "front" tab, independent of the one on screen. */
+    private val groupActive = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** The tab a command aimed at [group] runs in: the one last opened or switched to in that group, else its newest tab. */
+    fun groupFront(group: String): BrowserTab? {
+        val id = groupActive[group]
+        return tabs.firstOrNull { it.id == id && it.group == group } ?: tabs.lastOrNull { it.group == group }
+    }
+
+    /** Makes [id] the group's own front tab without touching the tab on screen. False when the tab is not in [group]. */
+    fun switchInGroup(id: Int, group: String): Boolean {
+        val t = tabs.firstOrNull { it.id == id && it.group == group } ?: return false
+        t.lastActiveAt = System.currentTimeMillis()
+        groupActive[group] = id
+        return true
+    }
+
     fun switchTo(id: Int): Boolean {
         val t = tabs.firstOrNull { it.id == id } ?: return false
         t.lastActiveAt = System.currentTimeMillis()
+        if (t.group.isNotEmpty()) groupActive[t.group] = id
         activeId = id
         persist()
         return true
@@ -79,6 +98,7 @@ class BrowserWebViewHolder(private val appContext: Context) {
         val i = tabs.indexOfFirst { it.id == id }
         if (i < 0) return false
         val tab = tabs.removeAt(i)
+        if (tab.group.isNotEmpty()) groupActive.remove(tab.group, id)
         tab.webView?.let { wv ->
             (wv.parent as? android.view.ViewGroup)?.removeView(wv)
             runCatching { wv.stopLoading(); wv.destroy() }
@@ -103,8 +123,9 @@ class BrowserWebViewHolder(private val appContext: Context) {
         runCatching {
             val urls = JSONArray()
             val profiles = JSONArray()
-            tabs.forEach { urls.put(it.url.ifEmpty { DEFAULT_URL }); profiles.put(it.profile) }
-            prefs.edit().putString(KEY_TABS, JSONObject().put("urls", urls).put("profiles", profiles).put("active", tabs.indexOfFirst { it.id == activeId }).toString()).apply()
+            val groups = JSONArray()
+            tabs.forEach { urls.put(it.url.ifEmpty { DEFAULT_URL }); profiles.put(it.profile); groups.put(it.group) }
+            prefs.edit().putString(KEY_TABS, JSONObject().put("urls", urls).put("profiles", profiles).put("groups", groups).put("active", tabs.indexOfFirst { it.id == activeId }).toString()).apply()
         }
     }
 
@@ -113,7 +134,8 @@ class BrowserWebViewHolder(private val appContext: Context) {
         val urls = saved?.optJSONArray("urls")
         if (urls != null && urls.length() > 0) {
             val profiles = saved.optJSONArray("profiles")
-            for (i in 0 until minOf(urls.length(), MAX_TABS)) tabs.add(BrowserTab(nextId++, urls.optString(i).ifEmpty { DEFAULT_URL }, profiles?.optString(i).orEmpty()))
+            val groups = saved.optJSONArray("groups")
+            for (i in 0 until minOf(urls.length(), MAX_TABS)) tabs.add(BrowserTab(nextId++, urls.optString(i).ifEmpty { DEFAULT_URL }, profiles?.optString(i).orEmpty(), groups?.optString(i).orEmpty()))
             activeId = tabs[(saved.optInt("active", 0)).coerceIn(0, tabs.size - 1)].id
         } else {
             // First run, or an upgrade from the single-page version: continue from the last page that was open.

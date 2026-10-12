@@ -39,6 +39,23 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
 
     /** The tab the current control-API request is aimed at (set per request thread by [withTab]); null = the front tab. */
     private val targetTab = ThreadLocal<Int?>()
+    private val targetGroup = ThreadLocal<String?>()
+
+    override fun <T> withGroup(group: String?, block: () -> T): T {
+        val previous = targetGroup.get()
+        targetGroup.set(group)
+        try { return block() } finally { targetGroup.set(previous) }
+    }
+
+    /** Which tab a command runs in: an explicit `tab` (inside the group, if one is given), else the group's own front tab, else the front tab. */
+    private fun pick(wanted: Int?, group: String?): BrowserTab? {
+        val holder = app.browserWebViewHolder
+        return when {
+            wanted != null -> holder.tabs.firstOrNull { it.id == wanted && (group == null || it.group == group) }
+            group != null -> holder.groupFront(group)
+            else -> holder.active
+        }
+    }
 
     override fun <T> withTab(tab: Int?, block: () -> T): T {
         val previous = targetTab.get()
@@ -46,19 +63,22 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
         try { return block() } finally { targetTab.set(previous) }
     }
 
-    private fun noPage(): String = targetTab.get()?.let { "there is no tab $it" } ?: "no page is open"
-
-    /** The tab a command runs in: the one named by `tab`, else the front tab. */
-    private fun targetOrFront(): BrowserTab? {
-        val wanted = targetTab.get()
-        return if (wanted != null) app.browserWebViewHolder.tabs.firstOrNull { it.id == wanted } else app.browserWebViewHolder.active
+    private fun noPage(): String {
+        val t = targetTab.get(); val g = targetGroup.get()
+        return when {
+            t != null && g != null -> "tab $t is not open in group '$g'"
+            t != null -> "there is no tab $t"
+            g != null -> "group '$g' has no open tab: open one with `browserctl --group $g tab new <url>`"
+            else -> "no page is open"
+        }
     }
 
+    private fun targetOrFront(): BrowserTab? = pick(targetTab.get(), targetGroup.get())
+
     private suspend fun front(): Pair<BrowserTab, WebView>? {
-        val wanted = targetTab.get() // read here, on the request's own thread, before hopping to the main thread
+        val wanted = targetTab.get(); val group = targetGroup.get() // read here, on the request's own thread, before hopping to the main thread
         return withContext(Dispatchers.Main) {
-            val tab = (if (wanted != null) app.browserWebViewHolder.tabs.firstOrNull { it.id == wanted } else app.browserWebViewHolder.active)
-                ?: return@withContext null
+            val tab = pick(wanted, group) ?: return@withContext null
             tab to ensureTabWebView(app, app, tab)
         }
     }

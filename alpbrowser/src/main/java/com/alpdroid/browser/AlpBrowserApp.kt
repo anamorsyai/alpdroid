@@ -258,7 +258,40 @@ class AlpBrowserApp : Application() {
             if (wait && url.isNotBlank()) tab.webView?.let { pageAutomation.awaitLoad(tab, it, timeoutMs) }
             return tab.id
         }
-        override fun profiles(): List<String> = onMainBlocking { Profiles.names() } ?: emptyList()
+        override fun open(url: String, wait: Boolean, timeoutMs: Long, profile: String?, group: String?): Int? {
+            if (group.isNullOrEmpty()) return open(url, wait, timeoutMs, profile)
+            require(group.length in 1..27 && group.all { it.isLetterOrDigit() && it.code < 128 || it == '_' || it == '-' }) { "a group name is 1-27 letters, digits, - or _" }
+            val tab = onMainBlocking {
+                // A group's tabs share one profile of their own, so each agent's logins stay apart; if the WebView cannot provide one, no tab is opened.
+                check(Profiles.supported()) { "this WebView does not support separate profiles (it needs Chrome 128 or newer), so tab groups cannot be isolated" }
+                com.alpdroid.browser.ui.browser.openTab(
+                    this@AlpBrowserApp, this@AlpBrowserApp,
+                    com.alpdroid.browser.ui.browser.normalizeUrl(url.ifBlank { BrowserWebViewHolder.DEFAULT_URL }),
+                    activate = false, profile = "grp-$group", group = group,
+                )
+            } ?: return null
+            if (wait && url.isNotBlank()) tab.webView?.let { pageAutomation.awaitLoad(tab, it, timeoutMs) }
+            return tab.id
+        }
+        override fun switchInGroup(id: Int, group: String) = onMainBlocking { holder.switchInGroup(id, group) } ?: false
+        override fun groups(): List<Pair<String, Int>> = onMainBlocking {
+            holder.tabs.filter { it.group.isNotEmpty() }.groupBy { it.group }.map { it.key to it.value.size }.sortedBy { it.first }
+        } ?: emptyList()
+        override fun clearGroup(name: String, what: String): Boolean {
+            if (what != "cookies" && what != "storage" && what != "all") return false
+            return onMainBlocking { Profiles.clearOne("grp-$name", cookies = what != "storage", storage = what != "cookies") } ?: false
+        }
+        override fun closeGroup(name: String): Boolean {
+            val closed = onMainBlocking {
+                val ids = holder.tabs.filter { it.group == name }.map { it.id }
+                ids.forEach { holder.close(it) }
+                ids.isNotEmpty()
+            } ?: false
+            // The group's cookies and storage go too (emptied at once, removed from disk when the engine lets go of them).
+            val wiped = onMainBlocking { Profiles.delete("grp-$name") } ?: false
+            return closed || wiped
+        }
+        override fun profiles(): List<String> = onMainBlocking { Profiles.names().filter { !it.startsWith("grp-") } } ?: emptyList()
         override fun deleteProfile(name: String): Boolean = onMainBlocking {
             // An open tab really does hold its profile; anything else is emptied now and removed for real at the next start.
             holder.tabs.none { it.profile == name } && Profiles.delete(name)

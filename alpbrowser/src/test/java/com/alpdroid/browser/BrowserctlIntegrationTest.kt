@@ -43,11 +43,17 @@ class BrowserctlIntegrationTest {
     private val consoleBuf = ConsoleBuffer()
     private val targets = ArrayList<Pair<String, Int?>>()
     private val currentTab = ThreadLocal<Int?>()
+    private val currentGroup = ThreadLocal<String?>()
+    private val groupTabs = mutableMapOf(1 to "")          // tab id -> group
+    private val groupCalls = ArrayList<String>()
+    private var nextTabId = 10
 
     private val page = object : PageControl {
+        override fun <T> withGroup(group: String?, block: () -> T): T { currentGroup.set(group); try { return block() } finally { currentGroup.set(null) } }
         override fun <T> withTab(tab: Int?, block: () -> T): T { currentTab.set(tab); try { return block() } finally { currentTab.set(null) } }
         override fun command(args: JSONObject): JSONObject {
             targets += args.optString("cmd") to currentTab.get()
+            groupCalls += "cmd:" + (currentGroup.get() ?: "-")
             pageArgs += JSONObject(args.toString())
             return if (args.optString("selector") == "#missing")
                 JSONObject().put("error", "timeout after 10ms waiting for #missing to be visible").put("ok", false)
@@ -81,7 +87,15 @@ class BrowserctlIntegrationTest {
             scopeGet = { scope }, scopeSet = { scope = it }, console = consoleBuf, modeGet = { "bugbounty" }, modeSet = {}, onClear = {},
             preferredPort = 0, captureGet = { capture }, captureSet = { capture = it },
             tabs = object : TabsHost {
-                override fun list() = listOf(TabInfo(1, "T", "https://t.test/", true, false, 1L))
+                override fun list() = groupTabs.map { (id, g) -> TabInfo(id, "T$id", "https://t.test/$id", id == 1, false, 1L, if (g.isEmpty()) "" else "grp-$g", g) }
+                override fun open(url: String, wait: Boolean, timeoutMs: Long, profile: String?, group: String?): Int? {
+                    if (group.isNullOrEmpty()) return open(url, wait, timeoutMs, profile)
+                    val id = nextTabId++; groupTabs[id] = group; return id
+                }
+                override fun switchInGroup(id: Int, group: String) = groupTabs[id] == group
+                override fun groups() = groupTabs.values.filter { it.isNotEmpty() }.groupingBy { it }.eachCount().toList()
+                override fun closeGroup(name: String) = groupTabs.values.contains(name).also { groupTabs.entries.removeAll { e -> e.value == name } }
+                override fun clearGroup(name: String, what: String): Boolean { groupCalls += "clear:$name:$what"; return what != "cache" }
                 override fun open(url: String, wait: Boolean, timeoutMs: Long): Int? { openedTabs += Triple(url, wait, timeoutMs); return 2 }
                 override fun open(url: String, wait: Boolean, timeoutMs: Long, profile: String?): Int? {
                     if (profile == "bad") throw IllegalArgumentException("a profile name is 1-32 letters, digits, - or _")
@@ -312,5 +326,34 @@ class BrowserctlIntegrationTest {
         assertTrue(all, all.contains("from tab one") && all.contains("from tab two"))
 
         assertEquals(2, ctl("--tab", "x", "click", "#go").code) // not a number
+    }
+
+    @Test fun `--group gives each agent its own tabs, front tab, console and clear`() {
+        val a = ctl("--group", "alice", "tab", "new", "https://x.test"); assertEquals(a.err, 0, a.code)
+        assertTrue(a.out, a.out.contains("\"group\":\"alice\""))
+        assertEquals(0, ctl("--group", "bob", "tab", "new", "https://y.test").code)
+        // each group lists only its own tabs
+        val tabsA = ctl("--group", "alice", "tabs").out
+        assertTrue(tabsA, tabsA.contains("\"group\":\"alice\"") && !tabsA.contains("bob"))
+        // page commands carry the group; a tab of another group is refused to close
+        assertEquals(0, ctl("--group", "alice", "click", "#go").code)
+        assertTrue(groupCalls.toString(), groupCalls.contains("cmd:alice"))
+        val bobTab = groupTabs.entries.first { it.value == "bob" }.key
+        assertEquals(1, ctl("--group", "alice", "tab", "close", bobTab.toString()).code)
+        assertEquals(0, ctl("--group", "bob", "tab", "close", bobTab.toString()).code)
+        // console is per group
+        consoleBuf.add("LOG", "alice says hi", "a.js", 1, tab = 10, group = "alice")
+        consoleBuf.add("LOG", "bob says hi", "b.js", 1, tab = 11, group = "bob")
+        val ca = ctl("--group", "alice", "console").out
+        assertTrue(ca, ca.contains("alice says hi") && !ca.contains("bob says hi"))
+        // clear in a group touches only that group, and the cache cannot be cleared per group
+        assertEquals(0, ctl("--group", "alice", "clear", "cookies").code)
+        assertTrue(groupCalls.toString(), groupCalls.contains("clear:alice:cookies"))
+        assertEquals(1, ctl("--group", "alice", "clear", "cache").code)
+        // list and close a group; bad names are refused
+        assertTrue(ctl("group", "list").out.contains("alice"))
+        assertEquals(0, ctl("group", "close", "alice").code)
+        assertFalse(groupTabs.values.contains("alice"))
+        assertEquals(2, ctl("--group", "bad name", "tabs").code)
     }
 }

@@ -13,6 +13,11 @@ interface PageControl {
      * This is what lets several agents work in different tabs at once without one steering the other's page.
      */
     fun <T> withTab(tab: Int?, block: () -> T): T = block()
+    /**
+     * Runs [block] with page commands aimed at the front tab OF [group] (an agent's own tabs, separate from the tab on screen
+     * and from every other group). A tab given to [withTab] inside it must belong to the group. null = no group.
+     */
+    fun <T> withGroup(group: String?, block: () -> T): T = block()
     /** One element command in the front tab: click, fill, type, press, text, attr, exists, waitfor, html. */
     fun command(args: JSONObject): JSONObject
     /** Load [url] in the front tab; with [wait], block until it has loaded (or [timeoutMs] passes). */

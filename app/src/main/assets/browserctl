@@ -13,8 +13,9 @@
 #            cookies [--domain d] | setcookie <name> <value> [--domain d] [--path p] [--secure] [--httponly] [--samesite Lax|Strict|None] [--expires epoch] [--max-age s]
 #            cdp [port] | cdp off | cdp --json     remote debugging for Puppeteer/Playwright (prints the WebSocket URL)
 # Capture:   capture [on|off]     route the page through the proxy (needed for decrypted History); off = fast direct browsing
-# Parallel:  --tab <id> before any page command (browserctl --tab 3 eval ...) aims it at that tab, so agents sharing the browser do not collide
-#            (also BROWSERCTL_TAB=3); console [limit] shows that tab's console only
+# Parallel:  --group <name> before any command gives an agent its own isolated set of tabs: own cookies and storage, own front tab,
+#            own console (browserctl --group alice tab new <url>; browserctl --group alice eval ...). group list | group close <name>.
+#            --tab <id> aims one command at one tab (also BROWSERCTL_TAB); with --group the tab must belong to the group
 # Tabs:      tabs | tab new [url] [--no-wait] [--profile name] | tab switch <id> | tab close <id>
 #            profile list | profile delete <name>     a --profile tab has its own cookies and storage (a second login side by side)
 # Sockets:   frames <id> [--from n] [--limit n] [--compact]    the frames of a WebSocket, or the events of an event stream, from History
@@ -73,9 +74,12 @@ fail_hint() {
 # `--tab <id>` (or BROWSERCTL_TAB) aims a page command at one tab instead of the front tab: parallel agents each work in
 # their own tab, so none of them navigates, clicks or reads cookies in another's page.
 TABID=${BROWSERCTL_TAB:-}
+GROUPN=${BROWSERCTL_GROUP:-}
 tq() {
-  [ -n "$TABID" ] || { printf '%s' "$1"; return; }
-  case "$1" in *\?*) printf '%s&tab=%s' "$1" "$TABID" ;; *) printf '%s?tab=%s' "$1" "$TABID" ;; esac
+  u=$1
+  if [ -n "$TABID" ]; then case "$u" in *\?*) u="$u&tab=$TABID" ;; *) u="$u?tab=$TABID" ;; esac; fi
+  if [ -n "$GROUPN" ]; then case "$u" in *\?*) u="$u&group=$GROUPN" ;; *) u="$u?group=$GROUPN" ;; esac; fi
+  printf '%s' "$u"
 }
 get() {
   wget -qO- --header "$H" "$BASE$(tq "$1")" 2>"$ERRF"
@@ -246,8 +250,16 @@ parse_opts() {
 }
 b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
 
-if [ "$1" = "--tab" ]; then num "$2"; TABID=$2; shift 2; fi
+while :; do
+  case "$1" in
+    --tab) num "$2"; TABID=$2; shift 2 ;;
+    --group) [ -n "${2:-}" ] || die "--group needs a name"; GROUPN=$2; shift 2 ;;
+    *) break ;;
+  esac
+done
 [ -z "$TABID" ] || num "$TABID"
+case "$GROUPN" in *[!A-Za-z0-9_-]*) die "a group name is 1-27 letters, digits, - or _" ;; esac
+[ ${#GROUPN} -le 27 ] || die "a group name is 1-27 letters, digits, - or _"
 case "$1" in
   ping)      get "/ping" ;;
   ca)        pem=$(ca_pem) || die "could not fetch the proxy CA — AlpBrowser may not be reachable (try: browserctl ping)"
@@ -271,6 +283,11 @@ case "$1" in
                switch|close) case "$3" in ''|*[!0-9]*) die "usage: browserctl tab $2 <id>" ;; esac
                        post "/tabs" "{\"action\":\"$2\",\"id\":$3}" ;;
                *)      die "usage: browserctl tab new [url] [--no-wait] [--profile name] | tab switch <id> | tab close <id>" ;;
+             esac ;;
+  group)     case "${2:-list}" in
+               list) get "/groups" ;;
+               close) [ -n "${3:-}" ] || die "usage: browserctl group close <name>"; safe "$3"; auto "/groups" "{\"close\":$(jstr "$3")}" ;;
+               *) die "usage: browserctl group list | group close <name>" ;;
              esac ;;
   profile)   case "${2:-list}" in
                list) get "/profiles" ;;
@@ -321,7 +338,7 @@ case "$1" in
   shot)      shift; popts "$@"
              fmt=${FMT:-png}; case "$fmt" in png|jpeg|jpg) ;; *) die "--format must be png or jpeg" ;; esac
              ext=$fmt; [ "$fmt" = jpeg ] && ext=jpg; target=${OUTF:-shot.$ext}
-             q="format=$fmt"; [ -n "$TABID" ] && q="$q&tab=$TABID"; [ -n "$SEL" ] && q="$q&selector=$(urlenc "$SEL")"; [ "$FULL" = 1 ] && q="$q&fullPage=1"
+             q="format=$fmt"; [ -n "$TABID" ] && q="$q&tab=$TABID"; [ -n "$GROUPN" ] && q="$q&group=$GROUPN"; [ -n "$SEL" ] && q="$q&selector=$(urlenc "$SEL")"; [ "$FULL" = 1 ] && q="$q&fullPage=1"
              wget -qO "$target" --header "$H" "$BASE/shot?$q" 2>"$ERRF"; st=$?
              [ $st -eq 0 ] || { rm -f "${target:?}"; fail_hint $st; exit $st; }
              case "$(head -c 12 "$target" 2>/dev/null | tr -d '\000')" in '{"ok":false'*) cat "$target" >&2; echo >&2; rm -f "${target:?}"; exit 1 ;; esac
@@ -365,7 +382,7 @@ case "$1" in
                wget -qO "$OUTF" --header "$H" "$BASE/har?$Q" 2>"$ERRF" || { rm -f "${OUTF:?}"; fail_hint $?; exit 1; }
                printf '{"ok":true,"path":%s,"bytes":%s}\n' "$(jstr "$OUTF")" "$(wc -c < "$OUTF" | tr -d ' ')"
              else wget -qO- --header "$H" "$BASE/har?$Q" 2>"$ERRF" || { fail_hint $?; exit 1; }; echo; fi ;;
-  clear)     case "${2:-all}" in cookies|cache|storage|all) post "/clear" "{\"what\":\"${2:-all}\"}" ;; *) die "clear takes cookies|cache|storage|all" ;; esac ;;
+  clear)     case "${2:-all}" in cookies|cache|storage|all) auto "/clear" "{\"what\":\"${2:-all}\"}" ;; *) die "clear takes cookies|cache|storage|all" ;; esac ;;
   history)   shift; hquery "$@"
              if [ -n "$Q" ]; then get "/history?$Q"; else get "/history"; fi ;;
   get)       safe "$2"; get "/history/$2" ;;
@@ -422,5 +439,5 @@ case "$1" in
   rules)     get "/rules" ;;
   console)   case "${2:-200}" in ''|*[!0-9]*) die "console takes a number" ;; esac
              get "/console?limit=${2:-200}" ;;
-  *) echo "usage: browserctl {ping|ca|trust|mode|capture|tabs|tab|navigate|waitnav|click|fill|type|press|text|attr|exists|html|waitfor|shot|cookies|setcookie|cdp|save|har|eval|clear|history|get|scope|intercept|pending|resolve|resend|rule|rules|console}" >&2; exit 2 ;;
+  *) echo "usage: browserctl {ping|ca|trust|mode|capture|tabs|tab|group|navigate|waitnav|click|fill|type|press|text|attr|exists|html|waitfor|shot|cookies|setcookie|cdp|save|har|eval|clear|history|get|scope|intercept|pending|resolve|resend|rule|rules|console}" >&2; exit 2 ;;
 esac

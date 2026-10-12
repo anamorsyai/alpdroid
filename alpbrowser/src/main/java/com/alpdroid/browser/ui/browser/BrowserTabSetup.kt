@@ -111,14 +111,14 @@ internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: Browser
 
             // Web-development workflow: mirror the page's console into a buffer the agent can read.
             override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
-                app.console.add(m.messageLevel().name, m.message(), m.sourceId() ?: "", m.lineNumber(), tab.id)
+                app.console.add(m.messageLevel().name, m.message(), m.sourceId() ?: "", m.lineNumber(), tab.id, tab.group)
                 return true
             }
 
             // window.open / target=_blank: only on a real tap (no pop-up spam), and into a new tab.
             override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message): Boolean {
                 if (!isUserGesture) return false
-                val child = holder.open("", activate = true, profile = tab.profile) ?: return false
+                val child = holder.open("", activate = tab.group.isEmpty(), profile = tab.profile, group = tab.group) ?: return false
                 val childView = ensureTabWebView(context, app, child)
                 (resultMsg.obj as? WebView.WebViewTransport)?.webView = childView
                 resultMsg.sendToTarget()
@@ -137,8 +137,8 @@ internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: Browser
 }
 
 /** Opens [url] in a new tab (front by default), creating its WebView right away. Null when the tab limit is reached. */
-internal fun openTab(context: Context, app: AlpBrowserApp, url: String, activate: Boolean = true, profile: String = ""): BrowserTab? {
-    val tab = app.browserWebViewHolder.open(url, activate, profile) ?: return null
+internal fun openTab(context: Context, app: AlpBrowserApp, url: String, activate: Boolean = true, profile: String = "", group: String = ""): BrowserTab? {
+    val tab = app.browserWebViewHolder.open(url, activate, profile, group) ?: return null
     try { ensureTabWebView(context, app, tab) } catch (e: Throwable) { app.browserWebViewHolder.close(tab.id); throw e }
     return tab
 }

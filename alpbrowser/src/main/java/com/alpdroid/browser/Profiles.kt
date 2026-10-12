@@ -80,6 +80,14 @@ object Profiles {
     /** A profile asked for again after a deferred delete starts empty and visible again. */
     private fun revive(name: String) { val p = pending(); if (p.remove(name)) savePending(p) }
 
+    /** Clears cookies and/or web storage in one named profile (a group's `clear`), leaving every other profile alone. */
+    fun clearOne(name: String, cookies: Boolean, storage: Boolean): Boolean = runCatching {
+        val p = ProfileStore.getInstance().getProfile(name) ?: return@runCatching false
+        if (cookies) { p.cookieManager.removeAllCookies(null); p.cookieManager.flush() }
+        if (storage) p.webStorage.deleteAllData()
+        true
+    }.getOrDefault(false)
+
     /** Clears cookies and web storage in every named profile (used by "clear"). */
     fun clearAll(cookies: Boolean, storage: Boolean) {
         for (n in names()) runCatching {

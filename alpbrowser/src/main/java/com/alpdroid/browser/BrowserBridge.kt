@@ -46,6 +46,17 @@ interface TabsHost {
         if (profile.isNullOrEmpty()) open(url, wait, timeoutMs) else throw IllegalArgumentException("separate profiles are not available")
     fun profiles(): List<String> = emptyList()
     fun deleteProfile(name: String): Boolean = false
+    /** Like [open], inside [group]: tabs of one group share one isolated cookie/storage jar of their own and are never mixed with another group's. */
+    fun open(url: String, wait: Boolean, timeoutMs: Long, profile: String?, group: String?): Int? =
+        if (group.isNullOrEmpty()) open(url, wait, timeoutMs, profile) else throw IllegalArgumentException("tab groups are not available")
+    /** Makes [id] the front tab of [group] without touching the tab on screen. False when the tab is not in the group. */
+    fun switchInGroup(id: Int, group: String): Boolean = false
+    /** The open groups and how many tabs each has. */
+    fun groups(): List<Pair<String, Int>> = emptyList()
+    /** Closes every tab of [group] and removes its cookies and storage. False when nothing of it existed. */
+    fun closeGroup(name: String): Boolean = false
+    /** Clears cookies and/or storage of one group only; false when that is not possible (for example "cache"). */
+    fun clearGroup(name: String, what: String): Boolean = false
 }
 
 class BrowserBridge(
@@ -172,13 +183,16 @@ class BrowserBridge(
 
             // `tab` (query or body) aims a page command at one tab instead of the front tab, so parallel agents do not collide.
             val tabId = (query["tab"] ?: body.opt("tab")?.toString())?.trim()?.toIntOrNull()?.takeIf { it > 0 }
-            val raw = try { onTab(tabId) { rawRoute(method, path, query) } } catch (e: Throwable) {
+            // `group` (query or body) works inside one group of tabs: its own isolated cookies and storage, its own front tab, its own console.
+            val group = (query["group"] ?: body.optString("group")).trim().takeIf { it.isNotEmpty() }
+            if (group != null && !validGroup(group)) { respond(sock.getOutputStream(), 200, error("a group name is 1-27 letters, digits, - or _").put("ok", false)); return }
+            val raw = try { onTab(tabId, group) { rawRoute(method, path, query) } } catch (e: Throwable) {
                 // A screenshot that fails answers 200 with {"ok":false,...} like every page command, so the client prints the reason.
                 val shot = path == "/v1/shot"
                 Raw(if (shot) 200 else 500, "application/json", render(error("${e.javaClass.simpleName}: ${e.message ?: "error"}").also { if (shot) it.put("ok", false) }).toByteArray())
             }
             if (raw != null) { respondRaw(sock.getOutputStream(), raw); return }
-            val (code, json) = try { onTab(tabId) { route(method, path, query, body) } } catch (e: Throwable) {
+            val (code, json) = try { onTab(tabId, group) { route(method, path, query, body) } } catch (e: Throwable) {
                 // Page commands answer 200 with {"ok":false,...} so the client can print the reason; a bare HTTP error would only show as "request failed".
                 val automation = path == "/v1/eval" || path == "/v1/act" || path == "/v1/navigate" || path == "/v1/waitnav" || path == "/v1/cookies" || path == "/v1/cdp"
                 (if (automation) 200 else 500) to error("${e.javaClass.simpleName}: ${e.message ?: "error"}")
@@ -324,8 +338,8 @@ class BrowserBridge(
                 val id = body.optString("id")
                 return if (intercept.rules.setEnabled(id, body.optBoolean("enabled", true))) 200 to ok() else 404 to error("no such rule")
             }
-            path == "/v1/console" && method == "GET" -> return 200 to consoleJson(q["limit"]?.toIntOrNull()?.coerceIn(1, 1000) ?: 200, q["tab"]?.toIntOrNull())
-            path == "/v1/console/clear" && method == "POST" -> { console.clear(q["tab"]?.toIntOrNull() ?: body.optInt("tab", -1).takeIf { it > 0 }); return 200 to ok() }
+            path == "/v1/console" && method == "GET" -> return 200 to consoleJson(q["limit"]?.toIntOrNull()?.coerceIn(1, 1000) ?: 200, q["tab"]?.toIntOrNull(), q["group"]?.takeIf { it.isNotBlank() })
+            path == "/v1/console/clear" && method == "POST" -> { console.clear(q["tab"]?.toIntOrNull() ?: body.optInt("tab", -1).takeIf { it > 0 }, (q["group"] ?: body.optString("group")).takeIf { it.isNotBlank() }); return 200 to ok() }
             path == "/v1/mode" && method == "GET" -> return 200 to modeJson()
             path == "/v1/mode" && method == "POST" -> {
                 val m = body.optString("mode"); if (m != "bugbounty" && m != "webdev") return 400 to error("mode must be bugbounty or webdev")
@@ -334,9 +348,10 @@ class BrowserBridge(
             path == "/v1/tabs" && method == "GET" -> {
                 val host = tabs ?: return 404 to error("tabs are not available")
                 val arr = JSONArray()
-                host.list().forEach {
+                val only = q["group"]?.takeIf { it.isNotBlank() }
+                host.list().filter { only == null || it.group == only }.forEach {
                     arr.put(JSONObject().put("id", it.id).put("title", it.title).put("url", it.url).put("active", it.active)
-                        .put("loading", it.loading).put("lastActiveAt", it.lastActiveAt).put("profile", it.profile))
+                        .put("loading", it.loading).put("lastActiveAt", it.lastActiveAt).put("profile", it.profile).put("group", it.group))
                 }
                 return 200 to JSONObject().put("tabs", arr)
             }
@@ -345,16 +360,39 @@ class BrowserBridge(
                 return when (body.optString("action")) {
                     "new" -> {
                         val profile = body.optStringOrNull("profile")?.takeIf { it.isNotBlank() }
-                        val id = try { host.open(body.optString("url"), body.optBoolean("wait", true), body.optLong("timeout", 20_000), profile) }
+                        val group = (q["group"] ?: body.optStringOrNull("group"))?.takeIf { it.isNotBlank() }
+                        if (group != null && profile != null) return 200 to error("a tab in a group uses the group's own profile: give --group or --profile, not both").put("ok", false)
+                        val id = try { if (group != null) host.open(body.optString("url"), body.optBoolean("wait", true), body.optLong("timeout", 20_000), null, group) else host.open(body.optString("url"), body.optBoolean("wait", true), body.optLong("timeout", 20_000), profile) }
                         // Answered with 200 and {"ok":false,...} so browserctl prints the reason.
                         catch (e: IllegalArgumentException) { return 200 to error(e.message ?: "invalid request").put("ok", false) }
                         catch (e: IllegalStateException) { return 200 to error(e.message ?: "could not open the tab").put("ok", false) }
-                        if (id == null) 409 to error("tab limit reached") else 200 to JSONObject().put("ok", true).put("id", id).also { if (profile != null) it.put("profile", profile) }
+                        if (id == null) 409 to error("tab limit reached") else 200 to JSONObject().put("ok", true).put("id", id).also { if (profile != null) it.put("profile", profile); if (group != null) it.put("group", group) }
                     }
-                    "switch" -> if (host.switchTo(body.optInt("id", -1))) 200 to ok() else 404 to error("no such tab")
-                    "close" -> if (host.close(body.optInt("id", -1))) 200 to ok() else 404 to error("no such tab")
+                    "switch" -> {
+                        val g = (q["group"] ?: body.optStringOrNull("group"))?.takeIf { it.isNotBlank() }
+                        if (if (g != null) host.switchInGroup(body.optInt("id", -1), g) else host.switchTo(body.optInt("id", -1))) 200 to ok()
+                        else 404 to error(if (g != null) "no such tab in group '$g'" else "no such tab")
+                    }
+                    "close" -> {
+                        val g = (q["group"] ?: body.optStringOrNull("group"))?.takeIf { it.isNotBlank() }
+                        val id = body.optInt("id", -1)
+                        // A group may only close its own tabs.
+                        if (g != null && host.list().none { it.id == id && it.group == g }) 404 to error("no such tab in group '$g'")
+                        else if (host.close(id)) 200 to ok() else 404 to error("no such tab")
+                    }
                     else -> 400 to error("action must be new, switch or close")
                 }
+            }
+            path == "/v1/groups" && method == "GET" -> {
+                val host = tabs ?: return 404 to error("tabs are not available")
+                val arr = JSONArray(); host.groups().forEach { arr.put(JSONObject().put("group", it.first).put("tabs", it.second)) }
+                return 200 to JSONObject().put("ok", true).put("groups", arr)
+            }
+            path == "/v1/groups" && method == "POST" -> {
+                val host = tabs ?: return 404 to error("tabs are not available")
+                val name = body.optString("close").takeIf { it.isNotBlank() } ?: return 400 to error("close (a group name) required")
+                if (!validGroup(name)) return 200 to error("a group name is 1-27 letters, digits, - or _").put("ok", false)
+                return if (host.closeGroup(name)) 200 to ok() else 200 to error("group '$name' does not exist").put("ok", false)
             }
             path == "/v1/profiles" && method == "GET" -> {
                 val host = tabs ?: return 404 to error("tabs are not available")
@@ -370,7 +408,17 @@ class BrowserBridge(
                 if (!body.has("enabled")) return 400 to error("enabled required")
                 captureSet(body.optBoolean("enabled")); return 200 to captureJson()
             }
-            path == "/v1/clear" && method == "POST" -> { onClear(body.optString("what", "all")); return 200 to ok() }
+            path == "/v1/clear" && method == "POST" -> {
+                val what = body.optString("what", "all")
+                val g = (q["group"] ?: body.optString("group")).takeIf { it.isNotBlank() }
+                // In a group, "clear" touches only that group: another agent's logins must survive it.
+                if (g != null) {
+                    val host = tabs ?: return 404 to error("tabs are not available")
+                    return if (host.clearGroup(g, what)) 200 to ok()
+                    else 200 to error("a group can clear 'cookies', 'storage' or 'all' (the cache is shared and is not cleared per group)").put("ok", false)
+                }
+                onClear(what); return 200 to ok()
+            }
             else -> return 404 to error("unknown endpoint")
         }
     }
@@ -521,10 +569,10 @@ class BrowserBridge(
         return 200 to JSONObject().put("ok", true).put("id", id)
     }
 
-    private fun consoleJson(limit: Int, tab: Int?): JSONObject {
+    private fun consoleJson(limit: Int, tab: Int?, group: String?): JSONObject {
         val arr = JSONArray()
-        console.tail(limit, tab).forEach { e ->
-            arr.put(JSONObject().put("at", e.at).put("level", e.level).put("message", e.message).put("source", e.source).put("line", e.line).put("tab", e.tab))
+        console.tail(limit, tab, group).forEach { e ->
+            arr.put(JSONObject().put("at", e.at).put("level", e.level).put("message", e.message).put("source", e.source).put("line", e.line).put("tab", e.tab).also { o -> if (e.group.isNotEmpty()) o.put("group", e.group) })
         }
         return JSONObject().put("console", arr)
     }
@@ -587,7 +635,12 @@ class BrowserBridge(
         return runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
     }
 
-    private fun <T> onTab(tab: Int?, block: () -> T): T = page?.withTab(tab, block) ?: block()
+    private fun <T> onTab(tab: Int?, group: String?, block: () -> T): T {
+        val p = page ?: return block()
+        return p.withGroup(group) { p.withTab(tab, block) }
+    }
+
+    private fun validGroup(g: String) = g.length in 1..27 && g.all { it.isLetterOrDigit() && it.code < 128 || it == '_' || it == '-' }
 
     private fun ok() = JSONObject().put("ok", true)
     private fun error(msg: String) = JSONObject().put("error", msg)

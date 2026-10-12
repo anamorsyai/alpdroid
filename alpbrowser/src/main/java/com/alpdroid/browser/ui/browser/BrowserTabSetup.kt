@@ -111,7 +111,7 @@ internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: Browser
 
             // Web-development workflow: mirror the page's console into a buffer the agent can read.
             override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
-                app.console.add(m.messageLevel().name, m.message(), m.sourceId() ?: "", m.lineNumber())
+                app.console.add(m.messageLevel().name, m.message(), m.sourceId() ?: "", m.lineNumber(), tab.id)
                 return true
             }
 

@@ -170,13 +170,15 @@ class BrowserBridge(
                 respond(sock.getOutputStream(), 400, error("body is not valid JSON: ${e.message}")); return
             }
 
-            val raw = try { rawRoute(method, path, query) } catch (e: Throwable) {
+            // `tab` (query or body) aims a page command at one tab instead of the front tab, so parallel agents do not collide.
+            val tabId = (query["tab"] ?: body.opt("tab")?.toString())?.trim()?.toIntOrNull()?.takeIf { it > 0 }
+            val raw = try { onTab(tabId) { rawRoute(method, path, query) } } catch (e: Throwable) {
                 // A screenshot that fails answers 200 with {"ok":false,...} like every page command, so the client prints the reason.
                 val shot = path == "/v1/shot"
                 Raw(if (shot) 200 else 500, "application/json", render(error("${e.javaClass.simpleName}: ${e.message ?: "error"}").also { if (shot) it.put("ok", false) }).toByteArray())
             }
             if (raw != null) { respondRaw(sock.getOutputStream(), raw); return }
-            val (code, json) = try { route(method, path, query, body) } catch (e: Throwable) {
+            val (code, json) = try { onTab(tabId) { route(method, path, query, body) } } catch (e: Throwable) {
                 // Page commands answer 200 with {"ok":false,...} so the client can print the reason; a bare HTTP error would only show as "request failed".
                 val automation = path == "/v1/eval" || path == "/v1/act" || path == "/v1/navigate" || path == "/v1/waitnav" || path == "/v1/cookies" || path == "/v1/cdp"
                 (if (automation) 200 else 500) to error("${e.javaClass.simpleName}: ${e.message ?: "error"}")
@@ -322,8 +324,8 @@ class BrowserBridge(
                 val id = body.optString("id")
                 return if (intercept.rules.setEnabled(id, body.optBoolean("enabled", true))) 200 to ok() else 404 to error("no such rule")
             }
-            path == "/v1/console" && method == "GET" -> return 200 to consoleJson(q["limit"]?.toIntOrNull()?.coerceIn(1, 1000) ?: 200)
-            path == "/v1/console/clear" && method == "POST" -> { console.clear(); return 200 to ok() }
+            path == "/v1/console" && method == "GET" -> return 200 to consoleJson(q["limit"]?.toIntOrNull()?.coerceIn(1, 1000) ?: 200, q["tab"]?.toIntOrNull())
+            path == "/v1/console/clear" && method == "POST" -> { console.clear(q["tab"]?.toIntOrNull() ?: body.optInt("tab", -1).takeIf { it > 0 }); return 200 to ok() }
             path == "/v1/mode" && method == "GET" -> return 200 to modeJson()
             path == "/v1/mode" && method == "POST" -> {
                 val m = body.optString("mode"); if (m != "bugbounty" && m != "webdev") return 400 to error("mode must be bugbounty or webdev")
@@ -519,10 +521,10 @@ class BrowserBridge(
         return 200 to JSONObject().put("ok", true).put("id", id)
     }
 
-    private fun consoleJson(limit: Int): JSONObject {
+    private fun consoleJson(limit: Int, tab: Int?): JSONObject {
         val arr = JSONArray()
-        console.tail(limit).forEach { e ->
-            arr.put(JSONObject().put("at", e.at).put("level", e.level).put("message", e.message).put("source", e.source).put("line", e.line))
+        console.tail(limit, tab).forEach { e ->
+            arr.put(JSONObject().put("at", e.at).put("level", e.level).put("message", e.message).put("source", e.source).put("line", e.line).put("tab", e.tab))
         }
         return JSONObject().put("console", arr)
     }
@@ -584,6 +586,8 @@ class BrowserBridge(
         if (binary > sample.size / 20) return null
         return runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
     }
+
+    private fun <T> onTab(tab: Int?, block: () -> T): T = page?.withTab(tab, block) ?: block()
 
     private fun ok() = JSONObject().put("ok", true)
     private fun error(msg: String) = JSONObject().put("error", msg)

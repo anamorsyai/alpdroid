@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Several agents can now use AlpBrowser at the same time: `browserctl --tab <id> <command>` aims any page command (navigate, eval, click, fill, text, html, waitfor, waitnav, shot, cookies, setcookie, console) at one tab instead of the tab in front, and `cookies` follows that tab's profile. `console --tab` shows only that tab's messages, and clearing it clears only that tab's.
+
 ## 1.7.93 — AlpBrowser icon (AlpBrowser 0.6.12)
 
 - The AlpBrowser icon: the globe now sits exactly in the middle, with the AlpDroid badge as a small mark on its lower-right edge.

@@ -8,6 +8,11 @@ import org.json.JSONObject
  * failure is `{"ok":false,"error":...}` so the CLI can fail loudly instead of printing something success-looking.
  */
 interface PageControl {
+    /**
+     * Runs [block] with every page command inside it aimed at tab [tab] instead of the front tab (null = the front tab).
+     * This is what lets several agents work in different tabs at once without one steering the other's page.
+     */
+    fun <T> withTab(tab: Int?, block: () -> T): T = block()
     /** One element command in the front tab: click, fill, type, press, text, attr, exists, waitfor, html. */
     fun command(args: JSONObject): JSONObject
     /** Load [url] in the front tab; with [wait], block until it has loaded (or [timeoutMs] passes). */

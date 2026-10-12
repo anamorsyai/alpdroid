@@ -40,8 +40,14 @@ class BrowserctlIntegrationTest {
         .map { File(it) }.first { it.isFile }
     private val shell = System.getenv("BROWSERCTL_SHELL") ?: "/bin/sh"
 
+    private val consoleBuf = ConsoleBuffer()
+    private val targets = ArrayList<Pair<String, Int?>>()
+    private val currentTab = ThreadLocal<Int?>()
+
     private val page = object : PageControl {
+        override fun <T> withTab(tab: Int?, block: () -> T): T { currentTab.set(tab); try { return block() } finally { currentTab.set(null) } }
         override fun command(args: JSONObject): JSONObject {
+            targets += args.optString("cmd") to currentTab.get()
             pageArgs += JSONObject(args.toString())
             return if (args.optString("selector") == "#missing")
                 JSONObject().put("error", "timeout after 10ms waiting for #missing to be visible").put("ok", false)
@@ -50,11 +56,14 @@ class BrowserctlIntegrationTest {
         override fun navigate(url: String, wait: Boolean, state: String, timeoutMs: Long) =
             JSONObject().put("url", "$url/final").put("redirected", true).put("ok", true)
         override fun waitNav(state: String, timeoutMs: Long) = JSONObject().put("navigated", false).put("ok", true)
-        override fun eval(js: String, await: Boolean, timeoutMs: Long): JSONObject { evaluated += js; return JSONObject().put("result", js.length).put("ok", true) }
+        override fun eval(js: String, await: Boolean, timeoutMs: Long): JSONObject { targets += "eval" to currentTab.get(); evaluated += js; return JSONObject().put("result", js.length).put("ok", true) }
         override fun screenshot(selector: String?, fullPage: Boolean, jpeg: Boolean): Pair<ByteArray?, JSONObject?> =
-            if (selector == "#missing") null to JSONObject().put("error", "no element matches #missing").put("ok", false)
+            if (targets.add("shot" to currentTab.get()) && selector == "#missing") null to JSONObject().put("error", "no element matches #missing").put("ok", false)
             else byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0, 1, 2, 3, 0xff.toByte(), 0xfe.toByte()) to null
-        override fun cookies(domain: String?) = JSONObject().put("cookies", JSONArray().put(JSONObject().put("name", "sid").put("value", "1"))).put("ok", true)
+        override fun cookies(domain: String?): JSONObject {
+            targets += "cookies" to currentTab.get()
+            return JSONObject().put("cookies", JSONArray().put(JSONObject().put("name", "sid").put("value", "1"))).put("ok", true)
+        }
         override fun setCookie(cookie: CookieSpec): JSONObject { cookies += cookie; return JSONObject().put("name", cookie.name).put("ok", true) }
     }
 
@@ -69,7 +78,7 @@ class BrowserctlIntegrationTest {
             token = token, store = store, intercept = intercept, proxyPort = { 8890 }, caPem = { "PEM" },
             onNavigate = {}, onEvalJs = { "unused" },
             onResend = { BrowserBridge.ResendResponse(200, emptyList(), "x".toByteArray()) },
-            scopeGet = { scope }, scopeSet = { scope = it }, console = ConsoleBuffer(), modeGet = { "bugbounty" }, modeSet = {}, onClear = {},
+            scopeGet = { scope }, scopeSet = { scope = it }, console = consoleBuf, modeGet = { "bugbounty" }, modeSet = {}, onClear = {},
             preferredPort = 0, captureGet = { capture }, captureSet = { capture = it },
             tabs = object : TabsHost {
                 override fun list() = listOf(TabInfo(1, "T", "https://t.test/", true, false, 1L))
@@ -285,5 +294,23 @@ class BrowserctlIntegrationTest {
         val gone = ctl("profile", "delete", "bob")
         assertEquals(1, gone.code); assertTrue(gone.err.contains("could not delete"))
         assertTrue(JSONObject(ctl("tabs").out).getJSONArray("tabs").getJSONObject(0).has("profile"))
+    }
+
+    @Test fun `--tab aims page commands at one tab, and console can be read per tab`() {
+        assertEquals(0, ctl("--tab", "7", "click", "#go").code)
+        assertEquals(0, ctl("click", "#go").code)
+        assertEquals(0, ctl("--tab", "3", "eval", "1+1").code)
+        assertEquals(0, ctl("--tab", "3", "cookies").code)
+        assertEquals(0, ctl("--tab", "4", "shot", "--out", File(work, "t4.png").absolutePath).code)
+        assertEquals(listOf("click" to 7, "click" to null, "eval" to 3, "cookies" to 3, "shot" to 4), targets.toList())
+
+        consoleBuf.add("LOG", "from tab one", "a.js", 1, tab = 1)
+        consoleBuf.add("LOG", "from tab two", "b.js", 2, tab = 2)
+        val only2 = ctl("--tab", "2", "console").out
+        assertTrue(only2, only2.contains("from tab two") && !only2.contains("from tab one"))
+        val all = ctl("console").out
+        assertTrue(all, all.contains("from tab one") && all.contains("from tab two"))
+
+        assertEquals(2, ctl("--tab", "x", "click", "#go").code) // not a number
     }
 }

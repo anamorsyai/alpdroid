@@ -37,9 +37,30 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
 
     private fun fail(message: String) = JSONObject().put("ok", false).put("error", message)
 
-    private suspend fun front(): Pair<BrowserTab, WebView>? = withContext(Dispatchers.Main) {
-        val tab = app.browserWebViewHolder.active ?: return@withContext null
-        tab to ensureTabWebView(app, app, tab)
+    /** The tab the current control-API request is aimed at (set per request thread by [withTab]); null = the front tab. */
+    private val targetTab = ThreadLocal<Int?>()
+
+    override fun <T> withTab(tab: Int?, block: () -> T): T {
+        val previous = targetTab.get()
+        targetTab.set(tab)
+        try { return block() } finally { targetTab.set(previous) }
+    }
+
+    private fun noPage(): String = targetTab.get()?.let { "there is no tab $it" } ?: "no page is open"
+
+    /** The tab a command runs in: the one named by `tab`, else the front tab. */
+    private fun targetOrFront(): BrowserTab? {
+        val wanted = targetTab.get()
+        return if (wanted != null) app.browserWebViewHolder.tabs.firstOrNull { it.id == wanted } else app.browserWebViewHolder.active
+    }
+
+    private suspend fun front(): Pair<BrowserTab, WebView>? {
+        val wanted = targetTab.get() // read here, on the request's own thread, before hopping to the main thread
+        return withContext(Dispatchers.Main) {
+            val tab = (if (wanted != null) app.browserWebViewHolder.tabs.firstOrNull { it.id == wanted } else app.browserWebViewHolder.active)
+                ?: return@withContext null
+            tab to ensureTabWebView(app, app, tab)
+        }
     }
 
     /** Runs [body] (an async function body) in the page and waits for it to settle. */
@@ -66,7 +87,7 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
     // ------------------------------------------------------------------------------------------------- commands
 
     override fun command(args: JSONObject): JSONObject = runBlocking {
-        val (tab, wv) = front() ?: return@runBlocking fail("no page is open")
+        val (tab, wv) = front() ?: return@runBlocking fail(noPage())
         val timeout = args.optLong("timeout", AutomationJs.DEFAULT_TIMEOUT_MS)
         if (args.optString("cmd") in setOf("click", "fill", "type", "text", "attr", "exists", "waitfor", "html") && args.optString("selector").isBlank() && args.optString("cmd") != "html") {
             return@runBlocking fail("selector required")
@@ -75,7 +96,7 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
     }
 
     override fun eval(js: String, await: Boolean, timeoutMs: Long): JSONObject = runBlocking {
-        val (tab, wv) = front() ?: return@runBlocking fail("no page is open")
+        val (tab, wv) = front() ?: return@runBlocking fail(noPage())
         val seq0 = tab.navSeq
         val host = object : EvalHost {
             override suspend fun send(script: String) {
@@ -137,7 +158,7 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
     }
 
     override fun navigate(url: String, wait: Boolean, state: String, timeoutMs: Long): JSONObject = runBlocking {
-        val (tab, wv) = front() ?: return@runBlocking fail("no page is open")
+        val (tab, wv) = front() ?: return@runBlocking fail(noPage())
         val before = tab.navSeq
         val target = normalizeUrl(url)
         val started = System.currentTimeMillis()
@@ -146,7 +167,7 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
     }
 
     override fun waitNav(state: String, timeoutMs: Long): JSONObject = runBlocking {
-        val (tab, wv) = front() ?: return@runBlocking fail("no page is open")
+        val (tab, wv) = front() ?: return@runBlocking fail(noPage())
         val started = System.currentTimeMillis()
         if (tab.loading) return@runBlocking settle(tab, wv, state, timeoutMs, null, null, started)
         // Nothing loading right now: give a navigation the caller has just triggered (a click) a moment to begin.
@@ -175,7 +196,7 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
     }
 
     override fun screenshot(selector: String?, fullPage: Boolean, jpeg: Boolean): Pair<ByteArray?, JSONObject?> = runBlocking {
-        val (_, wv) = front() ?: return@runBlocking null to fail("no page is open")
+        val (_, wv) = front() ?: return@runBlocking null to fail(noPage())
         val onScreen = withContext(Dispatchers.Main) { wv.width > 0 && wv.height > 0 && wv.isAttachedToWindow && wv.isShown }
         if (!onScreen) return@runBlocking null to fail("the page is not on screen: open AlpBrowser's Browser screen and try again")
         try {
@@ -240,7 +261,7 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
     // ------------------------------------------------------------------------------------------------- cookies
 
     /** The profile of the front tab ("" for the shared one): cookie commands act on the jar that tab uses. */
-    private fun frontProfile(): String = app.browserWebViewHolder.active?.profile.orEmpty()
+    private fun frontProfile(): String = targetOrFront()?.profile.orEmpty()
 
     private fun cookieManagerFor(profile: String): CookieManager? =
         if (profile.isEmpty()) CookieManager.getInstance() else runBlocking { withContext(Dispatchers.Main) { Profiles.cookieManager(profile) } }
@@ -277,7 +298,7 @@ class PageAutomation(private val app: AlpBrowserApp) : PageControl {
     }
 
     override fun setCookie(cookie: CookieSpec): JSONObject {
-        val host = cookie.domain?.removePrefix(".") ?: app.browserWebViewHolder.active?.url?.let { runCatching { java.net.URI(it).host }.getOrNull() }
+        val host = cookie.domain?.removePrefix(".") ?: targetOrFront()?.url?.let { runCatching { java.net.URI(it).host }.getOrNull() }
             ?: return fail("no domain given and no page is open")
         val attrs = CookieHeader.build(cookie).getOrElse { return fail(it.message ?: "invalid cookie") }
         val profile = frontProfile()

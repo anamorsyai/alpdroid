@@ -137,4 +137,58 @@ class LocalAuthProxyTest {
         assertEquals(-1, idle.getInputStream().read())
         idle.close()
     }
+
+    @Test fun streamsThatTheBrowserAbandonedDoNotUseUpTheFrontDoor() {
+        // An event stream: the server sends its head and then goes quiet. Browsers open and drop these all the time (every page
+        // load, every tab). Left behind, they used to pile up until the proxy could take no more.
+        val s = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1")).also { servers += it }
+        val held = java.util.concurrent.CopyOnWriteArrayList<Socket>()
+        thread(isDaemon = true) {
+            while (!s.isClosed) {
+                try {
+                    val c = s.accept(); held += c
+                    thread(isDaemon = true) {
+                        runCatching {
+                            val r = c.getInputStream().bufferedReader()
+                            val head = generateSequence { r.readLine() }.takeWhile { it.isNotEmpty() }.toList()
+                            val ok = head.firstOrNull()?.contains("/api/last") == true
+                            c.getOutputStream().write(
+                                (if (ok) "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok" else "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n").toByteArray())
+                            c.getOutputStream().flush()
+                            if (ok) c.close() else Thread.sleep(60_000) // quiet stream
+                        }
+                    }
+                } catch (_: Exception) { }
+            }
+        }
+        val p = startProxy(s.localPort)
+        repeat(300) {
+            Socket("127.0.0.1", p.boundPort).use { c ->
+                c.soTimeout = 5000
+                c.getOutputStream().write("GET /event HTTP/1.1\r\nHost: 127.0.0.1:${p.boundPort}\r\n\r\n".toByteArray())
+                c.getOutputStream().flush()
+                val r = c.getInputStream().bufferedReader()
+                assertTrue(r.readLine().startsWith("HTTP/1.1 200")) // the head arrived, then the browser walks away
+            }
+        }
+        // The proxy must not keep a parked thread per abandoned stream (they used to pile up, two per connection, with nothing to limit them).
+        Thread.sleep(1500)
+        val parked = Thread.getAllStackTraces().keys.count { it.name == "oc-proxy" && it.isAlive }
+        assertTrue("$parked proxy threads are still parked on abandoned streams", parked < 40)
+        // 300 abandoned streams later (far more than the 128 the proxy allows at once), a new request still gets through.
+        var answer = ""
+        val deadline = System.currentTimeMillis() + 10_000
+        while (System.currentTimeMillis() < deadline && !answer.endsWith("ok")) {
+            answer = runCatching {
+                Socket("127.0.0.1", p.boundPort).use { c ->
+                    c.soTimeout = 3000
+                    c.getOutputStream().write("GET /api/last HTTP/1.1\r\nHost: 127.0.0.1:${p.boundPort}\r\n\r\n".toByteArray())
+                    c.getInputStream().bufferedReader().readText()
+                }
+            }.getOrDefault("")
+            if (!answer.endsWith("ok")) Thread.sleep(200)
+        }
+        assertTrue("the front door must still answer: '$answer'", answer.endsWith("ok"))
+        held.forEach { runCatching { it.close() } }
+    }
 }

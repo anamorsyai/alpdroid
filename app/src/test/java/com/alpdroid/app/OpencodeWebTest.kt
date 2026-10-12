@@ -26,7 +26,7 @@ class OpencodeWebTest {
 
     @Test fun commandRestartsOnCrashesButNotOnCtrlC() {
         val cmd = OpencodeWeb.command(4096, true, "x")
-        assertTrue(cmd.contains("trap 'exit 0' INT TERM"))
+        assertTrue(cmd.contains("INT TERM"))
         assertTrue(cmd.contains("-eq 130"))   // Ctrl+C ends it
         assertTrue(cmd.contains("restarting in"))
         assertTrue(cmd.contains("giving up"))
@@ -96,5 +96,29 @@ class OpencodeWebTest {
         assertTrue(lan.contains("password: pw"))
         assertTrue(lan.contains("no login needed"))
         assertTrue(OpencodeWeb.readyMessage(false, false, 4096, listOf("192.168.1.5"), "pw").contains("Other devices cannot reach it"))
+    }
+
+    /** Runs the real service command under a real shell with a fake `opencode` whose process stays alive but never answers. */
+    @Test fun aServerThatStopsAnsweringIsRestartedEvenThoughItsProcessNeverExits() {
+        val shell = System.getenv("BROWSERCTL_SHELL") ?: return // needs a busybox-style shell with nc; skipped without one
+        val dir = java.nio.file.Files.createTempDirectory("ocwd").toFile()
+        try {
+            val starts = java.io.File(dir, "starts")
+            val bin = java.io.File(dir, "opencode").apply {
+                writeText("#!/bin/sh\necho start >> '${starts.absolutePath}'\nexec sleep 1731\n"); setExecutable(true)
+            }
+            val cmd = OpencodeWeb.command(45999, false, "x", OpencodeWeb.Watchdog(graceSeconds = 0, tickSeconds = 1, probeEveryTicks = 1, failuresToRestart = 2))
+            val pb = ProcessBuilder(shell, "-c", cmd).redirectErrorStream(true)
+            pb.environment()["PATH"] = dir.absolutePath + ":" + (System.getenv("BROWSERCTL_PATH") ?: System.getenv("PATH"))
+            val p = pb.start()
+            try {
+                val deadline = System.currentTimeMillis() + 40_000
+                while (System.currentTimeMillis() < deadline && (!starts.exists() || starts.readLines().size < 2)) Thread.sleep(300)
+                assertTrue("the watchdog should have restarted the hung server", starts.exists() && starts.readLines().size >= 2)
+            } finally {
+                p.destroyForcibly(); p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+                Runtime.getRuntime().exec(arrayOf("pkill", "-f", "sleep 1731")).waitFor()
+            }
+        } finally { dir.deleteRecursively() }
     }
 }

@@ -62,24 +62,43 @@ object OpencodeWeb {
      *  - any other non-zero exit is a genuine crash or a failure to start: it backs off 2, 4, 8 … 30 s and gives up
      *    only after five *quick* failures in a row (each under 60 s uptime), so a program that cannot run does not spin.
      */
-    fun command(port: Int, lan: Boolean, password: String): String {
+    fun command(port: Int, lan: Boolean, password: String): String = command(port, lan, password, Watchdog())
+
+    /** How the "is it still answering?" check is paced; the defaults are what runs on the phone, tests shrink them. */
+    internal class Watchdog(val graceSeconds: Int = 90, val tickSeconds: Int = 5, val probeEveryTicks: Int = 3, val failuresToRestart: Int = 4)
+
+    internal fun command(port: Int, lan: Boolean, password: String, w: Watchdog): String {
         val host = if (lan) "0.0.0.0" else "127.0.0.1"
         return buildString {
             append("[ -f /lib/libgcompat.so.0 ] && export LD_PRELOAD=/lib/libgcompat.so.0; ")
             append("export OPENCODE_SERVER_USERNAME=$USER OPENCODE_SERVER_PASSWORD=${shQuote(password)}; ")
             append("BIN=\$(command -v opencode || command -v opencode2); ")
             append("if [ -z \"\$BIN\" ]; then echo 'opencode not installed — Settings > Quick install first'; exit 1; fi; ")
-            append("trap 'exit 0' INT TERM; ")
+            append("pid=; trap 'kill \$pid 2>/dev/null; exit 0' INT TERM; ")
             append("wait_s=2; quick=0; ")
+            // Is the server still ANSWERING? The process can stay alive while its web server hangs (stuck event loop, a leaked
+            // handle) — nothing ever exits, so the restart loop alone never notices. A request to it that gets no HTTP status
+            // four times in a row (about a minute) means it is stuck. Needs nc (busybox has it); without it there is no check.
+            append("probe() { printf 'GET / HTTP/1.0\\r\\n\\r\\n' | nc -w 4 127.0.0.1 $port 2>/dev/null | head -n 1 | grep -q '^HTTP/'; }; ")
+            append("command -v nc >/dev/null 2>&1 && wd=1 || wd=0; ")
             append("while :; do ")
-            append("t0=\$(date +%s); ")
-            append("\"\$BIN\" serve --hostname $host --port $port; code=\$?; ")
+            append("t0=\$(date +%s); hung=0; bad=0; tick=0; ")
+            append("\"\$BIN\" serve --hostname $host --port $port & pid=\$!; ")
+            append("while kill -0 \$pid 2>/dev/null; do ")
+            // Looks every 5 s (so an exit is noticed quickly) and probes every 15 s, from 90 s after the start (it needs time to come up).
+            append("sleep ${w.tickSeconds} & wait \$!; tick=\$((tick + 1)); ")
+            append("[ \$wd -eq 1 ] && [ \$((tick % ${w.probeEveryTicks})) -eq 0 ] && [ \$((\$(date +%s) - t0)) -ge ${w.graceSeconds} ] && kill -0 \$pid 2>/dev/null || continue; ")
+            append("if probe; then bad=0; else bad=\$((bad + 1)); fi; ")
+            append("if [ \$bad -ge ${w.failuresToRestart} ]; then echo \"[AlpDroid] opencode stopped answering on port $port for about a minute — restarting it\"; hung=1; kill -9 \$pid 2>/dev/null; break; fi; ")
+            append("done; ")
+            append("wait \$pid; code=\$?; up=\$((\$(date +%s) - t0)); ")
+            append("if [ \$hung -eq 1 ]; then quick=0; sleep 2; continue; fi; ")
             append("[ \$code -eq 0 ] || [ \$code -eq 130 ] || [ \$code -eq 143 ] && exit \$code; ")
-            append("if [ \$((\$(date +%s) - t0)) -ge 60 ]; then wait_s=2; quick=0; else quick=\$((quick + 1)); fi; ")
+            append("if [ \$up -ge 60 ]; then wait_s=2; quick=0; else quick=\$((quick + 1)); fi; ")
             // SIGKILL (137): Android killed the background process, not opencode crashing — always restart, never give up.
-            append("if [ \$code -eq 137 ]; then quick=0; echo \"[AlpDroid] opencode was killed by Android (137, phantom-process/low-memory killer) — restarting in \${wait_s}s\"; sleep \$wait_s; wait_s=\$((wait_s * 2)); [ \$wait_s -gt 30 ] && wait_s=30; continue; fi; ")
+            append("if [ \$code -eq 137 ]; then quick=0; echo \"[AlpDroid] opencode was killed (137: Android's phantom-process / low-memory killer) after \${up}s — restarting in \${wait_s}s\"; sleep \$wait_s; wait_s=\$((wait_s * 2)); [ \$wait_s -gt 30 ] && wait_s=30; continue; fi; ")
             append("if [ \$quick -ge 5 ]; then echo \"[AlpDroid] opencode keeps failing (exit \$code) — giving up\"; exit \$code; fi; ")
-            append("echo \"[AlpDroid] opencode exited (\$code) — restarting in \${wait_s}s\"; ")
+            append("echo \"[AlpDroid] opencode exited (\$code) after \${up}s — restarting in \${wait_s}s\"; ")
             append("sleep \$wait_s; wait_s=\$((wait_s * 2)); [ \$wait_s -gt 30 ] && wait_s=30; ")
             append("done")
         }

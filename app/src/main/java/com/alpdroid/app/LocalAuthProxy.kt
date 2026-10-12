@@ -8,8 +8,12 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.Semaphore
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The "no login on this phone" half of the opencode web server. opencode (v2) has no switch to turn its password
@@ -38,7 +42,8 @@ class LocalAuthProxy(
     password: String,
 ) {
     private val authHeader = "Basic " + Base64.getEncoder().encodeToString("$user:$password".toByteArray())
-    private val pool = Executors.newCachedThreadPool { r -> Thread(r, "oc-proxy").apply { isDaemon = true } }
+    /** Two threads per connection at most, plus the accept loop: a runaway number of threads cannot pile up and starve the process. */
+    private val pool = ThreadPoolExecutor(0, MAX_CONNECTIONS * 2 + 4, 30, TimeUnit.SECONDS, SynchronousQueue()) { r -> Thread(r, "oc-proxy").apply { isDaemon = true } }
     @Volatile private var server: ServerSocket? = null
     /** At most this many connections at once — a flood from the Wi-Fi (or a local app) cannot exhaust threads and fds. */
     private val slots = Semaphore(MAX_CONNECTIONS)
@@ -66,12 +71,20 @@ class LocalAuthProxy(
                     if (!slots.tryAcquire()) { runCatching { client.close() }; continue }
                     if (!fromPhone && !lanSlots.tryAcquire()) { slots.release(); runCatching { client.close() }; continue }
                     open += client
-                    pool.execute {
-                        try { handle(client, fromPhone) } finally { open -= client; slots.release(); if (!fromPhone) lanSlots.release() }
+                    try {
+                        pool.execute {
+                            try { handle(client, fromPhone) } finally { open -= client; slots.release(); if (!fromPhone) lanSlots.release() }
+                        }
+                    } catch (t: Throwable) {
+                        // No thread to serve it: give the slot back instead of leaking it (leaked slots are how the front door
+                        // ends up refusing everything after a while).
+                        open -= client; slots.release(); if (!fromPhone) lanSlots.release(); runCatching { client.close() }
+                        throw t
                     }
-                } catch (_: Exception) {
-                    // A persistent error (out of file descriptors) must not turn this loop into a busy spin.
-                    if (!s.isClosed) Thread.sleep(50)
+                } catch (_: Throwable) {
+                    // Any failure, including "cannot create thread" (an Error, not an Exception) or out of file descriptors, must
+                    // neither end this loop (the port would stay bound but nobody would answer) nor turn it into a busy spin.
+                    if (!s.isClosed) try { Thread.sleep(50) } catch (_: InterruptedException) { }
                 }
             }
         }
@@ -107,18 +120,32 @@ class LocalAuthProxy(
                 head = readHead(client.getInputStream()) ?: run { runCatching { client.close() }; return }
                 client.soTimeout = 0
             }
-            upstream = Socket().apply { connect(InetSocketAddress("127.0.0.1", upstreamPort), 3000) }
+            runCatching { client.keepAlive = true } // a peer that vanished without saying goodbye is eventually noticed
+            upstream = Socket().apply { connect(InetSocketAddress("127.0.0.1", upstreamPort), 3000); keepAlive = true }
             if (head != null) upstream.getOutputStream().write(rewriteHead(head, bound()))
             else if (firstByte >= 0) upstream.getOutputStream().write(firstByte)
             val up = upstream
+            val responded = AtomicBoolean(false)
+            val finished = CountDownLatch(1)
             // When the server's answer ends (it closes after each request), close both sides so the loop below,
             // blocked reading the browser, ends too instead of waiting for the browser to hang up.
             pool.execute {
-                pipe(up.getInputStream(), client)
-                runCatching { client.close() }
-                runCatching { up.close() }
+                try { pipe(up.getInputStream(), client) { responded.set(true) } }
+                finally {
+                    runCatching { client.close() }
+                    runCatching { up.close() }
+                    finished.countDown()
+                }
             }
             pipe(client.getInputStream(), up)
+            // The browser is done sending (or gone). If the server is already answering — an event stream, a WebSocket, a download
+            // — nobody is listening any more: end it now, instead of leaving a thread and a socket parked on a quiet stream. If it
+            // has not answered yet (a client that half-closes after its request), give it time to.
+            if (responded.get()) { runCatching { client.close() }; runCatching { up.close() } }
+            else finished.await(RESPONSE_GRACE_SECONDS, TimeUnit.SECONDS)
+            runCatching { client.close() }
+            runCatching { up.close() }
+            finished.await(2, TimeUnit.SECONDS)
         } catch (_: Exception) {
             runCatching { client.close() }
             runCatching { upstream?.close() }
@@ -128,12 +155,13 @@ class LocalAuthProxy(
     private fun bound(): Int = if (listenPort == 0) boundPort else listenPort
 
     /** Copies [from] to [to] until either side ends, then shuts the destination's output so the peer sees the end. */
-    private fun pipe(from: InputStream, to: Socket) {
+    private fun pipe(from: InputStream, to: Socket, onData: (() -> Unit)? = null) {
         val buf = ByteArray(16 * 1024)
         try {
             while (true) {
                 val n = from.read(buf)
                 if (n < 0) break
+                onData?.invoke()
                 to.getOutputStream().write(buf, 0, n)
                 to.getOutputStream().flush()
             }
@@ -178,6 +206,7 @@ class LocalAuthProxy(
         const val MAX_LAN_CONNECTIONS = 64
         const val HEAD_TIMEOUT_MS = 10_000
         const val LAN_FIRST_BYTE_TIMEOUT_MS = 30_000
+        const val RESPONSE_GRACE_SECONDS = 30L
     }
 
     private fun indexOfBlankLine(b: ByteArray): Int {

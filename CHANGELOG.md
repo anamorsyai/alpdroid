@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.95 — opencode web stays up
+
+- opencode web no longer stops after a while: the login-free front door used to leave a parked thread and two sockets behind every page or tab that was closed (and had no limit on them), until it could no longer accept anything while the server itself kept running. Abandoned connections are now closed at once, threads are capped, and a failure to start a thread can no longer end the accept loop.
+- opencode web is also restarted when the server process stays alive but stops answering (about a minute without an HTTP reply), and the restart messages now say how long it had been running.
+
 ## 1.7.94 — Tab groups for parallel agents (AlpBrowser 0.6.13)
 
 - Tab groups: `browserctl --group <name> ...` gives each agent its own isolated set of tabs. A group has its own cookies and storage, its own front tab that never moves the tab on screen, and its own console; `clear` inside a group touches only that group; `group list` and `group close <name>` manage them. A group's tabs are refused to other groups, and if the WebView cannot provide separate profiles no group tab is opened.

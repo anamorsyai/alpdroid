@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.94 — Tab groups for parallel agents (AlpBrowser 0.6.13)
 
 - Tab groups: `browserctl --group <name> ...` gives each agent its own isolated set of tabs. A group has its own cookies and storage, its own front tab that never moves the tab on screen, and its own console; `clear` inside a group touches only that group; `group list` and `group close <name>` manage them. A group's tabs are refused to other groups, and if the WebView cannot provide separate profiles no group tab is opened.
 - Several agents can now use AlpBrowser at the same time: `browserctl --tab <id> <command>` aims any page command (navigate, eval, click, fill, text, html, waitfor, waitnav, shot, cookies, setcookie, console) at one tab instead of the tab in front, and `cookies` follows that tab's profile. `console --tab` shows only that tab's messages, and clearing it clears only that tab's.

@@ -7,6 +7,12 @@ import android.webkit.WebView
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.offset
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -138,6 +144,8 @@ fun BrowserScreen(onOpenControlInfo: () -> Unit, onOpenRepeater: () -> Unit = {}
     LaunchedEffect(tab.url, editing) { if (!editing) urlField = tab.url }
     val secure = tab.url.startsWith("https://")
 
+    var areaSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    Box(Modifier.fillMaxSize().onSizeChanged { areaSize = it }) {
     Column(modifier = Modifier.fillMaxSize().background(Ground)) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 8.dp),
@@ -173,11 +181,6 @@ fun BrowserScreen(onOpenControlInfo: () -> Unit, onOpenRepeater: () -> Unit = {}
                 }
             }
             if (app.proxyActive()) Box(Modifier.size(8.dp).background(Accent, CircleShape)) // the page is going through the proxy
-            InterceptButton(on = interceptOn, waiting = held.size) {
-                val next = !interceptOn
-                app.intercept.enabled = next
-                if (!next) { app.intercept.releaseAll(); reviewId = null }
-            }
             TabsButton(holder.tabs.size) { showTabs = true }
             NavIcon(Icons.Default.MoreVert, "Menu") { showSettings = true }
         }
@@ -190,21 +193,6 @@ fun BrowserScreen(onOpenControlInfo: () -> Unit, onOpenRepeater: () -> Unit = {}
                 trackColor = Ground,
             )
         } else Box(Modifier.fillMaxWidth().height(2.dp))
-
-        if (held.isNotEmpty()) {
-            val first = held.first()
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 6.dp).padding(bottom = 6.dp).background(AccentSoft, RoundedCornerShape(12.dp)).padding(start = 12.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    "${held.size} paused · " + (if (first.kind == "request") "${first.method} ${first.host}" else "${first.status ?: "?"} from ${first.host}"),
-                    style = MaterialTheme.typography.bodySmall, color = TextSoft, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
-                )
-                AppButton("Review", { reviewId = first.holdId }, kind = Kind.Primary, compact = true)
-                AppButton("Forward all", { app.intercept.releaseAll(); reviewId = null }, kind = Kind.Ghost, compact = true)
-            }
-        }
 
         // Hosts whichever tab's WebView is in front; swapping tabs swaps the child.
         AndroidView(
@@ -222,6 +210,49 @@ fun BrowserScreen(onOpenControlInfo: () -> Unit, onOpenRepeater: () -> Unit = {}
             },
             onRelease = { it.removeAllViews() },
         )
+    }
+
+    // Intercept floats over the page instead of crowding the toolbar: a round button you can drag out of the way (tap = on/off, the
+    // number is how many messages are paused), and, only while something is paused, a bar at the bottom with Review / Forward all.
+    var fabX by rememberSaveable { mutableStateOf(0f) }
+    var fabY by rememberSaveable { mutableStateOf(0f) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val fabBox = with(density) { 48.dp.toPx() + 32.dp.toPx() }
+    Box(
+        Modifier.align(Alignment.BottomEnd)
+            .offset { androidx.compose.ui.unit.IntOffset(fabX.roundToInt(), fabY.roundToInt()) }
+            .padding(16.dp)
+            .pointerInput(areaSize) {
+                detectDragGestures { change, drag ->
+                    change.consume()
+                    // Stays on screen: the button's own corner is the origin, so it can move left and up by the free space only.
+                    fabX = (fabX + drag.x).coerceIn(-(areaSize.width - fabBox).coerceAtLeast(0f), 0f)
+                    fabY = (fabY + drag.y).coerceIn(-(areaSize.height - fabBox).coerceAtLeast(0f), 0f)
+                }
+            },
+    ) {
+        InterceptButton(on = interceptOn, waiting = held.size) {
+            val next = !interceptOn
+            app.intercept.enabled = next
+            if (!next) { app.intercept.releaseAll(); reviewId = null }
+        }
+    }
+    if (held.isNotEmpty()) {
+        val first = held.first()
+        Row(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 76.dp)
+                .background(SheetBg, RoundedCornerShape(14.dp)).border(BorderStroke(1.dp, Accent), RoundedCornerShape(14.dp))
+                .padding(start = 12.dp, top = 6.dp, bottom = 6.dp, end = 6.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                "${held.size} paused · " + (if (first.kind == "request") "${first.method} ${first.host}" else "${first.status ?: "?"} from ${first.host}"),
+                style = MaterialTheme.typography.bodySmall, color = TextSoft, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+            )
+            AppButton("Review", { reviewId = first.holdId }, kind = Kind.Primary, compact = true)
+            AppButton("Forward all", { app.intercept.releaseAll(); reviewId = null }, kind = Kind.Ghost, compact = true)
+        }
+    }
     }
 
     if (reviewing != null) {
@@ -300,20 +331,24 @@ private fun TabsSheet(holder: BrowserWebViewHolder, onNew: () -> Unit, onDismiss
 }
 
 /** The tab-count button next to the address bar, shaped like the one in every mobile browser. */
-/** Intercept on/off, in the toolbar: filled and orange while on, with the number of paused messages. */
+/** Intercept on/off: a round floating button, orange and filled while on, with the number of paused messages. */
 @Composable
 private fun InterceptButton(on: Boolean, waiting: Int, onClick: () -> Unit) {
-    Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
-        IconButton(onClick = onClick, modifier = Modifier.size(40.dp)) {
+    Box(Modifier.size(48.dp)) {
+        Box(
+            Modifier.size(48.dp).background(if (on) Accent else Surface1, CircleShape).border(BorderStroke(1.dp, if (on) Accent else TextFaint), CircleShape)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
             Icon(
                 if (on) Icons.Default.PauseCircle else Icons.Outlined.PauseCircle,
                 contentDescription = if (on) "Intercept is on — tap to turn off" else "Turn intercept on",
-                tint = if (on) Accent else TextMuted, modifier = Modifier.size(22.dp),
+                tint = if (on) Ground else TextSoft, modifier = Modifier.size(26.dp),
             )
         }
         if (waiting > 0) {
-            Box(Modifier.align(Alignment.TopEnd).padding(top = 2.dp, end = 2.dp).background(Accent, CircleShape).padding(horizontal = 5.dp)) {
-                Text(if (waiting > 99) "99+" else waiting.toString(), style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp), color = Ground)
+            Box(Modifier.align(Alignment.TopEnd).background(Ground, CircleShape).border(BorderStroke(1.dp, Accent), CircleShape).padding(horizontal = 5.dp)) {
+                Text(if (waiting > 99) "99+" else waiting.toString(), style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = Accent)
             }
         }
     }

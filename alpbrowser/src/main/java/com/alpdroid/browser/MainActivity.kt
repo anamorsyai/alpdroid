@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
                     ) { padding ->
                         val m = Modifier.padding(padding)
                         when (tab) {
-                            0 -> Box(m) { BrowserScreen(onOpenControlInfo = { showControl = true }) }
+                            0 -> Box(m) { BrowserScreen(onOpenControlInfo = { showControl = true }, onOpenRepeater = { tab = 2 }) }
                             1 -> ProxyScreen(app, onSendToRepeater = { tab = 2 }, modifier = m)
                             2 -> RepeaterScreen(app, modifier = m)
                             else -> ExtensionsScreen(app, modifier = m)

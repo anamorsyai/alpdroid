@@ -32,6 +32,8 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PauseCircle
+import androidx.compose.material.icons.outlined.PauseCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -44,6 +46,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -67,6 +70,9 @@ import com.alpdroid.browser.ui.kit.Kind
 import com.alpdroid.browser.ui.kit.MonoStyle
 import com.alpdroid.browser.ui.kit.ScreenPad
 import com.alpdroid.browser.ui.theme.Accent
+import com.alpdroid.browser.ui.theme.AccentSoft
+import com.alpdroid.browser.ui.proxy.HeldSheet
+import com.alpdroid.browser.ui.proxy.dropHeld
 import com.alpdroid.browser.ui.theme.Ground
 import com.alpdroid.browser.ui.theme.Method
 import com.alpdroid.browser.ui.theme.SheetBg
@@ -85,9 +91,10 @@ import com.alpdroid.proxy.BrowserCommand
  * [AlpBrowserApp.applyProxyMode]); otherwise the WebView talks to the network directly, which is what keeps plain
  * browsing as fast as any WebView.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun BrowserScreen(onOpenControlInfo: () -> Unit) {
+fun BrowserScreen(onOpenControlInfo: () -> Unit, onOpenRepeater: () -> Unit = {}) {
     val context = LocalContext.current
     val app = context.applicationContext as AlpBrowserApp
     val holder = app.browserWebViewHolder
@@ -97,6 +104,12 @@ fun BrowserScreen(onOpenControlInfo: () -> Unit) {
 
     var showSettings by remember { mutableStateOf(false) }
     var showTabs by remember { mutableStateOf(false) }
+    // Intercept without leaving the page: the switch is in the toolbar, held messages are announced under it, and Review opens
+    // each one (edit / forward / drop) and moves straight on to the next.
+    val interceptOn by app.intercept.enabledFlow.collectAsState()
+    val held by app.intercept.pendingFlow.collectAsState()
+    var reviewId by remember { mutableStateOf<String?>(null) }
+    val reviewing = held.firstOrNull { it.holdId == reviewId }
 
     // The tab in front gets its WebView on first view; the others are paused so they cost no CPU or battery.
     LaunchedEffect(tab.id) {
@@ -160,6 +173,11 @@ fun BrowserScreen(onOpenControlInfo: () -> Unit) {
                 }
             }
             if (app.proxyActive()) Box(Modifier.size(8.dp).background(Accent, CircleShape)) // the page is going through the proxy
+            InterceptButton(on = interceptOn, waiting = held.size) {
+                val next = !interceptOn
+                app.intercept.enabled = next
+                if (!next) { app.intercept.releaseAll(); reviewId = null }
+            }
             TabsButton(holder.tabs.size) { showTabs = true }
             NavIcon(Icons.Default.MoreVert, "Menu") { showSettings = true }
         }
@@ -172,6 +190,21 @@ fun BrowserScreen(onOpenControlInfo: () -> Unit) {
                 trackColor = Ground,
             )
         } else Box(Modifier.fillMaxWidth().height(2.dp))
+
+        if (held.isNotEmpty()) {
+            val first = held.first()
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 6.dp).padding(bottom = 6.dp).background(AccentSoft, RoundedCornerShape(12.dp)).padding(start = 12.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    "${held.size} paused · " + (if (first.kind == "request") "${first.method} ${first.host}" else "${first.status ?: "?"} from ${first.host}"),
+                    style = MaterialTheme.typography.bodySmall, color = TextSoft, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+                )
+                AppButton("Review", { reviewId = first.holdId }, kind = Kind.Primary, compact = true)
+                AppButton("Forward all", { app.intercept.releaseAll(); reviewId = null }, kind = Kind.Ghost, compact = true)
+            }
+        }
 
         // Hosts whichever tab's WebView is in front; swapping tabs swaps the child.
         AndroidView(
@@ -189,6 +222,22 @@ fun BrowserScreen(onOpenControlInfo: () -> Unit) {
             },
             onRelease = { it.removeAllViews() },
         )
+    }
+
+    if (reviewing != null) {
+        ModalBottomSheet(
+            onDismissRequest = { reviewId = null },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = SheetBg, shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp),
+        ) {
+            val doneId = reviewing.holdId
+            HeldSheet(
+                app, reviewing,
+                // After Forward or Drop, the next paused message opens by itself, so a page's worth of requests goes quickly.
+                onDone = { reviewId = app.intercept.pending().firstOrNull { it.holdId != doneId }?.holdId },
+                onSendToRepeater = { reviewId = null; onOpenRepeater() },
+            )
+        }
     }
 
     if (showTabs) {
@@ -251,6 +300,25 @@ private fun TabsSheet(holder: BrowserWebViewHolder, onNew: () -> Unit, onDismiss
 }
 
 /** The tab-count button next to the address bar, shaped like the one in every mobile browser. */
+/** Intercept on/off, in the toolbar: filled and orange while on, with the number of paused messages. */
+@Composable
+private fun InterceptButton(on: Boolean, waiting: Int, onClick: () -> Unit) {
+    Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+        IconButton(onClick = onClick, modifier = Modifier.size(40.dp)) {
+            Icon(
+                if (on) Icons.Default.PauseCircle else Icons.Outlined.PauseCircle,
+                contentDescription = if (on) "Intercept is on — tap to turn off" else "Turn intercept on",
+                tint = if (on) Accent else TextMuted, modifier = Modifier.size(22.dp),
+            )
+        }
+        if (waiting > 0) {
+            Box(Modifier.align(Alignment.TopEnd).padding(top = 2.dp, end = 2.dp).background(Accent, CircleShape).padding(horizontal = 5.dp)) {
+                Text(if (waiting > 99) "99+" else waiting.toString(), style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp), color = Ground)
+            }
+        }
+    }
+}
+
 @Composable
 private fun TabsButton(count: Int, onClick: () -> Unit) {
     Box(modifier = Modifier.size(40.dp).clickable(onClick = onClick), contentAlignment = Alignment.Center) {

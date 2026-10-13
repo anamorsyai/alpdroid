@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Intercept from the Browser screen: a pause button in the toolbar turns Intercept on and off (orange, with a count, while it is on). When requests or responses are paused, a bar under the address field says how many and offers "Review" and "Forward all". Review opens the paused message to edit, forward or drop, and then the next one opens by itself, so you no longer have to switch to the Proxy tab for each message.
+
 ## 1.7.96 — Long bodies shown in Intercept, Repeater and History (AlpBrowser 0.6.14)
 
 - Intercept: a held request or response with a long body (over 60,000 characters) used to show no body at all, only a note. It is now shown read-only, a screenful at a time with "Show more" and "Copy body", and is still forwarded unchanged. The Repeater keeps such a body as well (shown read-only, sent as it is unless you type a replacement) instead of dropping it when a request is sent there from the Intercept. `browserctl pending` also returns each body as readable text (`bodyText`).

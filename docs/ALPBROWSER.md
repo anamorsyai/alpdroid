@@ -71,6 +71,12 @@ Switch interception on from the Held tab (or `browserctl intercept on`), optiona
 with what the server sends back. Static assets (images, fonts, styles) are skipped unless you ask for them, so a page
 does not stall on dozens of pauses. Any request can also be sent to the Repeater for hand-tuned replays.
 
+**From the Browser screen.** You do not have to leave the page: the pause button in the toolbar turns Intercept on and off
+(orange, with the number of paused messages, while it is on). When something is paused, a bar under the address field
+shows how many and offers **Review** and **Forward all**. Review opens the paused message to edit, forward or drop, and
+then the next one opens by itself. A body too long to edit is shown read-only (with *Show more* and *Copy body*) and is
+forwarded unchanged.
+
 ## Rules
 
 Rules rewrite traffic as it passes through — no pausing needed. A rule targets one part of a request or response

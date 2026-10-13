@@ -178,12 +178,12 @@ private fun HeldTab(app: AlpBrowserApp, held: List<InterceptController.Held>, on
     }
 }
 
-private fun dropHeld(ic: InterceptController, h: InterceptController.Held) {
+internal fun dropHeld(ic: InterceptController, h: InterceptController.Held) {
     if (h.kind == "request") ic.resolveRequest(h.holdId, RequestAction.Drop) else ic.resolveResponse(h.holdId, ResponseAction.Drop)
 }
 
 @Composable
-private fun HeldSheet(app: AlpBrowserApp, h: InterceptController.Held, onDone: () -> Unit, onSendToRepeater: () -> Unit) {
+internal fun HeldSheet(app: AlpBrowserApp, h: InterceptController.Held, onDone: () -> Unit, onSendToRepeater: () -> Unit) {
     val isReq = h.kind == "request"
     val ic = app.intercept
     val origBody = remember(h.holdId) { RawHttp.bodyToText(h.body) }

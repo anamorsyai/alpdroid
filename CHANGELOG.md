@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Proxy and Repeater: a long text response is shown as text again. A single stray control byte, or one byte that is not valid UTF-8 (a page in Latin-1 or windows-1252), anywhere in a long body used to turn the whole body into "[binary body]". The body is now decoded with its declared charset, a stray control byte is shown as a dot, and only real binary (images, fonts, archives, or a body full of control bytes) stays "[binary body]".
+
 ## 1.7.95 — opencode web stays up
 
 - opencode web no longer stops after a while: the login-free front door used to leave a parked thread and two sockets behind every page or tab that was closed (and had no limit on them), until it could no longer accept anything while the server itself kept running. Abandoned connections are now closed at once, threads are capped, and a failure to start a thread can no longer end the accept loop.

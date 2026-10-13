@@ -17,7 +17,7 @@ import com.alpdroid.browser.ui.theme.FieldBg
  */
 fun rawMessage(firstLine: String, headers: List<Pair<String, String>>, body: ByteArray?, pretty: Boolean = false): String {
     val shown = (if (pretty) com.alpdroid.browser.BodyFormat.pretty(headers, body) else null)
-        ?: com.alpdroid.browser.RawHttp.bodyToText(body) ?: "[binary body, ${body?.size ?: 0} bytes]"
+        ?: com.alpdroid.browser.RawHttp.displayText(headers, body) ?: "[binary body, ${body?.size ?: 0} bytes]"
     val clipped = if (shown.length > 2_000_000) shown.take(2_000_000) + "\n[… truncated for display]" else shown
     return buildString {
         appendLine(firstLine)

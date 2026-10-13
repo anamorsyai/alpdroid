@@ -2,9 +2,25 @@ package com.alpdroid.browser
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RawHttpTest {
+    @Test fun aLongTextBodyIsShownEvenWithAStrayControlByteOrAnOtherCharset() {
+        val ct = listOf("Content-Type" to "text/html; charset=windows-1252")
+        // one invalid-UTF-8 byte (é in Latin-1) deep in a long body used to turn the whole body into "[binary body]"
+        val latin = ("a".repeat(5000) + "caf").toByteArray() + byteArrayOf(0xE9.toByte()) + ("b".repeat(5000)).toByteArray()
+        assertTrue(RawHttp.displayText(ct, latin)!!.contains("café"))
+        // a stray ESC / NUL deep in the body is shown as a dot, not as "binary"
+        val stray = ("{\"k\":\"" + "x".repeat(20000)).toByteArray() + byteArrayOf(0, 27) + "\"}".toByteArray()
+        val shown = RawHttp.displayText(listOf("Content-Type" to "application/json"), stray)!!
+        assertTrue(shown.startsWith("{\"k\"") && shown.endsWith("\"}") && shown.contains("·"))
+        // real binary stays binary
+        assertNull(RawHttp.displayText(listOf("Content-Type" to "image/png"), byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0, 0, 0)))
+        assertNull(RawHttp.displayText(emptyList(), ByteArray(4000) { (it % 7).toByte() }))
+        assertEquals("", RawHttp.displayText(emptyList(), null))
+    }
+
     @Test fun `headers round trip and keep colons in values`() {
         val h = listOf("Host" to "a.test", "Referer" to "https://a.test:8443/x")
         assertEquals(h, RawHttp.parseHeaders(RawHttp.headersToText(h)))

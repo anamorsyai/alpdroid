@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.97 — Intercept over the Browser (AlpBrowser 0.6.15)
 
 - The whole Intercept screen opens over the Browser: a round floating button over the page (drag it anywhere) opens Held, History, Rules, Scope and Options as a full-screen panel, and "Back to the page" returns to the same, still-loaded page, so switching between browsing and intercepting is one tap each way. The button is orange with a count while Intercept is on and messages are paused; a long press turns Intercept on or off without opening the panel. Nothing is added to the toolbar.
 

@@ -1,0 +1,1 @@
+Opens the whole Intercept screen over the browser from a floating button.

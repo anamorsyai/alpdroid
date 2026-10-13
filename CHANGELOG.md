@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Intercept from the Browser screen: a round floating button over the page (drag it anywhere; tap to turn Intercept on or off; orange with a count of paused messages while on) — nothing is added to the toolbar. While requests or responses are paused, a bar at the bottom says how many and offers "Review" and "Forward all". Review opens the paused message to edit, forward or drop, and then the next one opens by itself, so you no longer have to switch to the Proxy tab for each message.
+- The whole Intercept screen opens over the Browser: a round floating button over the page (drag it anywhere) opens Held, History, Rules, Scope and Options as a full-screen panel, and "Back to the page" returns to the same, still-loaded page, so switching between browsing and intercepting is one tap each way. The button is orange with a count while Intercept is on and messages are paused; a long press turns Intercept on or off without opening the panel. Nothing is added to the toolbar.
 
 ## 1.7.96 — Long bodies shown in Intercept, Repeater and History (AlpBrowser 0.6.14)
 

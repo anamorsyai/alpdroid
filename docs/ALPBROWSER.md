@@ -71,11 +71,10 @@ Switch interception on from the Held tab (or `browserctl intercept on`), optiona
 with what the server sends back. Static assets (images, fonts, styles) are skipped unless you ask for them, so a page
 does not stall on dozens of pauses. Any request can also be sent to the Repeater for hand-tuned replays.
 
-**From the Browser screen.** You do not have to leave the page: a round floating pause button over the page (drag it anywhere)
-turns Intercept on and off (orange, with the number of paused messages, while it is on). When something is paused, a bar at the
-bottom shows how many and offers **Review** and **Forward all**. Review opens the paused message to edit, forward or drop, and
-then the next one opens by itself. A body too long to edit is shown read-only (with *Show more* and *Copy body*) and is
-forwarded unchanged.
+**From the Browser screen.** You do not have to change tabs: a round floating button over the page (drag it anywhere) opens the whole
+Intercept screen — Held, History, Rules, Scope, Options — over the browser. *Back to the page* returns to the same page, still
+loaded. The button is orange, with a count, while Intercept is on and messages are paused; a long press turns Intercept on or off
+without opening the screen. A body too long to edit is shown read-only (with *Show more* and *Copy body*) and is forwarded unchanged.
 
 ## Rules
 

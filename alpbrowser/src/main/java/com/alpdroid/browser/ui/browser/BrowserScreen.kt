@@ -13,6 +13,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import kotlin.math.roundToInt
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -77,8 +80,6 @@ import com.alpdroid.browser.ui.kit.MonoStyle
 import com.alpdroid.browser.ui.kit.ScreenPad
 import com.alpdroid.browser.ui.theme.Accent
 import com.alpdroid.browser.ui.theme.AccentSoft
-import com.alpdroid.browser.ui.proxy.HeldSheet
-import com.alpdroid.browser.ui.proxy.dropHeld
 import com.alpdroid.browser.ui.theme.Ground
 import com.alpdroid.browser.ui.theme.Method
 import com.alpdroid.browser.ui.theme.SheetBg
@@ -110,12 +111,11 @@ fun BrowserScreen(onOpenControlInfo: () -> Unit, onOpenRepeater: () -> Unit = {}
 
     var showSettings by remember { mutableStateOf(false) }
     var showTabs by remember { mutableStateOf(false) }
-    // Intercept without leaving the page: the switch is in the toolbar, held messages are announced under it, and Review opens
-    // each one (edit / forward / drop) and moves straight on to the next.
+    // The whole Intercept screen (Held, History, Rules, Scope, Options) opens over the page from a floating button, so switching
+    // between browsing and intercepting is one tap each way and the page underneath stays loaded.
     val interceptOn by app.intercept.enabledFlow.collectAsState()
     val held by app.intercept.pendingFlow.collectAsState()
-    var reviewId by remember { mutableStateOf<String?>(null) }
-    val reviewing = held.firstOrNull { it.holdId == reviewId }
+    var showIntercept by remember { mutableStateOf(false) }
 
     // The tab in front gets its WebView on first view; the others are paused so they cost no CPU or battery.
     LaunchedEffect(tab.id) {
@@ -231,43 +231,31 @@ fun BrowserScreen(onOpenControlInfo: () -> Unit, onOpenRepeater: () -> Unit = {}
                 }
             },
     ) {
-        InterceptButton(on = interceptOn, waiting = held.size) {
-            val next = !interceptOn
-            app.intercept.enabled = next
-            if (!next) { app.intercept.releaseAll(); reviewId = null }
-        }
-    }
-    if (held.isNotEmpty()) {
-        val first = held.first()
-        Row(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 76.dp)
-                .background(SheetBg, RoundedCornerShape(14.dp)).border(BorderStroke(1.dp, Accent), RoundedCornerShape(14.dp))
-                .padding(start = 12.dp, top = 6.dp, bottom = 6.dp, end = 6.dp),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text(
-                "${held.size} paused · " + (if (first.kind == "request") "${first.method} ${first.host}" else "${first.status ?: "?"} from ${first.host}"),
-                style = MaterialTheme.typography.bodySmall, color = TextSoft, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
-            )
-            AppButton("Review", { reviewId = first.holdId }, kind = Kind.Primary, compact = true)
-            AppButton("Forward all", { app.intercept.releaseAll(); reviewId = null }, kind = Kind.Ghost, compact = true)
-        }
+        InterceptButton(
+            on = interceptOn, waiting = held.size,
+            onClick = { showIntercept = true },
+            // Long press is the quick on/off, for when the panel is not needed.
+            onLongClick = { val next = !interceptOn; app.intercept.enabled = next; if (!next) app.intercept.releaseAll() },
+        )
     }
     }
 
-    if (reviewing != null) {
-        ModalBottomSheet(
-            onDismissRequest = { reviewId = null },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = SheetBg, shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp),
+    if (showIntercept) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showIntercept = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
         ) {
-            val doneId = reviewing.holdId
-            HeldSheet(
-                app, reviewing,
-                // After Forward or Drop, the next paused message opens by itself, so a page's worth of requests goes quickly.
-                onDone = { reviewId = app.intercept.pending().firstOrNull { it.holdId != doneId }?.holdId },
-                onSendToRepeater = { reviewId = null; onOpenRepeater() },
-            )
+            Column(Modifier.fillMaxSize().background(Ground).statusBarsPadding().navigationBarsPadding()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { showIntercept = false }) { Icon(Icons.Default.Close, "Back to the browser", tint = TextSoft) }
+                    Text("Back to the page", style = MaterialTheme.typography.labelLarge, color = TextMuted)
+                }
+                com.alpdroid.browser.ui.proxy.ProxyScreen(
+                    app,
+                    onSendToRepeater = { showIntercept = false; onOpenRepeater() },
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+            }
         }
     }
 
@@ -333,16 +321,17 @@ private fun TabsSheet(holder: BrowserWebViewHolder, onNew: () -> Unit, onDismiss
 /** The tab-count button next to the address bar, shaped like the one in every mobile browser. */
 /** Intercept on/off: a round floating button, orange and filled while on, with the number of paused messages. */
 @Composable
-private fun InterceptButton(on: Boolean, waiting: Int, onClick: () -> Unit) {
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private fun InterceptButton(on: Boolean, waiting: Int, onClick: () -> Unit, onLongClick: () -> Unit) {
     Box(Modifier.size(48.dp)) {
         Box(
             Modifier.size(48.dp).background(if (on) Accent else Surface1, CircleShape).border(BorderStroke(1.dp, if (on) Accent else TextFaint), CircleShape)
-                .clickable(onClick = onClick),
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 if (on) Icons.Default.PauseCircle else Icons.Outlined.PauseCircle,
-                contentDescription = if (on) "Intercept is on — tap to turn off" else "Turn intercept on",
+                contentDescription = if (on) "Intercept is on — tap to open it, long-press to turn off" else "Open Intercept (long-press to turn on)",
                 tint = if (on) Ground else TextSoft, modifier = Modifier.size(26.dp),
             )
         }

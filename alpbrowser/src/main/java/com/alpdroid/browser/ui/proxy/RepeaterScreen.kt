@@ -66,6 +66,8 @@ class RepeaterModel {
     var url by mutableStateOf("")
     var headers by mutableStateOf("")
     var body by mutableStateOf("")
+    /** A request body that is too big or not clean text for the edit field: kept as it is, shown read-only, and sent unchanged unless a body is typed. */
+    var rawBody by mutableStateOf<ByteArray?>(null)
     var sending by mutableStateOf(false)
     var responseText by mutableStateOf("")
     var responseStatus by mutableStateOf<Int?>(null)
@@ -92,9 +94,9 @@ class RepeaterModel {
         // A text field cannot take a multi-hundred-KB body without freezing; such a body is left out and says so.
         val tooBig = text != null && text.length > MAX_EDITABLE_BODY
         this.body = if (text == null || tooBig) "" else text
+        this.rawBody = if ((text == null || tooBig) && (body?.size ?: 0) > 0) body else null
         responseText = ""; responseStatus = null; segment = 0
-        responseInfo = if (text == null && (body?.size ?: 0) > 0) "Binary body (${body?.size} bytes) not copied"
-        else if (tooBig) "Body too large to edit here (${body?.size} bytes) — not copied" else ""
+        responseInfo = ""
     }
 
     companion object { const val MAX_EDITABLE_BODY = 60_000 }
@@ -144,7 +146,12 @@ fun RepeaterScreen(app: AlpBrowserApp, modifier: Modifier = Modifier) {
                         Field(m.url, { m.url = it }, Modifier.weight(1f), singleLine = true, placeholder = "https://…")
                     }
                     LabeledField("Headers (Name: value per line)", m.headers, { m.headers = it }, minLines = 4)
-                    LabeledField("Body", m.body, { m.body = it }, minLines = 4)
+                    val raw = m.rawBody
+                    if (raw != null) {
+                        // Kept and shown, not dropped: it is sent unchanged unless something is typed into the body field below.
+                        BodyPreview(RawHttp.parseHeaders(m.headers), raw, "shown read-only; it is sent as it is unless you type a body below.")
+                    }
+                    LabeledField(if (raw != null) "Replace the body (optional)" else "Body", m.body, { m.body = it; if (it.isNotEmpty()) m.rawBody = null }, minLines = if (raw != null) 2 else 4)
                 }
                 1 -> LazyColumn(Modifier.fillMaxSize()) {
                     item {
@@ -164,7 +171,7 @@ fun RepeaterScreen(app: AlpBrowserApp, modifier: Modifier = Modifier) {
                     if (m.log.isEmpty()) item { Text("Nothing sent yet.", style = MaterialTheme.typography.bodyMedium, color = TextMuted, modifier = Modifier.padding(horizontal = ScreenPad)) }
                     items(m.log.toList()) { e ->
                         AppCard(onClick = {
-                            m.method = e.method; m.url = e.url; m.headers = e.headers; m.body = e.body
+                            m.method = e.method; m.url = e.url; m.headers = e.headers; m.body = e.body; m.rawBody = null
                             m.responseStatus = e.status; m.responseText = e.responseText; m.responseInfo = "${e.ms} ms · ${formatSize(e.size)}"
                             m.hasRaw = false; m.segment = 0
                         }) {
@@ -202,6 +209,6 @@ private fun send(app: AlpBrowserApp, m: RepeaterModel): BrowserBridge.ResendResp
     val url = m.url.trim()
     if (RawHttp.splitUrl(url) == null) return BrowserBridge.ResendResponse(0, emptyList(), null, error = "Enter a full http:// or https:// URL")
     val method = m.method.ifBlank { "GET" }
-    val body = if (m.body.isEmpty()) null else RawHttp.textToBody(m.body)
+    val body = if (m.body.isNotEmpty()) RawHttp.textToBody(m.body) else m.rawBody
     return app.httpResend(BrowserBridge.ResendRequest(method, url, RawHttp.parseHeaders(m.headers), body))
 }

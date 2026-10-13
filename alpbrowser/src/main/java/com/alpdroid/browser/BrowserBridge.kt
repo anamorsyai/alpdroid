@@ -475,7 +475,9 @@ class BrowserBridge(
                 .put("method", h.method).put("host", h.host).put("port", h.port)
                 .put("target", h.target).put("status", h.status ?: JSONObject.NULL)
                 .put("headers", headersJson(h.headers))
-                .put("body", h.body?.let { Base64.getEncoder().encodeToString(it) } ?: JSONObject.NULL))
+                .put("body", h.body?.let { Base64.getEncoder().encodeToString(it) } ?: JSONObject.NULL)
+                // The same body as readable text (null when binary), so an agent need not decode base64 to read a long body.
+                .put("bodyText", h.body?.let { textOrNull(it) } ?: JSONObject.NULL))
         }
         return JSONObject().put("enabled", intercept.enabled)
             .put("hostFilter", intercept.hostFilter).put("methodFilter", intercept.methodFilter)

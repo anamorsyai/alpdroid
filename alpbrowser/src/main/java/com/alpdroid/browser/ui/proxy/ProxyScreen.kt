@@ -212,11 +212,8 @@ private fun HeldSheet(app: AlpBrowserApp, h: InterceptController.Held, onDone: (
         }
         LabeledField("Headers", headers, { headers = it }, minLines = 4)
         if (!editable) {
-            Text(
-                if (origBody == null) "Binary body (${h.body?.size ?: 0} bytes) — forwarded unchanged."
-                else "Large body (${h.body?.size ?: 0} bytes) — too big to edit here, forwarded unchanged.",
-                style = MaterialTheme.typography.bodySmall, color = TextMuted, modifier = Modifier.padding(bottom = 12.dp),
-            )
+            // Not left out: shown read-only (it is forwarded unchanged — editing a body this size or this odd here is not safe).
+            BodyPreview(h.headers, h.body, if (origBody == null) "shown read-only (it is not clean UTF-8 text), forwarded unchanged." else "too big to edit here, shown read-only and forwarded unchanged.")
         } else {
             LabeledField("Body", body, { body = it }, minLines = 3)
             Row(Modifier.padding(bottom = 12.dp)) {

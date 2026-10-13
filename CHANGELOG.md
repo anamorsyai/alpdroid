@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.96 — Long bodies shown in Intercept, Repeater and History (AlpBrowser 0.6.14)
 
 - Intercept: a held request or response with a long body (over 60,000 characters) used to show no body at all, only a note. It is now shown read-only, a screenful at a time with "Show more" and "Copy body", and is still forwarded unchanged. The Repeater keeps such a body as well (shown read-only, sent as it is unless you type a replacement) instead of dropping it when a request is sent there from the Intercept. `browserctl pending` also returns each body as readable text (`bodyText`).
 - Proxy and Repeater: a long text response is shown as text again. A single stray control byte, or one byte that is not valid UTF-8 (a page in Latin-1 or windows-1252), anywhere in a long body used to turn the whole body into "[binary body]". The body is now decoded with its declared charset, a stray control byte is shown as a dot, and only real binary (images, fonts, archives, or a body full of control bytes) stays "[binary body]".

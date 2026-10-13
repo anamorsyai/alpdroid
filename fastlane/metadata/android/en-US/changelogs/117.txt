@@ -1,0 +1,1 @@
+Shows long response bodies in Intercept, Repeater and History.

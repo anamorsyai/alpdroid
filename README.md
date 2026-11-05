@@ -112,6 +112,7 @@ See the full **[User guide](docs/USER_GUIDE.md)** — also available inside the 
 
 - Quick install for Node.js, Python, git, opencode, Claude Code, alphacode, editors and more; "Repair tool dependencies" if one won't start.
 - Managed `AGENTS.md` / `CLAUDE.md` notes in your home directory so agents learn the environment, including how to drive AlpBrowser.
+- **Browser toggle**: decide whether agents hear about AlpBrowser at all. On (the default), the note has a browser section and every tab gets `browserctl`, already signed in. Off, the note's browser section is removed and `browserctl` with its token file is taken out of the terminal — agents only find the browser if you tell them yourself. (Settings → Agent access & GitHub.)
 - `alpctl`: a local, token-guarded API for CLI agents (tabs, clipboard, notifications, settings, plugins). Off by default.
 - GitHub one-tap sign-in (device flow). Opt in to let `git` and agents use the token.
 </details>
@@ -171,7 +172,9 @@ system kill; files do. On Android 12+ some devices additionally limit child proc
 [troubleshooting section](docs/USER_GUIDE.md#19-troubleshooting).
 
 **What is AlpBrowser and do I need it?** It is optional. It is a separate browser app that AlpDroid's agents can control, for bug-bounty
-testing and web development. Install it from Settings → About → AlpBrowser; see the [AlpBrowser guide](docs/ALPBROWSER.md).
+testing and web development. Install it from Settings → About → AlpBrowser; see the [AlpBrowser guide](docs/ALPBROWSER.md). Agents are told
+about it by default; the **"Let agents use AlpBrowser"** switch in Settings → Agent access & GitHub hides it from them completely (no note
+section, no `browserctl`) until you turn it back on.
 
 **Do the agent tools need a token or password?** Not on your phone: AlpDroid and AlpBrowser find each other automatically. AlpBrowser's
 *Open local access* setting (on by default) lets programs on the phone control it without a token while still refusing web pages, and you can turn it

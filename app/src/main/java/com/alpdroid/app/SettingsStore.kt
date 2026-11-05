@@ -122,6 +122,14 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_AGENT_CTX, true)
         set(value) = prefs.edit().putBoolean(KEY_AGENT_CTX, value).apply()
 
+    /** On by default: the agent (a) is told about AlpBrowser in the AGENTS.md/CLAUDE.md note and
+     *  (b) gets the `browserctl` command plus its env file (token + ports). Off, nothing in the
+     *  environment mentions AlpBrowser at all — no note section, no browserctl, no env file — so
+     *  an agent only learns of the browser when the user says so. */
+    var agentBrowserAware: Boolean
+        get() = prefs.getBoolean(KEY_AGENT_BROWSER, true)
+        set(value) = prefs.edit().putBoolean(KEY_AGENT_BROWSER, value).apply()
+
     /** Whether the control API may hand the stored GitHub token to programs in the terminal. */
     var agentGithubToken: Boolean
         get() = prefs.getBoolean(KEY_AGENT_GH, false)
@@ -265,6 +273,7 @@ class SettingsStore(context: Context) {
         private const val KEY_BATTERY_PROMPT_SHOWN = "battery_prompt_shown"
         private const val KEY_AGENT = "agent_access"
         private const val KEY_AGENT_CTX = "agent_context_files"
+        private const val KEY_AGENT_BROWSER = "agent_browser_aware"
         private const val KEY_AGENT_GH = "agent_github_token"
         private const val KEY_AGENT_TOKEN = "agent_token"
         private const val KEY_GH_CLIENT = "github_client_id"

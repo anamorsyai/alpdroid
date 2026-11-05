@@ -486,21 +486,28 @@ ctl.!default { type null }
                 gitconfig.writeText("# alpdroid\n[credential \"https://github.com\"]\n\thelper = alpdroid\n")
             }
             val dir = File(root, "etc/alpdroid").apply { mkdirs() }
+            val settings = SettingsStore(context)
             // browserctl: installed for the agent and pointed at AlpBrowser automatically. The script ships in our
             // assets; the token + live ports are read from AlpBrowser's signature-protected provider (same signing
             // key) into an env file browserctl PARSES — so the agent never copies a token by hand. The (cheap, async)
             // refresh runs off this thread: the provider call can cold-start AlpBrowser's process, and a tab start
             // must never wait on that. browserctl re-reads the file on every call, so a refresh that lands a moment
-            // after the tab opened still reaches it.
+            // after the tab opened still reaches it. Gated by the "browser awareness" toggle: off, the command and
+            // its env file are removed, so nothing in the environment tells an agent AlpBrowser exists.
             runCatching {
-                val script = context.assets.open("browserctl").bufferedReader().use { it.readText() }
-                val f = File(bin, "browserctl")
-                if (writeIfDifferent(f, script)) f.setExecutable(true, false)
-                BrowserLink.refreshEnvAsync(context, File(dir, "alpbrowser.env"))
+                val envFile = File(dir, "alpbrowser.env")
+                if (settings.agentBrowserAware) {
+                    val script = context.assets.open("browserctl").bufferedReader().use { it.readText() }
+                    val f = File(bin, "browserctl")
+                    if (writeIfDifferent(f, script)) f.setExecutable(true, false)
+                    BrowserLink.refreshEnvAsync(context, envFile)
+                } else {
+                    File(bin, "browserctl").delete()
+                    envFile.delete()
+                }
             }
             conf = File(dir, "bridge")
-            val settings = SettingsStore(context)
-            AgentContext.sync(root, AgentContext.appVersion(context), settings.agentAccessEnabled, settings.agentContextFiles)
+            AgentContext.sync(root, AgentContext.appVersion(context), settings.agentAccessEnabled, settings.agentContextFiles, settings.agentBrowserAware)
             // The live port, not the preferred constant: with an ephemeral fallback the guest
             // must learn the actual port, and when the bridge isn't running at all (bind failed)
             // no file may exist — otherwise alpctl would POST the real token to a squatter.

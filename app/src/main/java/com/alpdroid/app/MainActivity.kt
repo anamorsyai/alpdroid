@@ -382,7 +382,8 @@ class MainActivity : Activity() {
         // Keep the agent's browserctl link current: right after AlpBrowser is installed or updated (its token or
         // ports may be new) the next resume here re-reads them — already-open tabs pick it up too, since browserctl
         // re-reads the env file on every call. A cheap no-op when nothing changed, and never blocks (async).
-        AlpineRootfs.rootDir(this).takeIf { it.isDirectory }?.let {
+        // Skipped while the browser-awareness toggle is off: nothing may re-provision the env file then.
+        if (settingsStore.agentBrowserAware) AlpineRootfs.rootDir(this).takeIf { it.isDirectory }?.let {
             BrowserLink.refreshEnvAsync(this, java.io.File(it, "etc/alpdroid/alpbrowser.env"))
         }
         // Back from the install-permission Settings screen: re-offer the waiting install
@@ -2297,11 +2298,28 @@ class MainActivity : Activity() {
                     settingsStore.agentContextFiles = checked
                     val root = AlpineRootfs.rootDir(this@MainActivity)
                     if (root.isDirectory) (application as AlpineTermApp).backgroundExecutor.execute {
-                        AgentContext.sync(root, AgentContext.appVersion(this@MainActivity), settingsStore.agentAccessEnabled, checked)
+                        AgentContext.sync(root, AgentContext.appVersion(this@MainActivity), settingsStore.agentAccessEnabled, checked, settingsStore.agentBrowserAware)
                     }
                 }
             },
         )
+        panel.addView(
+            MaterialSwitch(this).apply {
+                text = "Let agents use AlpBrowser (browserctl)"
+                setTextColor(0xFFD4D4D4.toInt())
+                isChecked = settingsStore.agentBrowserAware
+                setOnCheckedChangeListener { _, checked ->
+                    settingsStore.agentBrowserAware = checked
+                    val root = AlpineRootfs.rootDir(this@MainActivity)
+                    if (root.isDirectory) (application as AlpineTermApp).backgroundExecutor.execute {
+                        // One pass does both halves: sync rewrites (or strips the browser section from) the
+                        // agent note, and writeAgentFiles installs or removes browserctl + its env file.
+                        AlpineSession.writeAgentFiles(this@MainActivity, root)
+                    }
+                }
+            },
+        )
+        panel.addView(devNote("On by default: agents are told a browser exists and get the `browserctl` command to drive it. Switch off to hide AlpBrowser completely: the AGENTS.md note loses its browser section, `browserctl` and its token file are removed from the terminal, and agents only find the browser if you tell them yourself."))
         panel.addView(pillButton().apply { text = "Copy access token"; setOnClickListener {
             val clip = android.content.ClipData.newPlainText("token", settingsStore.agentToken)
             // A long-lived bearer token on the system clipboard is readable by any app —

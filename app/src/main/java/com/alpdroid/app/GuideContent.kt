@@ -153,6 +153,9 @@ Tap Sign out to remove it from the phone. To also cancel the permission on GitHu
 HOW AGENTS LEARN ABOUT THE APP
 AlpDroid saves a short note about itself where coding assistants look on their own (AGENTS.md, CLAUDE.md and similar in the home folder). It explains what the environment is and what to avoid, and — when Agent access is on — how to use `alpctl`. Anything you wrote in those files is kept; only a marked block is managed. You can switch the note off in the same screen, and type `alpctl about` to read it.
 
+THE BROWSER TOGGLE
+"Let agents use AlpBrowser (browserctl)", in the same screen, decides whether assistants hear about the browser at all. On (the default), the note has a browser section and every tab gets the `browserctl` command, already signed in. Off, the note's browser section is removed and `browserctl` with its token file is taken out of the terminal — an assistant then has no way to know AlpBrowser exists unless you tell it. Switching it back on restores everything at the next tab (or from the switch itself).
+
 Try it: turn it on, open a tab and type `alpctl` to see what's available.""",
         ),
         Section(

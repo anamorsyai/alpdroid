@@ -31,7 +31,7 @@ object AgentContext {
         context.packageManager.getPackageInfo(context.packageName, 0).versionName
     }.getOrNull() ?: "?").also { cachedVersion = it }
 
-    fun text(version: String, agentAccessOn: Boolean): String = """
+    fun text(version: String, agentAccessOn: Boolean, browserAware: Boolean = true): String = """
 # You are running inside AlpDroid (Android app, v$version)
 
 This is a real Alpine Linux environment on an Android phone, inside the AlpDroid app. It is not a normal server or desktop machine — read this before choosing tools.
@@ -53,9 +53,7 @@ This is a real Alpine Linux environment on an Android phone, inside the AlpDroid
 
 ## Controlling the app
 ${if (agentAccessOn) AGENT_ON else AGENT_OFF}
-
-## The built-in browser (AlpBrowser) — web dev & bug bounty
-$BROWSER
+${if (browserAware) "\n## The built-in browser (AlpBrowser) — web dev & bug bounty\n$BROWSER" else ""}
 """.trim()
 
     private const val AGENT_OFF = """Agent access is OFF, so the `alpctl` command does not work yet. If the user wants you to change app settings, use tabs, send notifications or add plugins, tell them to turn on Settings → Agent access & GitHub → "Let programs in the terminal control AlpDroid". `alpctl about` prints this note."""
@@ -175,9 +173,9 @@ Run `browserctl` with no arguments for the full command list."""
     }
 
     /** Writes (or, with [enabled] false, removes) the managed block in each agent's global file. */
-    fun sync(root: File, version: String, agentAccessOn: Boolean, enabled: Boolean) {
+    fun sync(root: File, version: String, agentAccessOn: Boolean, enabled: Boolean, browserAware: Boolean = true) {
         val home = File(root, "root")
-        val content = text(version, agentAccessOn)
+        val content = text(version, agentAccessOn, browserAware)
         synchronized(lock) {
             runCatching {
                 val about = File(File(root, "etc/alpdroid").apply { mkdirs() }, "about.md")

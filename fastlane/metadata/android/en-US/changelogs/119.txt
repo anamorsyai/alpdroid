@@ -1,0 +1,1 @@
+New switch: let agents use AlpBrowser (browserctl), or hide the browser from them completely.

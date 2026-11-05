@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.98 — A browser toggle for agents (AlpDroid only)
+
+- New switch in Settings → Agent access & GitHub: "Let agents use AlpBrowser (browserctl)". On (the default, today's behavior) coding assistants are told AlpBrowser exists and every tab gets the `browserctl` command, already signed in. Off, nothing in the environment mentions the browser at all: the AGENTS.md/CLAUDE.md note loses its browser section (also from `alpctl about`), and `browserctl` with its token file is removed from the terminal — an assistant only learns of AlpBrowser if you tell it yourself. Switching back on restores everything.
+- The Guide has a short "The browser toggle" section explaining both sides.
+
 ## 1.7.97 — Intercept over the Browser (AlpBrowser 0.6.15)
 
 - The whole Intercept screen opens over the Browser: a round floating button over the page (drag it anywhere) opens Held, History, Rules, Scope and Options as a full-screen panel, and "Back to the page" returns to the same, still-loaded page, so switching between browsing and intercepting is one tap each way. The button is orange with a count while Intercept is on and messages are paused; a long press turns Intercept on or off without opening the panel. Nothing is added to the toolbar.

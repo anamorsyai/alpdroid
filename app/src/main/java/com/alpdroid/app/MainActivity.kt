@@ -761,7 +761,7 @@ class MainActivity : Activity() {
         panel.addView(sectionLabel("Extra keys row"))
         panel.addView(
             MaterialSwitch(this).apply {
-                text = "Show ESC / TAB / CTRL / arrow row"
+                text = "Show ESC / TAB / CTRL / ALT / SHIFT / DEL / arrow row"
                 setTextColor(0xFFD4D4D4.toInt())
                 isChecked = settingsStore.showExtraKeys
                 setOnCheckedChangeListener { _, checked ->
@@ -4611,12 +4611,12 @@ class MainActivity : Activity() {
     private fun buildExtraKeysRow(row: LinearLayout) {
         row.removeAllViews()
         // Text keys are deliberately narrow (8dp side padding, 36dp min width): on a 360dp
-        // screen the primary cluster — keyboard, search, ESC, TAB, CTRL, ALT, SHIFT — then
-        // fits without scrolling, so SHIFT is never half-cut at the screen's right edge. The
-        // fit is tight (~6dp spare by the arithmetic below), so a larger system font scale
-        // can still push SHIFT to scroll — the row stays a HorizontalScrollView for the
-        // arrows and user shortcuts, and its XML end padding keeps the last key clear of the
-        // edge at full scroll.
+        // screen the primary cluster — keyboard, search, ESC, TAB, CTRL, ALT, SHIFT, DEL —
+        // no longer quite fits without scrolling (SHIFT alone left ~6dp spare, and DEL is
+        // ~45dp more), so the row scrolls slightly and DEL sits just past the right edge
+        // on the narrowest screens. The keys are deliberately NOT shrunk below 8dp/36dp
+        // to force the fit — a slightly scrolling row beats unusable keys — and the XML
+        // end padding keeps the last key clear of the edge at full scroll.
         settingsStore.migrateLegacyAlphacodeShortcut()
         settingsStore.migrateEmbeddedKeysToShortcuts()
         fun keyBackground() = GradientDrawable().apply {
@@ -4728,6 +4728,13 @@ class MainActivity : Activity() {
         // *does* differs (uppercase / back-tab / CSI 1;2 — see TerminalView.shifted()), but
         // the interaction is deliberately identical, so the three modifiers feel like one set.
         addToggleKey("SHIFT", { terminalView.shiftArmed }, { terminalView.shiftArmed = !terminalView.shiftArmed })
+        // DEL is forward-delete (delete the character under the cursor), not backspace:
+        // ESC[3~ is the same sequence the physical keyboard's KEYCODE_FORWARD_DEL sends
+        // in TerminalView.onKeyDown(). It goes through sendControlAware() like the other
+        // keys, so an armed SHIFT turns it into ESC[3;2~ (see shifted()) and an armed ALT
+        // prefixes an ESC — exactly like the arrow keys. 0x7F is NOT used here: that is
+        // backspace (KEYCODE_DEL), a different key.
+        addKey("DEL") { terminalView.sendControlAware("\u001B[3~") }
         // Respect DECCKM like onKeyDown() and the alt-scroll fallback do: programs that
         // switched cursor keys to application mode (vim, fzf-style pickers) expect SS3.
         fun arrow(app: String, normal: String) = if (terminalView.emulator?.applicationCursorKeys == true) app else normal

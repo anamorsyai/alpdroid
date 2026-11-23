@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.101 — Aurora polish
+
+- Aurora Phase 2 polish: the file browser and settings sheets rest at half height instead of full height, and the now-unused drawerlayout dependency is removed.
+- Screenshot fixes from device testing: the sheets are no longer clipped under the status bar (they now use the real status-bar inset), the four bottom-nav pills are equal width with one line each, the extra-keys row fits with CTRL visible, and there is no dead gap between the extra-keys row and the keyboard when it opens.
+- Extra keys: SHIFT added (xterm semantics — letters go uppercase, Tab goes back-tab, arrows/Home/End/Delete send the Shift modifier — same tap-to-arm toggle as CTRL/ALT) and DEL added (forward-delete, ESC[3~); the settings label now lists ESC / TAB / CTRL / ALT / SHIFT / DEL.
+
 ## 1.7.100 — Aurora Glass Phase 2: bottom navigation
 
 - The two side drawers are gone: navigation is now a one-handed glass bottom bar (Terminal / Files / Sessions / Settings), and the file browser and settings open as bottom sheets. All existing functions are still reachable, and the extra-keys row and terminal behaviour are unchanged.

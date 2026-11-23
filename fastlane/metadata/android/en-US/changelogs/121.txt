@@ -1,0 +1,1 @@
+Bottom navigation replaces the side drawers: Files and Settings now open as bottom sheets.

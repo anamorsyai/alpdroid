@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.102 — Sheet dismiss
+
+- Tapping the terminal while a bottom sheet (Files/Settings) is open now dismisses the sheet instead of opening the keyboard.
+
 ## 1.7.101 — Aurora polish
 
 - Aurora Phase 2 polish: the file browser and settings sheets rest at half height instead of full height, and the now-unused drawerlayout dependency is removed.

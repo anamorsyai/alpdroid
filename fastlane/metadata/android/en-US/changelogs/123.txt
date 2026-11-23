@@ -1,0 +1,1 @@
+Tapping the terminal now dismisses an open bottom sheet instead of opening the keyboard.

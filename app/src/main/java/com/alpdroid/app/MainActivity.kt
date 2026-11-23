@@ -3768,16 +3768,25 @@ class MainActivity : Activity() {
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             view.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
             // The sheets are direct children of the root CoordinatorLayout, NOT inside
-            // rootFrame, so rootFrame's own top padding (above) never reaches them: when a
+            // rootFrame, so rootFrame's own padding (above) never reaches them: when a
             // sheet is dragged to full height its handle and top chips started at y=0, under
-            // the status bar. Give both sheets the real status-bar inset as top padding —
-            // the same inset rootFrame uses, never a fixed margin. (The tab bar needs no
-            // such fix: it lives inside rootFrame, already below the status bar.)
+            // the status bar — and its bottom ran to y=screen bottom, under the navigation
+            // bar, so the last row(s) of the list sat behind the nav buttons and could never
+            // be scrolled into view (the ListView/ScrollView ends at the sheet's bottom edge).
+            // Give both sheets the real system-bar insets as top AND bottom padding — the
+            // same insets rootFrame uses, never a fixed margin. (The tab bar needs no such
+            // fix: it lives inside rootFrame, already below the status bar and above the
+            // nav bar.) The bottom padding also lifts the file sheet's selection/clipboard
+            // bars, which sit at the sheet's bottom edge, above the nav bar; and for the
+            // settings ScrollView the padding is scrollable space, so its last controls can
+            // be scrolled fully above the nav bar. Applies at half height too — the sheet
+            // is anchored to the screen bottom in both states, so its content would hide
+            // behind the nav bar there as well.
             if (::fileSheet.isInitialized) {
-                fileSheet.setPadding(fileSheet.paddingLeft, systemBars.top, fileSheet.paddingRight, fileSheet.paddingBottom)
+                fileSheet.setPadding(fileSheet.paddingLeft, systemBars.top, fileSheet.paddingRight, systemBars.bottom)
             }
             if (::settingsSheet.isInitialized) {
-                settingsSheet.setPadding(settingsSheet.paddingLeft, systemBars.top, settingsSheet.paddingRight, settingsSheet.paddingBottom)
+                settingsSheet.setPadding(settingsSheet.paddingLeft, systemBars.top, settingsSheet.paddingRight, systemBars.bottom)
             }
             // ime().bottom is measured from the true screen edge, including whatever the
             // navigation bar itself occupies — but rootFrame's own bottom padding (just above,

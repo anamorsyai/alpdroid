@@ -1,11 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The redesign's palette — built around colors already established elsewhere in the app
-     (the teal accent, the drawer-panel dark, the icon/splash colors) rather than a new brand. -->
+<!-- Aurora Glass palette — the redesign's palette, built around colors already established
+     elsewhere in the app (the teal accent, the drawer-panel dark, the icon/splash colors)
+     plus one violet companion for the aurora gradient. Teal stays the primary accent; violet
+     appears only in gradients, focus states and the active-tab glow, never as body text. -->
 <resources>
-    <color name="app_bg">#0B0E13</color>
+    <color name="app_bg">#0A0D12</color>
     <color name="panel">#12161C</color>
     <color name="panel_2">#171C24</color>
-    <color name="panel_3">#1D232C</color>
+    <color name="panel_3">#1E242E</color>
     <color name="accent">#3ED0B8</color>
     <color name="accent_dim">#2A8577</color>
     <color name="accent_wash">#243ED0B8</color>
@@ -15,4 +17,13 @@
     <color name="outline">#252C36</color>
     <color name="danger">#E57B7B</color>
     <color name="star">#F4C863</color>
+
+    <!-- Aurora Glass additions -->
+    <color name="aurora_violet">#8B7CF6</color>
+    <color name="aurora_blue">#6EA8FE</color>
+    <color name="aurora_gradient_start">#3ED0B8</color>
+    <color name="aurora_gradient_end">#8B7CF6</color>
+    <color name="glass_surface">#E612161C</color>
+    <color name="glass_stroke">#33FFFFFF</color>
+    <color name="aurora_glow">#403ED0B8</color>
 </resources>

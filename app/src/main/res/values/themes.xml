@@ -8,6 +8,10 @@
         <item name="colorOnPrimary">@color/on_accent</item>
         <item name="colorSecondary">@color/accent</item>
         <item name="colorOnSecondary">@color/on_accent</item>
+        <!-- Aurora Glass: violet is the tertiary companion — gradients and focus only,
+             never a second primary, so the teal brand stays unambiguous. -->
+        <item name="colorTertiary">@color/aurora_violet</item>
+        <item name="colorOnTertiary">@color/text_primary</item>
         <item name="colorSurface">@color/panel</item>
         <item name="colorOnSurface">@color/text_primary</item>
         <item name="colorSurfaceVariant">@color/panel_2</item>
@@ -23,7 +27,7 @@
     </style>
 
     <style name="ShapeAppearance.AlpDroid.Dialog" parent="">
-        <item name="cornerSize">24dp</item>
+        <item name="cornerSize">28dp</item>
     </style>
 
     <!-- Applied directly to plain android.widget.Button tags in XML layouts (activity_main.xml

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.99 — Real-bug fixes + Aurora Glass design
+
+- Terminal: fixed the statusPoller leak, the ready-gate counter leak that could block closing the last tab, PtySession destroy races, the search executor race, guest-file write races, wake-lock fallback, and several smaller leaks and correctness bugs.
+- Proxy and AlpBrowser: WebSocket memory is now inside the history budget, stale-connection retries are idempotent-only, interceptors have a timeout, hop-by-hop headers are stripped, request targets are validated, TLS handshakes time out, SSL checks now verify hostname and dates, rules match on dot boundaries with precompiled regex, intercept holds expire, and the CDP pool is bounded.
+- Design: Aurora Glass — new teal-to-violet palette tokens, floating glass tab bar and extra-keys row, rounder dialogs and buttons, and a new Aurora terminal theme (optional; Alpine stays the default).
+- CI now also runs the core-proxy and AlpBrowser unit tests and builds the AlpBrowser debug APK.
+
 ## 1.7.98 — A browser toggle for agents (AlpDroid only)
 
 - New switch in Settings → Agent access & GitHub: "Let agents use AlpBrowser (browserctl)". On (the default, today's behavior) coding assistants are told AlpBrowser exists and every tab gets the `browserctl` command, already signed in. Off, nothing in the environment mentions the browser at all: the AGENTS.md/CLAUDE.md note loses its browser section (also from `alpctl about`), and `browserctl` with its token file is removed from the terminal — an assistant only learns of AlpBrowser if you tell it yourself. Switching back on restores everything.

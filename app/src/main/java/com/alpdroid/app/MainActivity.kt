@@ -84,6 +84,10 @@ class MainActivity : Activity() {
     // here through their BottomSheetBehaviors — no DrawerLayout remains.
     private lateinit var fileSheetBehavior: BottomSheetBehavior<LinearLayout>
     private lateinit var settingsSheetBehavior: BottomSheetBehavior<ScrollView>
+    // True while the current terminal tap is being swallowed to dismiss a sheet (see
+    // setupSheetDismissOnTerminalTap) — the rest of that same gesture is swallowed too,
+    // so a stray ACTION_UP never reaches TerminalView's own gesture handling.
+    private var dismissingSheetTap = false
     // Screenshot fixes: the sheet views themselves (for the status-bar top padding in
     // applyInsetsManually — the sheets are NOT inside rootFrame, so its padding never
     // reaches them) and the bottom nav bar (translated up with the extra-keys row when
@@ -216,6 +220,7 @@ class MainActivity : Activity() {
         terminalView.setTextSizePx(spToPx(settingsStore.fontSizeSp))
         terminalView.setTypeface(typefaceFor(settingsStore.fontFamily))
         terminalView.setLigaturesEnabled(settingsStore.ligaturesEnabled)
+        setupSheetDismissOnTerminalTap()
 
         terminalContainer.addView(buildSearchBar(), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP))
         buildExtraKeysRow(extraKeysRow)
@@ -4861,6 +4866,59 @@ class MainActivity : Activity() {
     private fun hideAllSheets() {
         hideFileSheet()
         hideSettingsSheet()
+    }
+
+    /**
+     * Tapping the terminal while a sheet is open dismisses the sheet — and nothing else.
+     * The sheets are persistent BottomSheetBehavior views with no scrim, so a tap on the
+     * terminal area falls straight through to TerminalView, whose own GestureDetector
+     * answers it with requestFocus() + showKeyboard() (see TerminalView.onSingleTapUp) —
+     * exactly the reported bug: tap the terminal, the keyboard opens, the sheet stays.
+     *
+     * This intercepts at the TerminalView touch path, before its onTouchEvent ever runs:
+     * a View's OnTouchListener is consulted first, and returning true consumes the event,
+     * so the GestureDetector never sees the tap at all. TerminalView sets no OnTouchListener
+     * of its own (it overrides onTouchEvent), so nothing here is overwritten. The whole
+     * gesture is swallowed (dismissingSheetTap), not just ACTION_DOWN, so a stray ACTION_UP
+     * can't reach the gesture handling either; the very next tap works normally again.
+     *
+     * Scoped to the terminal only, deliberately: the bottom nav already manages sheets
+     * itself (Terminal hides them, Files/Sessions/Settings switch to the other one), so
+     * swallowing its taps would turn "switch sheets" into "close, tap again". The tab bar
+     * and search bar are left alone too — switching tabs or searching are explicit actions
+     * with their own tap semantics, not the "tap the terminal" the report is about.
+     */
+    private fun setupSheetDismissOnTerminalTap() {
+        terminalView.setOnTouchListener { _, event ->
+            when {
+                event.actionMasked == MotionEvent.ACTION_DOWN && isAnySheetVisible() -> {
+                    hideAllSheets()
+                    dismissingSheetTap = true
+                    true
+                }
+                dismissingSheetTap -> {
+                    if (event.actionMasked == MotionEvent.ACTION_UP ||
+                        event.actionMasked == MotionEvent.ACTION_CANCEL
+                    ) {
+                        dismissingSheetTap = false
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    /** True while the Files or Settings sheet is actually resting open (half or full
+     *  height). DRAGGING/SETTLING are deliberately not counted: a tap landing mid-drag is
+     *  not a deliberate "close this" tap, and the sheet is about to settle into one of
+     *  these states (or HIDDEN) on its own. */
+    private fun isAnySheetVisible(): Boolean {
+        if (!::fileSheetBehavior.isInitialized || !::settingsSheetBehavior.isInitialized) return false
+        return fileSheetBehavior.state == BottomSheetBehavior.STATE_HALF_EXPANDED ||
+            fileSheetBehavior.state == BottomSheetBehavior.STATE_EXPANDED ||
+            settingsSheetBehavior.state == BottomSheetBehavior.STATE_HALF_EXPANDED ||
+            settingsSheetBehavior.state == BottomSheetBehavior.STATE_EXPANDED
     }
 
     @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")

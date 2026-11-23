@@ -84,6 +84,10 @@ class TerminalEmulator(
      *  forever, including after the system destroys and recreates that Activity (backgrounding,
      *  a config change) and a *different* instance is the one actually on screen. Re-set by
      *  rebindTabOutputs() alongside TerminalTab.onOutput, the same pattern that field already uses. */
+    // @Volatile: reassigned on the UI thread (rebindTabOutputs) and read on the
+    // pty-reader thread in feed() — without it the reader can keep calling a stale
+    // (dead-Activity) callback indefinitely.
+    @Volatile
     var onBell: () -> Unit = onBell
     // Volatile: mutated under @Synchronized on the PTY reader thread, read directly on the UI
     // thread (blink runnable, cursor draw, touch handling) — without visibility guarantees the

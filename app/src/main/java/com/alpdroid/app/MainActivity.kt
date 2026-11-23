@@ -107,6 +107,12 @@ class MainActivity : Activity() {
         get() = (application as AlpineTermApp).pendingSessionStarts
         set(value) { (application as AlpineTermApp).pendingSessionStarts = value }
 
+    /** True while an addTab() attempt is parked at the ready gate (showReadyGate): its
+     *  pendingSessionStarts increment is still outstanding, owned by the gate until the
+     *  user taps Start (startSessionNow's own decrement) or the gate is abandoned
+     *  (a superseding addTab() or onDestroy() decrements it — see both call sites). */
+    private var readyGatePending = false
+
     // Known only once the view has been laid out at least once (TerminalView.onGridSize) —
     // every new tab and every tab switch resizes to whatever this currently is.
     private var lastRows = 24
@@ -3873,6 +3879,13 @@ class MainActivity : Activity() {
         // plain "+", the widget, a saved-session resume adding several tabs in a row, and restart/
         // reinstall/restore's own manual pre-increment (see those call sites) handing off to this
         // one once addTab() actually runs.
+        // A previous attempt still parked at the ready gate (its Start button replaced by
+        // this call's fresh setup UI) never reaches startSessionNow()/showSetupFailure(), so
+        // its increment would leak — close it out here before opening this attempt's own pair.
+        if (readyGatePending) {
+            readyGatePending = false
+            pendingSessionStarts--
+        }
         pendingSessionStarts++
         val id = nextTabId++
         // A still-running fadeOutSetup() from a previous tab's successful start (resumeSequentially
@@ -3890,8 +3903,13 @@ class MainActivity : Activity() {
         retryButton.visibility = View.GONE
         setupStatus.text = AlpineRootfs.lastStatus.ifEmpty { "Setting up Alpine…" }
 
+        // Done-flag for the poller below: removeCallbacks() at the ensureReady completion
+        // already stops it, but a tick already posted when that runs would otherwise
+        // re-schedule itself for another 200ms round — the flag makes the stop unconditional.
+        var statusPollerStopped = false
         val statusPoller = object : Runnable {
             override fun run() {
+                if (statusPollerStopped) return
                 val status = AlpineRootfs.lastStatus.ifEmpty { "Setting up Alpine…" }
                 val total = AlpineRootfs.totalBytes
                 if (total > 0) {
@@ -3918,6 +3936,7 @@ class MainActivity : Activity() {
             val wasReadyBefore = AlpineRootfs.isReady(this)
             val rootfsReady = AlpineRootfs.ensureReady(this)
             mainHandler.post {
+                statusPollerStopped = true
                 mainHandler.removeCallbacks(statusPoller)
                 setupProgress.isIndeterminate = true
                 when {
@@ -3960,6 +3979,7 @@ class MainActivity : Activity() {
     }
 
     private fun showReadyGate(id: Int, initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null) {
+        readyGatePending = true
         setupStatus.text = "Alpine is ready. Grant shared storage now so it's available in the shell (or skip — you can grant it later from Settings)."
         grantStorageButton.visibility = View.VISIBLE
         startTerminalButton.visibility = View.VISIBLE
@@ -3971,6 +3991,8 @@ class MainActivity : Activity() {
     }
 
     private fun startSessionNow(id: Int, initialLabel: String? = null, onStarted: (() -> Unit)? = null, onFailed: (() -> Unit)? = null) {
+        // The gate's increment is now owned by this function's own completion decrement below.
+        readyGatePending = false
         setupStatus.text = "Starting shell…"
         val app = application as AlpineTermApp
         app.backgroundExecutor.execute {
@@ -4738,6 +4760,14 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         if ((application as AlpineTermApp).services.onChanged === servicesListener) (application as AlpineTermApp).services.onChanged = null
         super.onDestroy()
+        // A ready gate showing at destroy time (rotation, Back, swipe-away) never reaches
+        // startSessionNow()/showSetupFailure(), and the counter lives in the Application so
+        // it would survive the Activity — close the gate's increment out here, or it leaks
+        // and onTabExited()'s "last tab closes the app" guard never fires again.
+        if (readyGatePending) {
+            readyGatePending = false
+            pendingSessionStarts--
+        }
         // A deliberate exit isn't a kill: zero the heartbeat so the next launch stays quiet.
         if (deliberateExit) settingsStore.lastAliveMs = 0L
         // Any onDestroy at all (swipe-away, Back, rotation) proves no kill happened —

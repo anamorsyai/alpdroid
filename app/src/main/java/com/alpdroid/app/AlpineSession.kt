@@ -31,6 +31,11 @@ object AlpineSession {
      *  by sharing one executor thread, and no longer is. */
     private val networkConfigLock = Any()
 
+    /** Guards writeShellProfile()/writeAgentFiles() below — both read-modify-write files
+     *  shared by every session in the same rootfs (etc/profile.d, etc/alpdroid/bridge, ...),
+     *  and startAlpine()/startScript() can run concurrently on different executors. */
+    private val sessionStartLock = Any()
+
     data class StartResult(val session: PtySession, val backendLabel: String)
 
     /**
@@ -67,8 +72,10 @@ object AlpineSession {
         val root = AlpineRootfs.rootDir(context)
         writeResolvConf(context, root)
         writeApkHostsIPv4Only(root)
-        writeShellProfile(root)
-        writeAgentFiles(context, root)
+        synchronized(sessionStartLock) {
+            writeShellProfile(root)
+            writeAgentFiles(context, root)
+        }
         writeAlsaNullConfig(root)
 
         // Shared across tabs (one common guest /tmp, like real Alpine sessions), unlike the
@@ -191,7 +198,7 @@ object AlpineSession {
         if (!bridge.isFile || !proot.isFile) return null
         val root = AlpineRootfs.rootDir(context)
         writeResolvConf(context, root)
-        writeAgentFiles(context, root)
+        synchronized(sessionStartLock) { writeAgentFiles(context, root) }
         writeAlsaNullConfig(root)
         val guestTmp = File(context.cacheDir, "guest-tmp").apply { mkdirs() }
         val prootScratch = File(context.cacheDir, "proot-scratch-plugin-${System.nanoTime()}").apply { mkdirs() }
@@ -225,8 +232,15 @@ object AlpineSession {
             if (settings.fastProotTracing) sessionEnv = sessionEnv - "PROOT_NO_SECCOMP"
             if (settings.efficiencyCores) CpuTopology.readEfficiencyMask()?.let { sessionEnv = sessionEnv + ("ALPDROID_CPU_MASK" to it) }
         }
-        return PtySession.start(bridge, context.cacheDir, 24, 200, argv, context.filesDir, sessionEnv)
-            .also { it.cleanupDir = prootScratch }
+        return try {
+            PtySession.start(bridge, context.cacheDir, 24, 200, argv, context.filesDir, sessionEnv)
+                .also { it.cleanupDir = prootScratch }
+        } catch (e: Exception) {
+            // Same cleanup searchPackages() does in its finally: a failed start must not
+            // leave the per-run proot scratch dir behind in cacheDir.
+            runCatching { prootScratch.deleteRecursively() }
+            throw e
+        }
     }
 
     /** Env vars a plugin/shortcut caller must never override: pointing these at attacker
@@ -359,7 +373,9 @@ ctl.!default { type null }
         val ipv4 = runCatching { java.net.InetAddress.getAllByName(host) }.getOrNull()
             ?.firstOrNull { it is java.net.Inet4Address }
             ?.hostAddress ?: ""
-        dnsCache[host] = ipv4 to now
+        // Never cache a failed lookup with the full TTL: an empty result only means
+        // "unresolvable right now" and must be retried next time, not pinned for 10 minutes.
+        if (ipv4.isNotEmpty()) dnsCache[host] = ipv4 to now
         return ipv4
     }
 

@@ -224,9 +224,21 @@ object AlpineBackup {
             }
         }
         // Atomic-ish swap: same filesystem, so rename is instant. Only reached when every
-        // entry extracted cleanly — a failure above leaves the live tree untouched.
-        destRoot.deleteRecursivelyNoFollow()
-        if (!staging.renameTo(destRoot)) throw IllegalStateException("could not swap in restored system")
+        // entry extracted cleanly — a failure above leaves the live tree untouched. The live
+        // tree is moved aside to .old first (not deleted): if the swap-in rename then fails,
+        // .old is moved back, so a failed swap never leaves no usable system at all. .old is
+        // deleted only once the new tree is in place.
+        val oldRoot = File(destRoot.parentFile, destRoot.name + ".old")
+        val hadLiveRoot = destRoot.exists()
+        if (hadLiveRoot) {
+            oldRoot.deleteRecursivelyNoFollow()
+            if (!destRoot.renameTo(oldRoot)) throw IllegalStateException("could not move current system aside")
+        }
+        if (!staging.renameTo(destRoot)) {
+            if (hadLiveRoot) runCatching { oldRoot.renameTo(destRoot) }
+            throw IllegalStateException("could not swap in restored system")
+        }
+        if (hadLiveRoot) oldRoot.deleteRecursivelyNoFollow()
     }
 
     /** Tar-bomb caps for [restore] — mirrors FileOps' zip caps, sized for a whole rootfs. */

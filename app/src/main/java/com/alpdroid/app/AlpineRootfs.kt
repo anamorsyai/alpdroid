@@ -185,8 +185,20 @@ object AlpineRootfs {
             // Best-effort — expanding the mirror list is a helpful extra, not something that
             // should throw away an otherwise-successful extraction if it somehow fails.
             runCatching { addFallbackMirrorsTo(staging) }
-            root.deleteRecursivelyNoFollow()
-            if (!staging.renameTo(root)) throw IllegalStateException("could not swap in downloaded system")
+            // Move the live tree aside to .old first (not deleted): if the swap-in rename
+            // then fails, .old is moved back, so a failed swap never leaves no usable system
+            // at all. .old is deleted only once the new tree is in place.
+            val oldRoot = File(context.filesDir, "$DIR_NAME.old")
+            val hadLiveRoot = root.exists()
+            if (hadLiveRoot) {
+                oldRoot.deleteRecursivelyNoFollow()
+                if (!root.renameTo(oldRoot)) throw IllegalStateException("could not move current system aside")
+            }
+            if (!staging.renameTo(root)) {
+                if (hadLiveRoot) runCatching { oldRoot.renameTo(root) }
+                throw IllegalStateException("could not swap in downloaded system")
+            }
+            if (hadLiveRoot) oldRoot.deleteRecursivelyNoFollow()
             markerFile(context).writeText(release.file)
             lastStatus = "Ready"
             true

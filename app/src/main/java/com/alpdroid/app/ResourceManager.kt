@@ -5,7 +5,10 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import java.io.File
 import java.util.concurrent.Executors
@@ -113,6 +116,10 @@ class ResourceManager(private val app: AlpineTermApp) {
     }
     private val detectors = HashMap<Int, ResourcePolicy.RunawayDetector>()
     private val scheduler = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "alpdroid-resources").apply { isDaemon = true } }
+
+    /** Session teardown (destroy()) must run on the main thread, never on the scheduler
+     *  thread that runs tick() — see the runaway-session branch below. */
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /** False while the app is in the background: ticks then skip the mode/render bookkeeping that only
      *  matters for what is on screen (the runaway-session check still runs). */
@@ -232,7 +239,10 @@ class ResourceManager(private val app: AlpineTermApp) {
         appRssBytes = readText("/proc/self/statm")?.let { ResourcePolicy.parseStatmRssBytes(it) } ?: 0L
         val tabs = app.tabs.toList()
         val services = app.services.list()
-        if (tabs.isEmpty() && services.isEmpty()) { usage = emptyList(); serviceUsage = emptyList(); processCount = 0; peakProcessCount = 0; busiest = ""; samples.clear(); detectors.clear(); serviceSamples.clear(); prevPidJiffies = HashMap(); lastMaxCpu = 0.0; return }
+        // peakProcessCount is deliberately NOT reset here: it is the high-water mark since
+        // the app started (a kill is usually reported after the burst that caused it is
+        // already gone), and only an app restart clears it.
+        if (tabs.isEmpty() && services.isEmpty()) { usage = emptyList(); serviceUsage = emptyList(); processCount = 0; busiest = ""; samples.clear(); detectors.clear(); serviceSamples.clear(); prevPidJiffies = HashMap(); lastMaxCpu = 0.0; return }
 
         // One pass over /proc: ppid + cpu of every process we are allowed to see (our own uid).
         val parentOf = HashMap<Int, Int>()
@@ -251,7 +261,9 @@ class ResourceManager(private val app: AlpineTermApp) {
             tabs.forEach { it.session.setCpuAffinity(null) }
         }
         wasBalancing = balancing
-        val now = System.currentTimeMillis()
+        // Monotonic clock for CPU% intervals: wall-clock time can jump (NTP, user change)
+        // and would corrupt every dt-based percentage computed from it.
+        val now = SystemClock.elapsedRealtime()
         val result = ArrayList<TabUsage>()
         val liveIds = HashSet<Int>()
         tabs.forEachIndexed { index, tab ->
@@ -277,7 +289,10 @@ class ResourceManager(private val app: AlpineTermApp) {
                         app, OperationNotifications.newId(), "A frozen session was closed",
                         "Session ${index + 1} was using a CPU core while doing nothing, so AlpDroid closed it to save battery.",
                     )
-                    tab.session.destroy()
+                    // Never destroy() straight from this scheduler thread: teardown touches
+                    // the pty/threads and belongs on the main thread. destroy() is idempotent,
+                    // so a tab closed in the meantime is harmless.
+                    mainHandler.post { tab.session.destroy() }
                 }
             }
             val parked = balance(tab, index == app.activeTabIndex, cpu, balancing)

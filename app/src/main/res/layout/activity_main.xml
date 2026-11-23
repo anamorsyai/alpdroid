@@ -89,7 +89,8 @@
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
                 android:paddingTop="4dp"
-                android:paddingBottom="4dp" />
+                android:paddingBottom="4dp"
+                android:paddingEnd="10dp" />
         </HorizontalScrollView>
 
         <!-- Aurora Glass Phase 2: one-handed bottom navigation. Terminal closes any open
@@ -109,7 +110,7 @@
 
             <Button
                 android:id="@+id/btnNavTerminal"
-                style="@style/Widget.AlpDroid.ChipTab"
+                style="@style/Widget.AlpDroid.BottomNav"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
@@ -118,7 +119,7 @@
 
             <Button
                 android:id="@+id/btnNavFiles"
-                style="@style/Widget.AlpDroid.ChipTab"
+                style="@style/Widget.AlpDroid.BottomNav"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
@@ -127,7 +128,7 @@
 
             <Button
                 android:id="@+id/btnNavSessions"
-                style="@style/Widget.AlpDroid.ChipTab"
+                style="@style/Widget.AlpDroid.BottomNav"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
@@ -136,7 +137,7 @@
 
             <Button
                 android:id="@+id/btnNavSettings"
-                style="@style/Widget.AlpDroid.ChipTab"
+                style="@style/Widget.AlpDroid.BottomNav"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"

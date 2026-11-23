@@ -84,6 +84,13 @@ class MainActivity : Activity() {
     // here through their BottomSheetBehaviors — no DrawerLayout remains.
     private lateinit var fileSheetBehavior: BottomSheetBehavior<LinearLayout>
     private lateinit var settingsSheetBehavior: BottomSheetBehavior<ScrollView>
+    // Screenshot fixes: the sheet views themselves (for the status-bar top padding in
+    // applyInsetsManually — the sheets are NOT inside rootFrame, so its padding never
+    // reaches them) and the bottom nav bar (translated up with the extra-keys row when
+    // the keyboard opens, so no dead gap opens between row and keyboard).
+    private lateinit var fileSheet: LinearLayout
+    private lateinit var settingsSheet: ScrollView
+    private lateinit var bottomNavBar: LinearLayout
     private val navButtons = mutableListOf<Button>()
     private lateinit var settingsStore: SettingsStore
 
@@ -182,6 +189,7 @@ class MainActivity : Activity() {
         setupBottomSheets()
         setupBottomNav()
         rootFrame = findViewById(R.id.rootFrame)
+        bottomNavBar = findViewById(R.id.bottomNavBar)
         setupContainer = findViewById(R.id.setupContainer)
         setupStatus = findViewById(R.id.setupStatus)
         setupProgress = findViewById(R.id.setupProgress)
@@ -3754,6 +3762,18 @@ class MainActivity : Activity() {
         ViewCompat.setOnApplyWindowInsetsListener(rootFrame) { view, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             view.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+            // The sheets are direct children of the root CoordinatorLayout, NOT inside
+            // rootFrame, so rootFrame's own top padding (above) never reaches them: when a
+            // sheet is dragged to full height its handle and top chips started at y=0, under
+            // the status bar. Give both sheets the real status-bar inset as top padding —
+            // the same inset rootFrame uses, never a fixed margin. (The tab bar needs no
+            // such fix: it lives inside rootFrame, already below the status bar.)
+            if (::fileSheet.isInitialized) {
+                fileSheet.setPadding(fileSheet.paddingLeft, systemBars.top, fileSheet.paddingRight, fileSheet.paddingBottom)
+            }
+            if (::settingsSheet.isInitialized) {
+                settingsSheet.setPadding(settingsSheet.paddingLeft, systemBars.top, settingsSheet.paddingRight, settingsSheet.paddingBottom)
+            }
             // ime().bottom is measured from the true screen edge, including whatever the
             // navigation bar itself occupies — but rootFrame's own bottom padding (just above,
             // from systemBars()) already pushed all of this content up above the nav bar. Without
@@ -3764,6 +3784,14 @@ class MainActivity : Activity() {
             val navBarBottom = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
             val imeOverlap = (imeBottom - navBarBottom).coerceAtLeast(0)
             extraKeysScroll.translationY = -imeOverlap.toFloat()
+            // The bottom nav bar is laid out BELOW the extra-keys row, and only the row used
+            // to float up: the nav bar's whole height (plus the rows' margins) stayed behind
+            // the keyboard as dead space between row and keyboard. Float the nav bar up by
+            // the same amount, so the stack reads keyboard / nav / keys with no gap. Still a
+            // pure translation like the row's, so terminalContainer never resizes (no
+            // SIGWINCH), and the row's own top edge — the terminal's visible bottom, what
+            // imeCoverPx accounts for — doesn't move, so imeCoverPx stays imeOverlap.
+            if (::bottomNavBar.isInitialized) bottomNavBar.translationY = -imeOverlap.toFloat()
             // Floating extraKeysScroll up by imeOverlap lands its bottom edge exactly at the
             // visible boundary (terminalContainer's own bottom minus imeOverlap) — the row's own
             // height doesn't add to how much of the terminal's content is actually obstructed,
@@ -4580,6 +4608,11 @@ class MainActivity : Activity() {
 
     private fun buildExtraKeysRow(row: LinearLayout) {
         row.removeAllViews()
+        // Text keys are deliberately narrow (8dp side padding, 36dp min width): on a 360dp
+        // screen the primary cluster — keyboard, search, ESC, TAB, CTRL, ALT — then fits
+        // without scrolling, so CTRL is never half-cut at the screen's right edge. The row
+        // stays a HorizontalScrollView for the arrows and user shortcuts, and its XML end
+        // padding keeps the last key clear of the edge at full scroll.
         settingsStore.migrateLegacyAlphacodeShortcut()
         settingsStore.migrateEmbeddedKeysToShortcuts()
         fun keyBackground() = GradientDrawable().apply {
@@ -4595,9 +4628,9 @@ class MainActivity : Activity() {
                 typeface = Typeface.DEFAULT_BOLD
                 setTextColor(0xFFE7ECEF.toInt())
                 background = keyBackground()
-                minWidth = dp(38)
+                minWidth = dp(36)
                 minHeight = dp(38)
-                setPadding(dp(12), 0, dp(12), 0)
+                setPadding(dp(8), 0, dp(8), 0)
                 // A plain Button is focusable by default, and tapping one moves Android's view
                 // focus onto it — away from terminalView, which owns the IME connection. That
                 // focus change can make the soft keyboard briefly detach and reattach, which
@@ -4627,9 +4660,9 @@ class MainActivity : Activity() {
                 isAllCaps = false
                 textSize = 12f
                 typeface = Typeface.DEFAULT_BOLD
-                minWidth = dp(38)
+                minWidth = dp(36)
                 minHeight = dp(38)
-                setPadding(dp(12), 0, dp(12), 0)
+                setPadding(dp(8), 0, dp(8), 0)
                 isFocusable = false
                 isFocusableInTouchMode = false
             }
@@ -4722,7 +4755,8 @@ class MainActivity : Activity() {
      * Activity deliberately avoids AppCompat, which owns OnBackPressedDispatcher).
      */
     private fun setupBottomSheets() {
-        fileSheetBehavior = BottomSheetBehavior.from(findViewById<LinearLayout>(R.id.fileSheet)).apply {
+        fileSheet = findViewById(R.id.fileSheet)
+        fileSheetBehavior = BottomSheetBehavior.from(fileSheet).apply {
             state = BottomSheetBehavior.STATE_HIDDEN
             isHideable = true
             skipCollapsed = true
@@ -4732,7 +4766,8 @@ class MainActivity : Activity() {
             isFitToContents = false
             halfExpandedRatio = 0.5f
         }
-        settingsSheetBehavior = BottomSheetBehavior.from(findViewById<ScrollView>(R.id.settingsSheet)).apply {
+        settingsSheet = findViewById(R.id.settingsSheet)
+        settingsSheetBehavior = BottomSheetBehavior.from(settingsSheet).apply {
             state = BottomSheetBehavior.STATE_HIDDEN
             isHideable = true
             skipCollapsed = true

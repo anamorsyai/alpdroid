@@ -40,7 +40,7 @@ jobs:
       - name: Unit tests
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+          ./gradlew :core-proxy:test :alpbrowser:testDebugUnitTest :app:testDebugUnitTest --no-daemon --stacktrace
 
       - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+        run: ./gradlew :app:assembleDebug :alpbrowser:assembleDebug --no-daemon --stacktrace

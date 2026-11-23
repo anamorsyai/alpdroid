@@ -1,144 +1,219 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.drawerlayout.widget.DrawerLayout
+<!-- Aurora Glass Phase 2: the two side drawers are gone. Navigation is a one-handed glass
+     bar at the bottom (Terminal / Files / Sessions / Settings) and the file browser and
+     settings live in persistent bottom sheets (BottomSheetBehavior) in this same layout,
+     so every view id MainActivity already knows — fb*, settingsPanel, tabBar, extraKeys —
+     still resolves from the activity's content view and all existing wiring keeps working.
+     The sheets slide up from the bottom and dismiss with a swipe down or the Terminal tab. -->
+<androidx.coordinatorlayout.widget.CoordinatorLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/drawerLayout"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/rootCoordinator"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:background="@color/app_bg">
 
+    <!-- rootFrame stays: MainActivity looks it up and applyInsetsManually() works against it.
+         It now wraps the main column + setup overlay instead of being DrawerLayout's content. -->
     <FrameLayout
         android:id="@+id/rootFrame"
         android:layout_width="match_parent"
         android:layout_height="match_parent">
 
-        <LinearLayout
+    <LinearLayout
+        android:id="@+id/mainContent"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <!-- Aurora Glass: the tab bar floats as a glass pill over the terminal,
+             instead of a bare row pinned to the top edge. -->
+        <HorizontalScrollView
+            android:id="@+id/tabBarScroll"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:orientation="vertical">
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_marginTop="10dp"
+            android:layout_marginEnd="10dp"
+            android:background="@drawable/bg_glass_bar"
+            android:paddingTop="6dp"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="6dp"
+            android:scrollbars="none">
 
-            <!-- Aurora Glass: the tab bar floats as a glass pill over the terminal,
-                 instead of a bare row pinned to the top edge. -->
-            <HorizontalScrollView
-                android:id="@+id/tabBarScroll"
-                android:layout_width="match_parent"
+            <LinearLayout
+                android:id="@+id/tabBar"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="10dp"
-                android:layout_marginTop="10dp"
-                android:layout_marginEnd="10dp"
-                android:background="@drawable/bg_glass_bar"
-                android:paddingTop="6dp"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
-                android:paddingBottom="6dp"
-                android:scrollbars="none">
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
 
-                <LinearLayout
-                    android:id="@+id/tabBar"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal" />
-            </HorizontalScrollView>
+        <!-- A one-time static inset, not a dynamic one — this padding is set once at layout
+             and never changes while the keyboard opens/closes (that's extraKeysScroll's own
+             translationY trick below), so it doesn't reintroduce the SIGWINCH-on-every-toggle
+             problem; it just gives TerminalView slightly smaller, fixed bounds to draw into,
+             same as any other static layout change would. -->
+        <FrameLayout
+            android:id="@+id/terminalContainer"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:paddingTop="8dp"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp" />
 
-            <!-- A one-time static inset, not a dynamic one — this padding is set once at layout
-                 and never changes while the keyboard opens/closes (that's extraKeysScroll's own
-                 translationY trick below), so it doesn't reintroduce the SIGWINCH-on-every-toggle
-                 problem; it just gives TerminalView slightly smaller, fixed bounds to draw into,
-                 same as any other static layout change would. -->
-            <FrameLayout
-                android:id="@+id/terminalContainer"
-                android:layout_width="match_parent"
-                android:layout_height="0dp"
+        <!-- Back inside the vertical LinearLayout, as a plain (non-weighted, wrap_content)
+             sibling of terminalContainer — its own height is always reserved out of
+             terminalContainer's share regardless of the keyboard, so the terminal never
+             renders underneath it even at rest. Floating it above the keyboard is done with
+             a pure translationY in MainActivity.applyInsetsManually() instead of a margin: a
+             transform doesn't touch layout at all, so it can't ever make terminalContainer
+             resize — see TerminalView.imeCoverPx for why a real resize is exactly what must
+             not happen here (a real SIGWINCH, which most shells react to by moving the
+             cursor and reprinting the prompt on every single keyboard toggle). -->
+        <!-- Aurora Glass: the extra-keys row floats as a glass pill, matching the tab bar. -->
+        <HorizontalScrollView
+            android:id="@+id/extraKeysScroll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_marginEnd="10dp"
+            android:layout_marginBottom="8dp"
+            android:background="@drawable/bg_glass_bar"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:id="@+id/extraKeysRow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp" />
+        </HorizontalScrollView>
+
+        <!-- Aurora Glass Phase 2: one-handed bottom navigation. Terminal closes any open
+             sheet; Files opens the file-browser sheet, Sessions the same sheet in sessions
+             mode, Settings the settings sheet. The bar is a glass pill like the tab bar and
+             the extra-keys row, so all three floating bars share one language. -->
+        <LinearLayout
+            android:id="@+id/bottomNavBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_marginEnd="10dp"
+            android:layout_marginBottom="10dp"
+            android:background="@drawable/bg_glass_bar"
+            android:orientation="horizontal"
+            android:padding="6dp">
+
+            <Button
+                android:id="@+id/btnNavTerminal"
+                style="@style/Widget.AlpDroid.ChipTab"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:paddingTop="8dp"
-                android:paddingStart="6dp"
-                android:paddingEnd="6dp" />
+                android:layout_marginEnd="4dp"
+                android:text="Terminal" />
 
-            <!-- Back inside the vertical LinearLayout, as a plain (non-weighted, wrap_content)
-                 sibling of terminalContainer — its own height is always reserved out of
-                 terminalContainer's share regardless of the keyboard, so the terminal never
-                 renders underneath it even at rest. Floating it above the keyboard is done with
-                 a pure translationY in MainActivity.applyInsetsManually() instead of a margin: a
-                 transform doesn't touch layout at all, so it can't ever make terminalContainer
-                 resize — see TerminalView.imeCoverPx for why a real resize is exactly what must
-                 not happen here (a real SIGWINCH, which most shells react to by moving the
-                 cursor and reprinting the prompt on every single keyboard toggle). -->
-            <!-- Aurora Glass: the extra-keys row floats as a glass pill, matching the tab bar. -->
-            <HorizontalScrollView
-                android:id="@+id/extraKeysScroll"
-                android:layout_width="match_parent"
+            <Button
+                android:id="@+id/btnNavFiles"
+                style="@style/Widget.AlpDroid.ChipTab"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="10dp"
-                android:layout_marginEnd="10dp"
-                android:layout_marginBottom="8dp"
-                android:background="@drawable/bg_glass_bar"
-                android:scrollbars="none">
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp"
+                android:text="Files" />
 
-                <LinearLayout
-                    android:id="@+id/extraKeysRow"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:paddingTop="4dp"
-                    android:paddingBottom="4dp" />
-            </HorizontalScrollView>
+            <Button
+                android:id="@+id/btnNavSessions"
+                style="@style/Widget.AlpDroid.ChipTab"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp"
+                android:text="Sessions" />
+
+            <Button
+                android:id="@+id/btnNavSettings"
+                style="@style/Widget.AlpDroid.ChipTab"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Settings" />
         </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/setupContainer"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:gravity="center"
-            android:orientation="vertical"
-            android:padding="32dp">
-
-            <com.alpdroid.app.LiquidFillView
-                android:id="@+id/setupProgress"
-                android:layout_width="120dp"
-                android:layout_height="120dp"
-                android:layout_marginBottom="20dp" />
-
-            <TextView
-                android:id="@+id/setupStatus"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center"
-                android:text="Setting up Alpine…"
-                android:textColor="#D4D4D4"
-                android:textSize="16sp" />
-
-            <Button
-                android:id="@+id/grantStorageButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:text="Grant shared-storage access"
-                android:visibility="gone" />
-
-            <Button
-                android:id="@+id/startTerminalButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text="Start terminal"
-                android:visibility="gone" />
-
-            <Button
-                android:id="@+id/retryButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:text="Retry"
-                android:visibility="gone" />
-        </LinearLayout>
-    </FrameLayout>
+    </LinearLayout>
 
     <LinearLayout
-        android:layout_width="320dp"
+        android:id="@+id/setupContainer"
+        android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layout_gravity="start"
-        android:background="@color/panel"
-        android:elevation="8dp"
-        android:fitsSystemWindows="true"
-        android:orientation="vertical">
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="32dp">
+
+        <com.alpdroid.app.LiquidFillView
+            android:id="@+id/setupProgress"
+            android:layout_width="120dp"
+            android:layout_height="120dp"
+            android:layout_marginBottom="20dp" />
+
+        <TextView
+            android:id="@+id/setupStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="Setting up Alpine…"
+            android:textColor="#D4D4D4"
+            android:textSize="16sp" />
+
+        <Button
+            android:id="@+id/grantStorageButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Grant shared-storage access"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/startTerminalButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Start terminal"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/retryButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Retry"
+            android:visibility="gone" />
+    </LinearLayout>
+    </FrameLayout>
+
+    <!-- File-browser bottom sheet. Same views, same ids as the old left drawer — only the
+         container changed (drawer -> BottomSheetBehavior sheet). Hidden until the Files or
+         Sessions nav item opens it; swipe down or Terminal dismisses it. -->
+    <LinearLayout
+        android:id="@+id/fileSheet"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/bg_sheet_top"
+        android:elevation="16dp"
+        android:orientation="vertical"
+        app:behavior_hideable="true"
+        app:behavior_peekHeight="0dp"
+        app:behavior_skipCollapsed="true"
+        app:layout_behavior="com.google.android.material.bottomsheet.BottomSheetBehavior">
+
+        <View
+            android:layout_width="36dp"
+            android:layout_height="4dp"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_sheet_handle" />
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -358,19 +433,38 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!-- Settings bottom sheet. Same ScrollView + settingsPanel as the old right drawer —
+         the settings controls are still built programmatically into settingsPanel, so no
+         settings code changes at all; only how the panel is shown changed. -->
     <ScrollView
-        android:layout_width="280dp"
+        android:id="@+id/settingsSheet"
+        android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layout_gravity="end"
-        android:background="#12161C"
-        android:elevation="8dp"
-        android:fitsSystemWindows="true">
+        android:background="@drawable/bg_sheet_top"
+        android:elevation="16dp"
+        app:behavior_hideable="true"
+        app:behavior_peekHeight="0dp"
+        app:behavior_skipCollapsed="true"
+        app:layout_behavior="com.google.android.material.bottomsheet.BottomSheetBehavior">
 
         <LinearLayout
-            android:id="@+id/settingsPanel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="20dp" />
+            android:orientation="vertical">
+
+            <View
+                android:layout_width="36dp"
+                android:layout_height="4dp"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_sheet_handle" />
+
+            <LinearLayout
+                android:id="@+id/settingsPanel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="20dp" />
+        </LinearLayout>
     </ScrollView>
-</androidx.drawerlayout.widget.DrawerLayout>
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

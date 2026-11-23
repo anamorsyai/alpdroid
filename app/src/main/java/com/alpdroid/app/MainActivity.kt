@@ -33,18 +33,18 @@ import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.RadioButton
 import android.widget.RadioGroup
+import android.widget.ScrollView
 import android.widget.SeekBar
+import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.materialswitch.MaterialSwitch
 import android.widget.TextView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.content.res.ResourcesCompat
-import androidx.core.view.GravityCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.drawerlayout.widget.DrawerLayout
 import com.alpdroid.app.files.FileBrowserPanel
 import com.alpdroid.app.files.FileOps
 import com.alpdroid.app.terminal.TerminalColors
@@ -79,7 +79,12 @@ class MainActivity : Activity() {
     private lateinit var rootFrame: FrameLayout
     private lateinit var terminalContainer: FrameLayout
     private lateinit var tabBarScroll: HorizontalScrollView
-    private lateinit var drawerLayout: DrawerLayout
+    // Aurora Glass Phase 2: the two side drawers are bottom sheets now. The sheets are
+    // persistent views in activity_main.xml (same ids as the old drawer contents), driven
+    // here through their BottomSheetBehaviors — no DrawerLayout remains.
+    private lateinit var fileSheetBehavior: BottomSheetBehavior<LinearLayout>
+    private lateinit var settingsSheetBehavior: BottomSheetBehavior<ScrollView>
+    private val navButtons = mutableListOf<Button>()
     private lateinit var settingsStore: SettingsStore
 
     // Owned by the Application, not this Activity instance — see AlpineTermApp.tabs for why:
@@ -174,8 +179,8 @@ class MainActivity : Activity() {
         // change — both real, deliberate, and nothing like the keyboard's own animation noise.
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
-        drawerLayout = findViewById(R.id.drawerLayout)
-        setupDrawerGestures()
+        setupBottomSheets()
+        setupBottomNav()
         rootFrame = findViewById(R.id.rootFrame)
         setupContainer = findViewById(R.id.setupContainer)
         setupStatus = findViewById(R.id.setupStatus)
@@ -207,22 +212,12 @@ class MainActivity : Activity() {
         terminalContainer.addView(buildSearchBar(), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP))
         buildExtraKeysRow(extraKeysRow)
         showSettingsCategoryList()
-        drawerLayout.addDrawerListener(object : DrawerLayout.DrawerListener {
-            override fun onDrawerOpened(drawerView: View) {
-                // Either drawer sliding open over the terminal is exactly the moment the keyboard
-                // is most likely still up from typing — leaving it up just eats space behind the
-                // drawer content until the user thinks to dismiss it themselves.
-                (getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)?.hideSoftInputFromWindow(drawerView.windowToken, 0)
-                // Deliberately does NOT reset the settings panel back to its category list here —
-                // a swipe that closes the drawer by accident (or on purpose, to glance at the
-                // terminal) should land back on whatever sub-screen was open, not lose the user's
-                // place. showSettingsCategoryList() is still called once up front (see above) and
-                // from each sub-screen's own back arrow, which is the only deliberate way back.
-            }
-            override fun onDrawerSlide(drawerView: View, slideOffset: Float) {}
-            override fun onDrawerClosed(drawerView: View) {}
-            override fun onDrawerStateChanged(newState: Int) {}
-        })
+        // Sheet open/close behaviour — including hiding the keyboard when a sheet opens —
+        // lives in setupBottomSheets() (BottomSheetCallbacks there). Deliberately does NOT
+        // reset the settings panel back to its category list when a sheet opens: a sheet
+        // dismissed by accident should land back on whatever sub-screen was open, not lose
+        // the user's place. showSettingsCategoryList() is still called once up front (above)
+        // and from each sub-screen's own back arrow, the only deliberate way back.
         fbSessionsButton = findViewById(R.id.fbSessionsButton)
         fbAndroidButton = findViewById(R.id.fbAndroidButton)
         fbAlpineButton = findViewById(R.id.fbAlpineButton)
@@ -246,7 +241,7 @@ class MainActivity : Activity() {
             findViewById(R.id.fbSelectionBar),
             onFileRootSelected = { hideSessionsMode() },
             onOpenTerminalHere = { guestPath ->
-                drawerLayout.closeDrawer(GravityCompat.START)
+                hideFileSheet()
                 addTab(onStarted = { runShortcutCommandOnReady("cd '" + guestPath.replace("'", "'\\''") + "'\n") })
             },
         )
@@ -270,7 +265,7 @@ class MainActivity : Activity() {
                 setColor(ContextCompat.getColor(this@MainActivity, R.color.accent_wash))
             }
             setOnClickListener {
-                drawerLayout.closeDrawer(GravityCompat.START)
+                hideFileSheet()
                 addTab()
             }
         }
@@ -689,7 +684,7 @@ class MainActivity : Activity() {
                         // kept showing the old theme's colors until some unrelated event (the
                         // keyboard closing, a resize) forced it to redraw anyway.
                         terminalView.invalidate()
-                        drawerLayout.closeDrawer(GravityCompat.END)
+                        hideSettingsSheet()
                     }
                 },
             )
@@ -1065,7 +1060,7 @@ class MainActivity : Activity() {
             pillButton().apply {
                 text = "Update package index (apk update)"
                 setOnClickListener {
-                    drawerLayout.closeDrawer(GravityCompat.END)
+                    hideSettingsSheet()
                     runShortcutCommand("apk update\n")
                 }
             },
@@ -1075,7 +1070,7 @@ class MainActivity : Activity() {
             pillButton().apply {
                 text = "Repair tool dependencies (libstdc++, bash, curl)"
                 setOnClickListener {
-                    drawerLayout.closeDrawer(GravityCompat.END)
+                    hideSettingsSheet()
                     runShortcutCommand("apk add --no-cache libstdc++ libgcc bash curl\n")
                 }
             },
@@ -1167,7 +1162,7 @@ class MainActivity : Activity() {
                                     },
                                 )
                                 setOnClickListener {
-                                    drawerLayout.closeDrawer(GravityCompat.END)
+                                    hideSettingsSheet()
                                     // Quoted: $name comes from the live network package index —
                                     // validated by PKG_NAME_RE above, quoted here as defense in depth.
                                     runShortcutCommand("apk add --no-cache '" + name.replace("'", "'\\''") + "'\n")
@@ -1252,7 +1247,7 @@ class MainActivity : Activity() {
                         },
                     )
                     setOnClickListener {
-                        drawerLayout.closeDrawer(GravityCompat.END)
+                        hideSettingsSheet()
                         runShortcutCommand(cmd)
                     }
                 }
@@ -1429,7 +1424,7 @@ class MainActivity : Activity() {
             pillButton().apply {
                 text = "Restart current session"
                 setOnClickListener {
-                    drawerLayout.closeDrawer(GravityCompat.END)
+                    hideSettingsSheet()
                     // Bridges the gap between destroy() below and addTab() actually being called
                     // right after it — addTab() increments pendingSessionStarts itself once it
                     // runs, so this hands off to that rather than double-counting.
@@ -1453,7 +1448,7 @@ class MainActivity : Activity() {
                         .setTitle("Reinstall Alpine?")
                         .setMessage("Deletes the current Alpine installation and closes all sessions. The next session will download a fresh copy. Anything you saved inside Alpine's own filesystem (not /sdcard) will be lost.")
                         .setPositiveButton("Reinstall") { _, _ ->
-                            drawerLayout.closeDrawer(GravityCompat.END)
+                            hideSettingsSheet()
                             // Held across the whole async wipe (unlike "Restart current session"'s
                             // handoff, addTab() here doesn't run until well after this returns) and
                             // handed off to addTab()'s own increment right before calling it.
@@ -1689,7 +1684,7 @@ class MainActivity : Activity() {
                     pillButton().apply {
                         text = "Connect"
                         setOnClickListener {
-                            drawerLayout.closeDrawer(GravityCompat.END)
+                            hideSettingsSheet()
                             tabs.getOrNull(activeTabIndex)?.lastSshCommand = profile.connectCommand()
                             runShortcutCommand(profile.connectCommand())
                         }
@@ -2489,7 +2484,7 @@ class MainActivity : Activity() {
 
     private fun startOpencodeWeb(auto: Boolean) {
         if (opencodeRunning()) return
-        if (!auto) drawerLayout.closeDrawer(GravityCompat.END)
+        if (!auto) hideSettingsSheet()
         val lan = settingsStore.opencodeWebLan
         val password = settingsStore.opencodeWebPassword
         // "No login on this phone": a small proxy owns port 4096 and the real server listens privately on 4097.
@@ -2515,7 +2510,7 @@ class MainActivity : Activity() {
 
     /** Opens the web page in the phone's browser: plain when the login-free proxy is up, otherwise already signed in. */
     private fun openOpencodeInBrowser() {
-        drawerLayout.closeDrawer(GravityCompat.END)
+        hideSettingsSheet()
         val url = if (OpencodeWeb.proxy != null) "http://127.0.0.1:${OpencodeWeb.PORT}/"
         else OpencodeWeb.loginUrl("127.0.0.1", OpencodeWeb.PORT, settingsStore.opencodeWebPassword)
         runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
@@ -2591,7 +2586,7 @@ class MainActivity : Activity() {
         val ips = NetworkInfo.localIpv4Addresses()
         val cmds = if (ips.isEmpty()) "(no network address found)" else ips.joinToString("\n") { "ssh -p $SSH_SERVER_PORT root@$it" }
         fun start() {
-            drawerLayout.closeDrawer(GravityCompat.END)
+            hideSettingsSheet()
             services.start(
                 SSH_SERVICE_ID, "SSH server",
                 "PORT=$SSH_SERVER_PORT; PWF=/etc/alpdroid/ssh_password; " +
@@ -4263,7 +4258,7 @@ class MainActivity : Activity() {
      *  bound inside a session is already reachable at Android's own 127.0.0.1, no forwarding
      *  needed. This just saves typing the URL by hand. */
     private fun openLocalPort(port: Int) {
-        drawerLayout.closeDrawer(GravityCompat.END)
+        hideSettingsSheet()
         runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("http://127.0.0.1:$port"))) }
             .onFailure { android.widget.Toast.makeText(this, "No browser available", android.widget.Toast.LENGTH_SHORT).show() }
     }
@@ -4368,7 +4363,7 @@ class MainActivity : Activity() {
                 setPadding(dp(10), dp(4), dp(4), dp(4))
                 setOnClickListener {
                     switchToTab(index)
-                    drawerLayout.closeDrawer(GravityCompat.START)
+                    hideFileSheet()
                 }
             }
             row.addView(
@@ -4715,44 +4710,103 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Gesture-nav phones eat edge swipes as system Back before the drawers ever see them, so
-     * edge-dragging a drawer open never works and every swipe just exits. Two-part fix, no
-     * extra buttons anywhere:
-     * 1. System-gesture exclusion strips on both vertical edges hand those swipes to
-     *    DrawerLayout, which opens the drawer with its own native animation. 32dp matches
-     *    roughly the drawer's own edge zone; the rest of the screen still backs normally.
-     * 2. Predictive-back dispatcher (with enableOnBackInvokedCallback in the manifest):
-     *    Back with a drawer open closes it (file browser goes up a level first), Back
-     *    otherwise exits as before — same logic the old onBackPressed override had.
+     * Aurora Glass Phase 2: bottom sheets + bottom nav. The file browser and settings are
+     * persistent BottomSheetBehavior sheets in activity_main.xml — hidden by default, opened
+     * from the bottom nav (Files / Sessions / Settings) and dismissed by swipe-down, Back,
+     * or the Terminal nav item. The old DrawerLayout edge swipes are gone with the drawers;
+     * there is deliberately no swipe-from-edge gesture anymore, so the terminal's own
+     * horizontal swipes (tab switching via TerminalView.onSwipeTab) never fight a drawer.
+     * Back behaviour lives in the onBackPressed() override below (this Activity deliberately
+     * avoids AppCompat, which owns OnBackPressedDispatcher).
      */
-    private fun setupDrawerGestures() {
-        drawerLayout.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
-            // systemGestureExclusionRects is API 29+; older devices have button navigation
-            // with no edge-swipe conflict, so there is nothing to exclude there.
-            if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) return@addOnLayoutChangeListener
-            val strip = dp(32)
-            val w = v.width
-            val h = v.height
-            if (w > 0 && h > 0) {
-                v.systemGestureExclusionRects = listOf(
-                    android.graphics.Rect(0, 0, strip, h),
-                    android.graphics.Rect(w - strip, 0, w, h),
-                )
-            }
+    private fun setupBottomSheets() {
+        fileSheetBehavior = BottomSheetBehavior.from(findViewById<LinearLayout>(R.id.fileSheet)).apply {
+            state = BottomSheetBehavior.STATE_HIDDEN
+            isHideable = true
+            skipCollapsed = true
         }
-        // Back behavior lives in the onBackPressed() override below (this Activity
-        // deliberately avoids AppCompat, which owns OnBackPressedDispatcher) — kept next to
-        // the gesture setup since they solve the same swipe-vs-exit problem together.
+        settingsSheetBehavior = BottomSheetBehavior.from(findViewById<ScrollView>(R.id.settingsSheet)).apply {
+            state = BottomSheetBehavior.STATE_HIDDEN
+            isHideable = true
+            skipCollapsed = true
+        }
+        // What the old DrawerListener did on open: a sheet sliding up over the terminal is
+        // exactly when the keyboard is most likely still up — hide it so it doesn't eat
+        // space behind the sheet. A sheet going hidden returns the nav highlight to Terminal.
+        // Deliberately does NOT reset the settings panel to its category list here.
+        val sheetCallback = object : BottomSheetBehavior.BottomSheetCallback() {
+            override fun onStateChanged(bottomSheet: View, newState: Int) {
+                if (newState == BottomSheetBehavior.STATE_EXPANDED) {
+                    (getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)
+                        ?.hideSoftInputFromWindow(bottomSheet.windowToken, 0)
+                }
+                if (newState == BottomSheetBehavior.STATE_HIDDEN) updateBottomNavSelection(0)
+            }
+
+            override fun onSlide(bottomSheet: View, slideOffset: Float) {}
+        }
+        fileSheetBehavior.addBottomSheetCallback(sheetCallback)
+        settingsSheetBehavior.addBottomSheetCallback(sheetCallback)
+    }
+
+    private fun setupBottomNav() {
+        val terminal = findViewById<Button>(R.id.btnNavTerminal)
+        val files = findViewById<Button>(R.id.btnNavFiles)
+        val sessions = findViewById<Button>(R.id.btnNavSessions)
+        val settings = findViewById<Button>(R.id.btnNavSettings)
+        navButtons.addAll(listOf(terminal, files, sessions, settings))
+        terminal.setOnClickListener { hideAllSheets(); updateBottomNavSelection(0) }
+        files.setOnClickListener { showFileSheet(sessions = false) }
+        sessions.setOnClickListener { showFileSheet(sessions = true) }
+        settings.setOnClickListener { showSettingsSheet() }
+        updateBottomNavSelection(0)
+    }
+
+    // Bottom-nav selection indices, in the same order as the buttons in activity_main.xml:
+    // 0 Terminal, 1 Files, 2 Sessions, 3 Settings. The active item gets the teal accent;
+    // the rest stay dim, matching the tab-bar chip language.
+    private fun updateBottomNavSelection(index: Int) {
+        navButtons.forEachIndexed { i, button ->
+            button.setTextColor(
+                ContextCompat.getColor(this, if (i == index) R.color.accent else R.color.text_dim),
+            )
+        }
+    }
+
+    private fun showFileSheet(sessions: Boolean = false) {
+        if (sessions) showSessionsMode() else hideSessionsMode()
+        settingsSheetBehavior.state = BottomSheetBehavior.STATE_HIDDEN
+        fileSheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
+        updateBottomNavSelection(if (sessions) 2 else 1)
+    }
+
+    private fun hideFileSheet() {
+        fileSheetBehavior.state = BottomSheetBehavior.STATE_HIDDEN
+    }
+
+    private fun showSettingsSheet() {
+        fileSheetBehavior.state = BottomSheetBehavior.STATE_HIDDEN
+        settingsSheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
+        updateBottomNavSelection(3)
+    }
+
+    private fun hideSettingsSheet() {
+        settingsSheetBehavior.state = BottomSheetBehavior.STATE_HIDDEN
+    }
+
+    private fun hideAllSheets() {
+        hideFileSheet()
+        hideSettingsSheet()
     }
 
     @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
     override fun onBackPressed() {
         when {
-            drawerLayout.isDrawerOpen(GravityCompat.END) -> drawerLayout.closeDrawer(GravityCompat.END)
+            settingsSheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN -> hideSettingsSheet()
             // Inside a subdirectory: back navigates up a level first, same as tapping the file
-            // browser's own Up button — only closes the drawer once already at a root.
-            drawerLayout.isDrawerOpen(GravityCompat.START) ->
-                if (!fileBrowserPanel.onBackPressed()) drawerLayout.closeDrawer(GravityCompat.START)
+            // browser's own Up button — only closes the sheet once already at a root.
+            fileSheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN ->
+                if (!fileBrowserPanel.onBackPressed()) hideFileSheet()
             else -> super.onBackPressed()
         }
     }
@@ -5099,7 +5153,7 @@ class MainActivity : Activity() {
                     mainHandler.post {
                         restoreCancelBtn?.visibility = View.GONE
                         android.widget.Toast.makeText(this, if (ok) "Restore complete" else if (cancelled) "Restore cancelled — your current Alpine is unchanged" else "Restore failed — your current Alpine is unchanged", android.widget.Toast.LENGTH_LONG).show()
-                        drawerLayout.closeDrawer(GravityCompat.END)
+                        hideSettingsSheet()
                         pendingSessionStarts--
                         // Always add a replacement tab, restore failure included: restore() extracts into a
                         // staging copy and only swaps it in on full success, so after a failure the current
@@ -5199,7 +5253,7 @@ class MainActivity : Activity() {
             mainHandler.post {
                 restoreCancelBtn?.visibility = View.GONE
                 android.widget.Toast.makeText(this, if (ok) "Restore complete" else if (cancelled) "Restore cancelled — your current Alpine is unchanged" else "Restore failed — your current Alpine is unchanged", android.widget.Toast.LENGTH_LONG).show()
-                drawerLayout.closeDrawer(GravityCompat.END)
+                hideSettingsSheet()
                 pendingSessionStarts--
                 if (!isFinishing && !isDestroyed) addTab()
             }
@@ -5271,7 +5325,7 @@ class MainActivity : Activity() {
         terminalView.invalidate()
         updateKeepAliveService()
         android.widget.Toast.makeText(this, "Settings imported — reopen Settings to see updated controls", android.widget.Toast.LENGTH_LONG).show()
-        drawerLayout.closeDrawer(GravityCompat.END)
+        hideSettingsSheet()
     }
 
     companion object {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.103 — Bottom inset
+
+- Bottom sheets (Files/Sessions/Settings) now respect the system navigation-bar inset, so the last row is fully visible and reachable instead of hiding behind the nav buttons.
+
 ## 1.7.102 — Sheet dismiss
 
 - Tapping the terminal while a bottom sheet (Files/Settings) is open now dismisses the sheet instead of opening the keyboard.

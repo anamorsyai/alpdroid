@@ -4302,11 +4302,12 @@ class MainActivity : Activity() {
      *  whatever the user already had typed but not yet submitted at the prompt is cleared first
      *  regardless of where their cursor happened to be left. Ctrl+U alone only kills text *before*
      *  the cursor — if the cursor had been moved left, whatever came after it would still get
-     *  appended onto the injected command. Also drops any armed CTRL/ALT extra-key modifier: this
-     *  bypasses sendControlAware() (a literal command string, not a control character), which is
-     *  the one thing that otherwise clears them — left armed, the *next* key the user types
-     *  anywhere would wrongly get treated as that modifier's target instead of a plain keystroke,
-     *  exactly what sendControlAware() exists to prevent for every other extra key. */
+     *  appended onto the injected command. Also drops any armed CTRL/ALT/SHIFT extra-key
+     *  modifier: this bypasses sendControlAware() (a literal command string, not a control
+     *  character), which is the one thing that otherwise clears them — left armed, the *next*
+     *  key the user types anywhere would wrongly get treated as that modifier's target instead
+     *  of a plain keystroke, exactly what sendControlAware() exists to prevent for every other
+     *  extra key. */
     private fun runShortcutCommand(cmd: String) {
         val tab = tabs.getOrNull(activeTabIndex) ?: return
         runShortcutCommand(tab.session, cmd)
@@ -4315,6 +4316,7 @@ class MainActivity : Activity() {
     private fun runShortcutCommand(session: PtySession, cmd: String) {
         terminalView.ctrlArmed = false
         terminalView.altArmed = false
+        terminalView.shiftArmed = false
         writeToSession(session, byteArrayOf(0x05, 0x15) + cmd.toByteArray())
     }
 
@@ -4331,7 +4333,7 @@ class MainActivity : Activity() {
             if (!sent) {
                 sent = true
                 tab.onOutput = prev
-                // This lambda runs on the pty-reader thread, and runShortcutCommand() resets the CTRL/ALT
+                // This lambda runs on the pty-reader thread, and runShortcutCommand() resets the CTRL/ALT/SHIFT
                 // buttons (views): hop to the UI thread, otherwise it threw and the command was never typed.
                 mainHandler.post { runShortcutCommand(tab.session, cmd) }
             }
@@ -4609,10 +4611,12 @@ class MainActivity : Activity() {
     private fun buildExtraKeysRow(row: LinearLayout) {
         row.removeAllViews()
         // Text keys are deliberately narrow (8dp side padding, 36dp min width): on a 360dp
-        // screen the primary cluster — keyboard, search, ESC, TAB, CTRL, ALT — then fits
-        // without scrolling, so CTRL is never half-cut at the screen's right edge. The row
-        // stays a HorizontalScrollView for the arrows and user shortcuts, and its XML end
-        // padding keeps the last key clear of the edge at full scroll.
+        // screen the primary cluster — keyboard, search, ESC, TAB, CTRL, ALT, SHIFT — then
+        // fits without scrolling, so SHIFT is never half-cut at the screen's right edge. The
+        // fit is tight (~6dp spare by the arithmetic below), so a larger system font scale
+        // can still push SHIFT to scroll — the row stays a HorizontalScrollView for the
+        // arrows and user shortcuts, and its XML end padding keeps the last key clear of the
+        // edge at full scroll.
         settingsStore.migrateLegacyAlphacodeShortcut()
         settingsStore.migrateEmbeddedKeysToShortcuts()
         fun keyBackground() = GradientDrawable().apply {
@@ -4646,8 +4650,8 @@ class MainActivity : Activity() {
             }
             row.addView(button, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(38)).apply { marginEnd = dp(6) })
         }
-        // CTRL/ALT are momentary modifiers, not plain actions — addKey() above always ran its
-        // action and never reflected any state, so tapping CTRL always (re-)armed it with no
+        // CTRL/ALT/SHIFT are momentary modifiers, not plain actions — addKey() above always ran
+        // its action and never reflected any state, so tapping CTRL always (re-)armed it with no
         // visual sign it had, and tapping it again did nothing (still just set the same field to
         // true) rather than canceling it. This toggles the armed flag and keeps the button's own
         // color in sync with it via refresh(), which TerminalView.onModifierStateChanged also
@@ -4719,6 +4723,11 @@ class MainActivity : Activity() {
         addKey("TAB") { terminalView.sendControlAware(byteArrayOf(0x09)) }
         addToggleKey("CTRL", { terminalView.ctrlArmed }, { terminalView.ctrlArmed = !terminalView.ctrlArmed })
         addToggleKey("ALT", { terminalView.altArmed }, { terminalView.altArmed = !terminalView.altArmed })
+        // SHIFT is the same addToggleKey as CTRL/ALT — tap to arm (button lights up), tap
+        // again to cancel, consumed by the next keystroke via TerminalView.shiftArmed. What it
+        // *does* differs (uppercase / back-tab / CSI 1;2 — see TerminalView.shifted()), but
+        // the interaction is deliberately identical, so the three modifiers feel like one set.
+        addToggleKey("SHIFT", { terminalView.shiftArmed }, { terminalView.shiftArmed = !terminalView.shiftArmed })
         // Respect DECCKM like onKeyDown() and the alt-scroll fallback do: programs that
         // switched cursor keys to application mode (vim, fzf-style pickers) expect SS3.
         fun arrow(app: String, normal: String) = if (terminalView.emulator?.applicationCursorKeys == true) app else normal

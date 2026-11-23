@@ -72,10 +72,11 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
      *  swiped toward the next tab (finger moved left), false means the previous tab. */
     var onSwipeTab: ((next: Boolean) -> Unit)? = null
 
-    /** Fired on every change to [ctrlArmed]/[altArmed], from any source — toggling the on-screen
-     *  key, or the armed state getting consumed by the next keystroke in sendControlAware()/
-     *  onKeyDown() below — so the on-screen CTRL/ALT buttons can stay visually in sync with the
-     *  real state instead of just reflecting whichever tap last touched them. */
+    /** Fired on every change to [ctrlArmed]/[altArmed]/[shiftArmed], from any source — toggling
+     *  the on-screen key, or the armed state getting consumed by the next keystroke in
+     *  sendControlAware()/onKeyDown() below — so the on-screen CTRL/ALT/SHIFT buttons can stay
+     *  visually in sync with the real state instead of just reflecting whichever tap last
+     *  touched them. */
     var onModifierStateChanged: (() -> Unit)? = null
 
     /** Set by the on-screen "Ctrl" extra key; the next single character typed is sent as its control code instead. */
@@ -88,6 +89,16 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
     /** Set by the on-screen "Alt" extra key; the next key sent gets an ESC prefix (the standard
      *  "altSendsEscape" encoding most terminal apps already understand for Meta/Alt). */
     var altArmed = false
+        set(value) {
+            field = value
+            onModifierStateChanged?.invoke()
+        }
+
+    /** Set by the on-screen "Shift" extra key; the next key sent is shifted the way a held
+     *  Shift key would shift it — a letter becomes uppercase, Tab becomes back-tab (ESC [ Z),
+     *  and an arrow/Home/End/Delete sequence gains the xterm Shift modifier (CSI 1;2). Like
+     *  CTRL/ALT it is momentary: sendControlAware() consumes it with the next keystroke. */
+    var shiftArmed = false
         set(value) {
             field = value
             onModifierStateChanged?.invoke()
@@ -1383,10 +1394,11 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
      * What every key path should call instead of [send]/[sendText] directly: the extra-keys row
      * (ESC, TAB, arrows, HOME/END, the punctuation keys), the soft keyboard's own IME text/key
      * paths above, and [onKeyDown] below. A single point that applies [ctrlArmed] (turning a
-     * single a-z byte into its control code) and [altArmed] (prefixing an ESC byte, the standard
-     * "altSendsEscape" encoding), then unconditionally clears both — so tapping CTRL or ALT then
-     * any *other* key still consumes the armed state instead of leaving it latched onto whatever
-     * unrelated key gets pressed next.
+     * single a-z byte into its control code), [altArmed] (prefixing an ESC byte, the standard
+     * "altSendsEscape" encoding) and [shiftArmed] (uppercasing a letter, back-tab for TAB, CSI
+     * 1;2 for arrows/Home/End/Delete — see [shifted]), then unconditionally clears all three —
+     * so tapping CTRL, ALT or SHIFT then any *other* key still consumes the armed state instead
+     * of leaving it latched onto whatever unrelated key gets pressed next.
      */
     fun sendControlAware(bytes: ByteArray) {
         var result = bytes
@@ -1394,10 +1406,42 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
             val c = result[0].toInt().toChar().lowercaseChar()
             if (c in 'a'..'z') result = byteArrayOf((c.code - 'a'.code + 1).toByte())
         }
+        if (shiftArmed) result = shifted(result, ctrlArmed)
         if (altArmed) result = byteArrayOf(0x1B) + result
         ctrlArmed = false
         altArmed = false
+        shiftArmed = false
         send(result)
+    }
+
+    /**
+     * What a held Shift key does to one keystroke, in xterm terms. Runs after the CTRL
+     * transform above, so Ctrl+Shift+letter still yields the plain control code (a control
+     * byte has no case to shift, and onKeyDown() already established that behaviour for a
+     * physical keyboard). Anything it does not recognise — a digit, punctuation, ESC on its
+     * own, an already-uppercase letter — passes through unchanged, and the armed state is
+     * still consumed by the caller.
+     */
+    private fun shifted(bytes: ByteArray, ctrlApplied: Boolean): ByteArray {
+        // Shift+Tab is back-tab, the one shifted key every terminal app understands.
+        if (bytes.contentEquals(byteArrayOf(0x09))) return "\u001B[Z".toByteArray(Charsets.UTF_8)
+        if (bytes.size == 1 && !ctrlApplied) {
+            val c = bytes[0].toInt().toChar()
+            if (c in 'a'..'z') return byteArrayOf(c.uppercaseChar().code.toByte())
+        }
+        if (bytes.size >= 3 && bytes[0] == 0x1B.toByte()) {
+            if (bytes[1] == 'O'.code.toByte()) {
+                // SS3 (application cursor keys): ESC O <final> -> CSI 1;2 <final>.
+                return byteArrayOf(0x1B, '['.code.toByte(), '1'.code.toByte(), ';'.code.toByte(), '2'.code.toByte(), bytes[2])
+            }
+            if (bytes[1] == '['.code.toByte()) {
+                // CSI: insert the Shift modifier (2) before the final byte — ESC[A -> ESC[1;2A,
+                // ESC[3~ -> ESC[3;2~. A bare ESC[final] needs the "1" parameter spelled out.
+                val insert = if (bytes.size == 3) "1;2" else ";2"
+                return bytes.copyOf(bytes.size - 1) + insert.toByteArray(Charsets.UTF_8) + bytes[bytes.size - 1]
+            }
+        }
+        return bytes
     }
 
     fun sendControlAware(text: String) = sendControlAware(text.toByteArray(Charsets.UTF_8))
@@ -1429,6 +1473,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
                     if (event.isCtrlPressed && lower in 'a'..'z') {
                         ctrlArmed = false
                         altArmed = false
+                        shiftArmed = false
                         send(byteArrayOf((lower - 'a' + 1).toByte()))
                     } else {
                         sendControlAware(String(Character.toChars(unicode)))

@@ -195,7 +195,9 @@
 
     <!-- File-browser bottom sheet. Same views, same ids as the old left drawer — only the
          container changed (drawer -> BottomSheetBehavior sheet). Hidden until the Files or
-         Sessions nav item opens it; swipe down or Terminal dismisses it. -->
+         Sessions nav item opens it; it rests at half the screen (fitToContents off,
+         halfExpandedRatio 0.5) with the terminal still partly visible behind it, drags up
+         to full height, and dismisses with a swipe down or the Terminal nav item. -->
     <LinearLayout
         android:id="@+id/fileSheet"
         android:layout_width="match_parent"
@@ -203,6 +205,8 @@
         android:background="@drawable/bg_sheet_top"
         android:elevation="16dp"
         android:orientation="vertical"
+        app:behavior_fitToContents="false"
+        app:behavior_halfExpandedRatio="0.5"
         app:behavior_hideable="true"
         app:behavior_peekHeight="0dp"
         app:behavior_skipCollapsed="true"
@@ -435,13 +439,16 @@
 
     <!-- Settings bottom sheet. Same ScrollView + settingsPanel as the old right drawer —
          the settings controls are still built programmatically into settingsPanel, so no
-         settings code changes at all; only how the panel is shown changed. -->
+         settings code changes at all; only how the panel is shown changed. Same half-height
+         resting state as the file sheet (fitToContents off, halfExpandedRatio 0.5). -->
     <ScrollView
         android:id="@+id/settingsSheet"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="@drawable/bg_sheet_top"
         android:elevation="16dp"
+        app:behavior_fitToContents="false"
+        app:behavior_halfExpandedRatio="0.5"
         app:behavior_hideable="true"
         app:behavior_peekHeight="0dp"
         app:behavior_skipCollapsed="true"

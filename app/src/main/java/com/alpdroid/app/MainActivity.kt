@@ -4716,19 +4716,28 @@ class MainActivity : Activity() {
      * or the Terminal nav item. The old DrawerLayout edge swipes are gone with the drawers;
      * there is deliberately no swipe-from-edge gesture anymore, so the terminal's own
      * horizontal swipes (tab switching via TerminalView.onSwipeTab) never fight a drawer.
-     * Back behaviour lives in the onBackPressed() override below (this Activity deliberately
-     * avoids AppCompat, which owns OnBackPressedDispatcher).
+     * Sheets open at half height (STATE_HALF_EXPANDED, halfExpandedRatio 0.5 — the
+     * Material default) with the terminal still partly visible behind them, and drag up to
+     * full height. Back behaviour lives in the onBackPressed() override below (this
+     * Activity deliberately avoids AppCompat, which owns OnBackPressedDispatcher).
      */
     private fun setupBottomSheets() {
         fileSheetBehavior = BottomSheetBehavior.from(findViewById<LinearLayout>(R.id.fileSheet)).apply {
             state = BottomSheetBehavior.STATE_HIDDEN
             isHideable = true
             skipCollapsed = true
+            // HALF_EXPANDED only exists with fitToContents off (otherwise the sheet only
+            // ever rests at COLLAPSED or EXPANDED); 0.5f is the Material default, restated
+            // here so the resting height is a deliberate choice, not an accident of it.
+            isFitToContents = false
+            halfExpandedRatio = 0.5f
         }
         settingsSheetBehavior = BottomSheetBehavior.from(findViewById<ScrollView>(R.id.settingsSheet)).apply {
             state = BottomSheetBehavior.STATE_HIDDEN
             isHideable = true
             skipCollapsed = true
+            isFitToContents = false
+            halfExpandedRatio = 0.5f
         }
         // What the old DrawerListener did on open: a sheet sliding up over the terminal is
         // exactly when the keyboard is most likely still up — hide it so it doesn't eat
@@ -4736,7 +4745,11 @@ class MainActivity : Activity() {
         // Deliberately does NOT reset the settings panel to its category list here.
         val sheetCallback = object : BottomSheetBehavior.BottomSheetCallback() {
             override fun onStateChanged(bottomSheet: View, newState: Int) {
-                if (newState == BottomSheetBehavior.STATE_EXPANDED) {
+                // Sheets now open at HALF_EXPANDED, not EXPANDED — hide the keyboard there
+                // too, or it stays up behind the half-height sheet.
+                if (newState == BottomSheetBehavior.STATE_HALF_EXPANDED ||
+                    newState == BottomSheetBehavior.STATE_EXPANDED
+                ) {
                     (getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)
                         ?.hideSoftInputFromWindow(bottomSheet.windowToken, 0)
                 }
@@ -4776,7 +4789,7 @@ class MainActivity : Activity() {
     private fun showFileSheet(sessions: Boolean = false) {
         if (sessions) showSessionsMode() else hideSessionsMode()
         settingsSheetBehavior.state = BottomSheetBehavior.STATE_HIDDEN
-        fileSheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
+        fileSheetBehavior.state = BottomSheetBehavior.STATE_HALF_EXPANDED
         updateBottomNavSelection(if (sessions) 2 else 1)
     }
 
@@ -4786,7 +4799,7 @@ class MainActivity : Activity() {
 
     private fun showSettingsSheet() {
         fileSheetBehavior.state = BottomSheetBehavior.STATE_HIDDEN
-        settingsSheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
+        settingsSheetBehavior.state = BottomSheetBehavior.STATE_HALF_EXPANDED
         updateBottomNavSelection(3)
     }
 

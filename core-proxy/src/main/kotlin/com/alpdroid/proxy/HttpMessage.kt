@@ -50,34 +50,71 @@ internal fun parseRequestLine(line: String): RequestLine? {
  * Splits a proxy request target into scheme/host/port/path.
  * - `CONNECT host:port` (used for tunnelling HTTPS)
  * - `GET http://host:port/path HTTP/1.1` (absolute-URI form a proxy receives)
+ *
+ * Returns null for anything that is not a well-formed target: a scheme other than http/https,
+ * a userinfo (`user@host`), an empty host, or a port outside 1..65535 (an invalid port no
+ * longer silently falls back to the scheme default). IPv6 literals must be bracketed
+ * (`[::1]:443`); an unbracketed colon in the host is rejected.
  */
 internal fun parseTarget(method: String, raw: String): Target? {
     if (method.equals("CONNECT", ignoreCase = true)) {
-        val idx = raw.lastIndexOf(':')
-        if (idx == -1) return null
-        val host = raw.substring(0, idx)
-        val port = raw.substring(idx + 1).toIntOrNull() ?: return null
+        val (host, port) = parseAuthority(raw) ?: return null
         return Target("https", host, port, "")
     }
 
     val schemeEnd = raw.indexOf("://")
     if (schemeEnd == -1) return null
-    val scheme = raw.substring(0, schemeEnd)
+    val scheme = raw.substring(0, schemeEnd).lowercase()
+    if (scheme != "http" && scheme != "https") return null
     val rest = raw.substring(schemeEnd + 3)
     val pathStart = rest.indexOf('/')
     val authority = if (pathStart == -1) rest else rest.substring(0, pathStart)
     val path = if (pathStart == -1) "/" else rest.substring(pathStart)
-    val colonIdx = authority.lastIndexOf(':')
+    // An authority with no port is valid (default 80/443); one with a port must be valid.
+    val (host, port) = parseAuthority(authority, defaultPort = if (scheme == "https") 443 else 80) ?: return null
+    return Target(scheme, host, port, path)
+}
+
+/**
+ * Parses `host`, `host:port` or `[ipv6]` / `[ipv6]:port` into host + port. [defaultPort] is used
+ * only when no `:port` is present at all; a present-but-invalid port returns null.
+ * Rejects userinfo (`@`), an empty host, a port outside 1..65535, and unbracketed IPv6.
+ */
+private fun parseAuthority(authority: String, defaultPort: Int? = null): Pair<String, Int>? {
+    if (authority.isEmpty() || '@' in authority) return null
     val host: String
     val port: Int
-    if (colonIdx == -1) {
-        host = authority
-        port = if (scheme == "https") 443 else 80
+    if (authority.startsWith("[")) {
+        val close = authority.indexOf(']')
+        if (close <= 1) return null
+        host = authority.substring(1, close)
+        val after = authority.substring(close + 1)
+        port = when {
+            after.isEmpty() -> defaultPort ?: return null
+            after.startsWith(":") -> after.substring(1).toPortOrNull() ?: return null
+            else -> return null
+        }
     } else {
-        host = authority.substring(0, colonIdx)
-        port = authority.substring(colonIdx + 1).toIntOrNull() ?: if (scheme == "https") 443 else 80
+        // More than one colon without brackets is an unbracketed IPv6 literal: reject it.
+        if (authority.count { it == ':' } > 1) return null
+        val colonIdx = authority.lastIndexOf(':')
+        if (colonIdx == -1) {
+            host = authority
+            port = defaultPort ?: return null
+        } else {
+            host = authority.substring(0, colonIdx)
+            port = authority.substring(colonIdx + 1).toPortOrNull() ?: return null
+        }
     }
-    return Target(scheme, host, port, path)
+    if (host.isEmpty() || host.any { it.isWhitespace() || it == '/' }) return null
+    return host to port
+}
+
+/** Digits only, 1..65535 — anything else (empty, signed, out of range, trailing junk) is invalid. */
+private fun String.toPortOrNull(): Int? {
+    if (isEmpty() || any { !it.isDigit() }) return null
+    val p = toIntOrNull() ?: return null
+    return if (p in 1..65535) p else null
 }
 
 internal fun headerValue(headers: List<Pair<String, String>>, name: String): String? =
@@ -157,7 +194,11 @@ private fun readToEof(input: InputStream, cap: Int): BodyResult {
         if (n < 0) break
         out.write(buf, 0, n)
     }
-    val truncated = out.size() >= cap && input.read() != -1
+    // No extra read() to check for more bytes: that read would block until the peer sent
+    // another byte or closed, hanging an EOF-delimited response. Reaching the cap is the
+    // truncation signal on its own (a body of exactly [cap] bytes is reported truncated
+    // rather than risking a hang — the conservative side for a buffered proxy).
+    val truncated = out.size() >= cap
     return if (out.size() == 0) BodyResult(null, false) else BodyResult(out.toByteArray(), truncated)
 }
 

@@ -6,7 +6,10 @@ import java.io.OutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 /**
  * Makes the WebView's DevTools (CDP) reachable as an ordinary loopback TCP port, the way `adb forward` would. WebView
@@ -29,7 +32,15 @@ class CdpForwarder(
     private companion object { const val READ_LIMIT_MS = 8_000L }
 
     @Volatile private var server: ServerSocket? = null
-    private val pool = Executors.newCachedThreadPool { r -> Thread(r, "alp-cdp").apply { isDaemon = true } }
+    // Bounded pool, mirroring BrowserBridge: 127.0.0.1 is shared by every app on the device, so a
+    // hostile local app could otherwise flood the accept loop and spawn unbounded threads with the
+    // old newCachedThreadPool. Excess connections are rejected (socket closed) rather than queued
+    // without limit. The path-token check in handle() is unchanged — CDP clients need it.
+    private val pool = ThreadPoolExecutor(
+        2, 16, 30, TimeUnit.SECONDS, ArrayBlockingQueue(64),
+        { r -> Thread(r, "alp-cdp").apply { isDaemon = true } },
+        ThreadPoolExecutor.AbortPolicy(),
+    )
 
     val port: Int get() = server?.localPort ?: 0
 
@@ -42,7 +53,8 @@ class CdpForwarder(
         Thread({
             while (!s.isClosed) {
                 val c = try { s.accept() } catch (_: Exception) { if (s.isClosed) break else { Thread.sleep(50); continue } }
-                pool.execute { runCatching { handle(c) }; runCatching { c.close() } }
+                try { pool.execute { runCatching { handle(c) }; runCatching { c.close() } } }
+                catch (_: RejectedExecutionException) { runCatching { c.close() } }
             }
         }, "alp-cdp-accept").apply { isDaemon = true }.start()
         return s.localPort

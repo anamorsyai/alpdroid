@@ -10,6 +10,7 @@ import java.io.OutputStream
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Spawns [libraryDir]/libpty_bridge.so (see app/src/main/cpp/pty_bridge.c), which gives [argv]
@@ -150,13 +151,22 @@ class PtySession private constructor(
         var lastRows = -1
         var lastCols = -1
         while (resizeThreadRunning) {
+            var waitInterrupted = false
             val (rows, cols) = synchronized(resizeLock) {
                 while (resizeThreadRunning && pendingRows == lastRows && pendingCols == lastCols) {
-                    resizeLock.wait()
+                    try {
+                        resizeLock.wait()
+                    } catch (_: InterruptedException) {
+                        // Interrupted while waiting for the next resize: stop cleanly instead
+                        // of dying silently with the control channel state unknown.
+                        controlOpenFailed = true
+                        waitInterrupted = true
+                        break
+                    }
                 }
                 pendingRows to pendingCols
             }
-            if (!resizeThreadRunning) break
+            if (waitInterrupted || !resizeThreadRunning) break
             val out = controlOut
             if (out == null) {
                 // Control channel never opened (bridge failed to start): resize is a permanent
@@ -187,6 +197,10 @@ class PtySession private constructor(
      *  controlOut — never closed by anything, since destroy() (the only thing that closes it) has
      *  already run and won't run again for this session. */
     @Volatile private var destroyed = false
+
+    /** Guard making destroy() idempotent: a second call must not re-snapshot the guest
+     *  tree, spawn another pty-destroy thread, or re-delete the scratch dir. */
+    private val destroyStarted = AtomicBoolean(false)
 
     /** Set when the FIFO open gave up after its retry window — resizeThread exits on it. */
     @Volatile private var controlOpenFailed = false
@@ -224,7 +238,16 @@ class PtySession private constructor(
                     synchronized(resizeLock) { resizeLock.notifyAll() }
                     return@Thread
                 }
-                Thread.sleep(20)
+                try {
+                    Thread.sleep(20)
+                } catch (_: InterruptedException) {
+                    // Interrupted while waiting for the bridge to open its read end: give up
+                    // cleanly and tell the resize thread, instead of dying silently and
+                    // leaving it polling forever on a channel that will never open.
+                    controlOpenFailed = true
+                    synchronized(resizeLock) { resizeLock.notifyAll() }
+                    return@Thread
+                }
             }
         }, "pty-control-open").apply { isDaemon = true }.start()
     }
@@ -258,8 +281,14 @@ class PtySession private constructor(
      *  overwriting files the process might still be touching (a restore/reinstall replacing the
      *  whole rootfs right after closing every tab) needs this instead of assuming destroy() was
      *  synchronous. */
-    fun awaitExit(timeoutMs: Long): Boolean =
-        runCatching { process.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(true)
+    fun awaitExit(timeoutMs: Long): Boolean = try {
+        process.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+    } catch (_: InterruptedException) {
+        // An interrupt is NOT an exit: returning true here used to let callers
+        // (restore/reinstall) wipe the rootfs while the guest was still writing.
+        Thread.currentThread().interrupt()
+        false
+    }
 
     /** Pids of everything below the bridge (proot, the shell, servers, detached daemons), read from /proc.
      *  Empty when the bridge is already gone: a dead pid may have been reused, and we must never signal
@@ -287,10 +316,13 @@ class PtySession private constructor(
     }.getOrNull()
 
     fun destroy() {
+        // Idempotent: a second call (closeTab + onTabExited, restore/reinstall teardown)
+        // must not re-snapshot the guest tree or spawn a second pty-destroy thread.
+        if (!destroyStarted.compareAndSet(false, true)) return
         // Snapshot before the SIGTERM: once the shell dies its children are reparented to init and a
         // daemon that detached from the process group (a server that setsid()s) could no longer be found
         // — it would keep running, and keep its port, after the tab was closed.
-        val tree = if (destroyed) emptyList() else runCatching { guestTreePids() }.getOrDefault(emptyList())
+        val tree = runCatching { guestTreePids() }.getOrDefault(emptyList())
         destroyed = true
         runCatching { process.destroy() }
         tree.forEach { runCatching { android.os.Process.killProcess(it) } }
@@ -298,9 +330,13 @@ class PtySession private constructor(
         // SIGTERMs the bridge, whose handler SIGKILLs that whole process group — but a wedged
         // bridge must never pin a leaked guest. Re-check after a grace period and force.
         // Daemon thread: destroy() is called from UI and reader threads alike, never blocks.
+        // The scratch dir is deleted only once the guest is actually gone (or force-killed):
+        // deleting it synchronously below raced a bridge that may live up to 2s longer.
+        val scratchDir = cleanupDir
         Thread({
             runCatching { process.waitFor(2000, java.util.concurrent.TimeUnit.MILLISECONDS) }
             if (runCatching { process.exitValue() }.isFailure) runCatching { process.destroyForcibly() }
+            runCatching { scratchDir?.deleteRecursivelyNoFollow() }
         }, "pty-destroy").apply { isDaemon = true; start() }
         // shutdownNow() (not shutdown()) — a write that's currently blocked (the exact scenario
         // this executor exists to isolate from other tabs) should be interrupted right away along
@@ -315,10 +351,10 @@ class PtySession private constructor(
         runCatching { controlFifo.delete() }
         resizeThreadRunning = false
         synchronized(resizeLock) { resizeLock.notifyAll() }
-        // Owned scratch dir (set by AlpineSession): the guest is SIGTERMed above, so its
-        // tmp use is over; never let cache accumulate dead proot dirs across tabs/jobs.
-        // NoFollow: guest-planted symlinks inside must not resolve outward on delete.
-        runCatching { cleanupDir?.deleteRecursivelyNoFollow() }
+        // Owned scratch dir deletion moved into the pty-destroy thread above: it runs only
+        // once the guest has actually exited (or been force-killed), never while the bridge
+        // may still be using it. NoFollow: guest-planted symlinks inside must not resolve
+        // outward on delete.
     }
 
     companion object {

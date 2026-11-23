@@ -31,6 +31,11 @@ object AlpineSession {
      *  by sharing one executor thread, and no longer is. */
     private val networkConfigLock = Any()
 
+    /** Guards writeShellProfile()/writeAgentFiles() below — both read-modify-write files
+     *  shared by every session in the same rootfs (etc/profile.d, etc/alpdroid/bridge, ...),
+     *  and startAlpine()/startScript() can run concurrently on different executors. */
+    private val sessionStartLock = Any()
+
     data class StartResult(val session: PtySession, val backendLabel: String)
 
     /**
@@ -67,8 +72,10 @@ object AlpineSession {
         val root = AlpineRootfs.rootDir(context)
         writeResolvConf(context, root)
         writeApkHostsIPv4Only(root)
-        writeShellProfile(root)
-        writeAgentFiles(context, root)
+        synchronized(sessionStartLock) {
+            writeShellProfile(root)
+            writeAgentFiles(context, root)
+        }
         writeAlsaNullConfig(root)
 
         // Shared across tabs (one common guest /tmp, like real Alpine sessions), unlike the
@@ -191,7 +198,7 @@ object AlpineSession {
         if (!bridge.isFile || !proot.isFile) return null
         val root = AlpineRootfs.rootDir(context)
         writeResolvConf(context, root)
-        writeAgentFiles(context, root)
+        synchronized(sessionStartLock) { writeAgentFiles(context, root) }
         writeAlsaNullConfig(root)
         val guestTmp = File(context.cacheDir, "guest-tmp").apply { mkdirs() }
         val prootScratch = File(context.cacheDir, "proot-scratch-plugin-${System.nanoTime()}").apply { mkdirs() }
@@ -225,8 +232,15 @@ object AlpineSession {
             if (settings.fastProotTracing) sessionEnv = sessionEnv - "PROOT_NO_SECCOMP"
             if (settings.efficiencyCores) CpuTopology.readEfficiencyMask()?.let { sessionEnv = sessionEnv + ("ALPDROID_CPU_MASK" to it) }
         }
-        return PtySession.start(bridge, context.cacheDir, 24, 200, argv, context.filesDir, sessionEnv)
-            .also { it.cleanupDir = prootScratch }
+        return try {
+            PtySession.start(bridge, context.cacheDir, 24, 200, argv, context.filesDir, sessionEnv)
+                .also { it.cleanupDir = prootScratch }
+        } catch (e: Exception) {
+            // Same cleanup searchPackages() does in its finally: a failed start must not
+            // leave the per-run proot scratch dir behind in cacheDir.
+            runCatching { prootScratch.deleteRecursively() }
+            throw e
+        }
     }
 
     /** Env vars a plugin/shortcut caller must never override: pointing these at attacker
@@ -359,7 +373,9 @@ ctl.!default { type null }
         val ipv4 = runCatching { java.net.InetAddress.getAllByName(host) }.getOrNull()
             ?.firstOrNull { it is java.net.Inet4Address }
             ?.hostAddress ?: ""
-        dnsCache[host] = ipv4 to now
+        // Never cache a failed lookup with the full TTL: an empty result only means
+        // "unresolvable right now" and must be retried next time, not pinned for 10 minutes.
+        if (ipv4.isNotEmpty()) dnsCache[host] = ipv4 to now
         return ipv4
     }
 
@@ -465,7 +481,9 @@ ctl.!default { type null }
                 if (ipv4.isNotEmpty()) "$ipv4 $host" else null
             }
             if (entries.isEmpty()) return
-            hostsFile.writeText((before + beginMarker + entries + endMarker + after).joinToString("\n") + "\n")
+            // Route through writeIfDifferent(): a guest-planted symlink at
+            // etc/hosts would otherwise make writeText() follow it off the rootfs.
+            writeIfDifferent(hostsFile, (before + beginMarker + entries + endMarker + after).joinToString("\n") + "\n")
         }.onFailure { Log.w(TAG, "could not force IPv4 apk hosts", it) }
     }
 
@@ -482,8 +500,8 @@ ctl.!default { type null }
             if (writeIfDifferent(File(bin, "alpctl"), ALPCTL_SCRIPT)) File(bin, "alpctl").setExecutable(true, false)
             if (writeIfDifferent(File(bin, "git-credential-alpdroid"), GIT_HELPER_SCRIPT)) File(bin, "git-credential-alpdroid").setExecutable(true, false)
             val gitconfig = File(root, "etc/gitconfig")
-            if (!gitconfig.exists() || gitconfig.readText().contains("# alpdroid")) {
-                gitconfig.writeText("# alpdroid\n[credential \"https://github.com\"]\n\thelper = alpdroid\n")
+            if (!gitconfig.exists() || runCatching { gitconfig.readText() }.getOrNull()?.contains("# alpdroid") == true) {
+                writeIfDifferent(gitconfig, "# alpdroid\n[credential \"https://github.com\"]\n\thelper = alpdroid\n")
             }
             val dir = File(root, "etc/alpdroid").apply { mkdirs() }
             val settings = SettingsStore(context)
@@ -513,7 +531,9 @@ ctl.!default { type null }
             // no file may exist — otherwise alpctl would POST the real token to a squatter.
             val livePort = runCatching { (context.applicationContext as AlpineTermApp).agentBridge.actualPort }.getOrDefault(0)
             if (settings.agentAccessEnabled && livePort != 0) {
-                conf.writeText("URL=http://127.0.0.1:$livePort\nTOKEN=${settings.agentToken}\n")
+                // writeIfDifferent(): the bridge file carries the agent token, so a
+                // guest-planted symlink at etc/alpdroid/bridge must never be followed.
+                writeIfDifferent(conf, "URL=http://127.0.0.1:$livePort\nTOKEN=${settings.agentToken}\n")
                 // Owner-only on disk. Note this is traceability, not isolation: every guest
                 // process shares one uid under proot, so anything in the guest can read it —
                 // enabling agent access trusts the whole guest, documented in the Guide.
@@ -644,7 +664,8 @@ echo "password=${"$"}T"
         runCatching {
             val dropIn = File(root, "etc/profile.d/alpdroid-prompt.sh")
             dropIn.parentFile?.mkdirs()
-            dropIn.writeText(
+            // writeIfDifferent(): never follow a guest-planted symlink here.
+            writeIfDifferent(dropIn,
                 // Bold green user@host, bold blue cwd — plain SGR color numbers (32/34) rather
                 // than a fixed truecolor value, so the prompt follows whichever ANSI16 palette
                 // the active theme currently defines instead of looking wrong against it.
@@ -671,7 +692,7 @@ echo "password=${"$"}T"
             if (!existing.contains("profile.d")) {
                 profile.parentFile?.mkdirs()
                 val separator = if (existing.isNotEmpty() && !existing.endsWith("\n")) "\n" else ""
-                profile.writeText(existing + separator + "for i in /etc/profile.d/*.sh; do [ -r \"\$i\" ] && . \"\$i\"; done\n")
+                writeIfDifferent(profile, existing + separator + "for i in /etc/profile.d/*.sh; do [ -r \"\$i\" ] && . \"\$i\"; done\n")
             }
             // A leftover from the old guarded-welcome-banner profile (now removed) — an
             // install set up before this change already has this marker sitting in /root and it

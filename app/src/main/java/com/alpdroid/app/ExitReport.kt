@@ -75,12 +75,20 @@ object ExitReport {
         if (Build.VERSION.SDK_INT < 30) return null
         return runCatching {
             val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            val newest = am.getHistoricalProcessExitReasons(context.packageName, 0, 8)
-                .firstOrNull { it.processName == context.packageName } ?: return@runCatching null
+            // Scan (newest first) for the newest non-benign exit, not just the first entry:
+            // the newest exit is often a benign one (user-requested, package updated), which
+            // used to hide an older abnormal exit behind it — and saving its timestamp first
+            // then marked that older exit as already reported, so it was never shown at all.
+            val exits = am.getHistoricalProcessExitReasons(context.packageName, 0, 8)
+                .filter { it.processName == context.packageName }
+            if (exits.isEmpty()) return@runCatching null
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val seen = prefs.getLong(KEY_LAST_TS, 0L)
-            prefs.edit().putLong(KEY_LAST_TS, newest.timestamp).apply()
-            if (newest.timestamp <= seen) return@runCatching null
+            val newest = exits.firstOrNull { it.timestamp > seen && describe(it.reason, it.importance, it.rss, it.description) != null }
+            // Save the timestamp only after deciding what to report, and advance it past every
+            // entry seen (benign or not) so a benign newest entry can't strand an older one.
+            prefs.edit().putLong(KEY_LAST_TS, exits.maxOf { it.timestamp }).apply()
+            if (newest == null) return@runCatching null
             val text = describe(newest.reason, newest.importance, newest.rss, newest.description)
             // A crash: attach the stack trace CrashLog saved (the system only says "crash").
             val isCrash = newest.reason == REASON_CRASH || newest.reason == REASON_CRASH_NATIVE

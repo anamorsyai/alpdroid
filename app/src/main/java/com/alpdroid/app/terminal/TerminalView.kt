@@ -190,6 +190,25 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
     // scans still check the ticket first and bail immediately when superseded.
     private fun newSearchExecutor() = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "term-search").apply { isDaemon = true } }
     private var searchExecutor = newSearchExecutor()
+    /** Guards the check-recreate-execute sequence in [submitSearch] and the shutdownNow()
+     *  in onDetachedFromWindow(), so a search can never be submitted to an executor that
+     *  is being shut down underneath it (RejectedExecutionException on the UI thread). */
+    private val searchExecutorLock = Any()
+
+    /** Submits a search task, recreating the executor if it was shut down by a detach —
+     *  the check and the submit are atomic under [searchExecutorLock]. */
+    private fun submitSearch(task: Runnable) {
+        synchronized(searchExecutorLock) {
+            if (searchExecutor.isShutdown) searchExecutor = newSearchExecutor()
+            try {
+                searchExecutor.execute(task)
+            } catch (_: java.util.concurrent.RejectedExecutionException) {
+                // Detached between the check and the submit: rebuild once and retry.
+                searchExecutor = newSearchExecutor()
+                searchExecutor.execute(task)
+            }
+        }
+    }
 
     // Blinking block cursor: a plain Handler toggle rather than a ValueAnimator — this only
     // needs to flip a boolean and repaint twice a second, an Animator's overhead buys nothing.
@@ -274,7 +293,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
         // Per-view thread otherwise accumulates across config changes/tabs (daemon, so it
         // would die with the process — still a leak while the app lives). Recreated lazily
         // in searchAsync() if the view reattaches.
-        searchExecutor.shutdownNow()
+        synchronized(searchExecutorLock) { searchExecutor.shutdownNow() }
     }
 
     /** Backgrounding the app (Home button, switching apps) doesn't detach this view from its
@@ -1112,10 +1131,9 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
     fun searchAsync(query: String, forward: Boolean, onDone: (Boolean, Int, Int) -> Unit) {
         val em = emulator ?: run { onDone(false, 0, 0); return }
         if (query.isEmpty()) { onDone(false, 0, 0); return }
-        if (searchExecutor.isShutdown) searchExecutor = newSearchExecutor()
         val ticket = ++searchTicket
-        searchExecutor.execute {
-            if (ticket != searchTicket) return@execute // superseded while queued
+        submitSearch(Runnable {
+            if (ticket != searchTicket) return@Runnable // superseded while queued
             val gen = em.generation
             var matches = em.findRows(query)
             // Output kept streaming during the scan: rescan once (bounded) so the matches
@@ -1141,7 +1159,7 @@ class TerminalView(context: Context, attrs: AttributeSet?) : View(context, attrs
                 invalidate()
                 onDone(true, searchMatchIndex + 1, searchMatches.size)
             }
-        }
+        })
     }
 
     /** Jumps the view to the next (or previous) match for [query] in scrollback+screen. Returns

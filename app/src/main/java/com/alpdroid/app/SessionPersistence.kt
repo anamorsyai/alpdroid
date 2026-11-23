@@ -25,7 +25,7 @@ object SessionPersistence {
         return (0 until array.length()).map { i -> if (array.isNull(i)) null else array.optString(i) }
     }
 
-    fun clear(context: Context) = prefs(context).edit().remove(KEY_LABELS).apply()
+    fun clear(context: Context) = prefs(context).edit().remove(KEY_LABELS).commit()
 
     private fun prefs(context: Context) = context.getSharedPreferences("alpineterm_last_session", Context.MODE_PRIVATE)
 

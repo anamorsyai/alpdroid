@@ -205,9 +205,13 @@ class SettingsStore(context: Context) {
             val raw = prefs.getString(KEY_SNIPPETS, null) ?: return emptyList()
             runCatching {
                 val arr = JSONArray(raw)
-                (0 until arr.length()).map { i ->
-                    val obj = arr.getJSONObject(i)
-                    obj.getString("label") to obj.getString("cmd")
+                // Per-item try/catch: one malformed entry (missing key, wrong type) used
+                // to throw out of the whole map and clear every shortcut at once.
+                (0 until arr.length()).mapNotNull { i ->
+                    runCatching {
+                        val obj = arr.getJSONObject(i)
+                        obj.getString("label") to obj.getString("cmd")
+                    }.getOrNull()
                 }
             }.getOrDefault(emptyList()).also { snippetsCache = it }
         }

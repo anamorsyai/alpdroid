@@ -122,6 +122,16 @@ object FileOps {
      *  [onProgress] fires after each top-level source finishes — the only granularity available
      *  without pre-walking every directory just to count files before actually zipping them. */
     fun zip(sources: List<File>, destZip: File, onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }) {
+        // Refuse a destination inside any source dir (or the source file itself): the zip
+        // would otherwise be created/truncated first and then walked as part of its own
+        // input, archiving itself while it grows — a corrupt, ever-growing archive.
+        val destCanonical = destZip.canonicalPath
+        sources.forEach { source ->
+            val srcCanonical = source.canonicalPath
+            if (destCanonical == srcCanonical || destCanonical.startsWith("$srcCanonical${File.separator}")) {
+                throw IllegalArgumentException("destination zip must not be inside a source directory")
+            }
+        }
         ZipOutputStream(destZip.outputStream().buffered()).use { zos ->
             for ((index, source) in sources.withIndex()) {
                 // A symlink the user explicitly selected and asked to compress is followed (its

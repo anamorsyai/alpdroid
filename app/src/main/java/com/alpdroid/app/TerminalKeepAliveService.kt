@@ -89,7 +89,11 @@ class TerminalKeepAliveService : Service() {
         // the persisted setting here, rather than treating a null intent as false, is what keeps
         // an opted-in wake lock actually held across that restart instead of silently dropping
         // the moment the OS reclaims the service under memory pressure, mid-build.
-        val wakeLockWanted = intent?.getBooleanExtra(EXTRA_WAKE_LOCK, false) ?: SettingsStore(this).wakeLockEnabled
+        // getBooleanExtra() never returns null, so the Elvis fallback above only ever fired
+        // when intent itself was null — a non-null intent without the extra (e.g. a redelivered
+        // START_STICKY intent) silently read as "wake lock off". hasExtra() distinguishes
+        // "explicitly off" from "not specified, use the stored setting".
+        val wakeLockWanted = if (intent != null && intent.hasExtra(EXTRA_WAKE_LOCK)) intent.getBooleanExtra(EXTRA_WAKE_LOCK, false) else SettingsStore(this).wakeLockEnabled
         if (wakeLockWanted) { acquireWakeLock(); acquireWifiLock() } else { releaseWakeLock(); releaseWifiLock() }
         return START_STICKY
     }

@@ -35,6 +35,16 @@ object Themes {
             c(0x6B6B6B), c(0xF07178), c(0xA6E27F), c(0xF0C674), c(0x7AB8E8), c(0xD79AEB), c(0x7ECFCE), c(0xFFFFFF),
         ),
     )
+    /** Aurora Glass — the redesign's own terminal theme: the app background with a
+     *  teal cursor and a violet accent in the ANSI palette. Added as an option;
+     *  the default stays Alpine. */
+    val AURORA = TerminalTheme(
+        "aurora", "Aurora Glass", c(0x0A0D12), c(0xE7ECEF), c(0x3ED0B8),
+        intArrayOf(
+            c(0x171C24), c(0xE05561), c(0x8CC265), c(0xD8A657), c(0x6EA8FE), c(0x8B7CF6), c(0x5AB7B5), c(0xE7ECEF),
+            c(0x6B7280), c(0xF07178), c(0xA6E27F), c(0xF0C674), c(0x8FB4FE), c(0xA89BFA), c(0x7ECFCE), c(0xFFFFFF),
+        ),
+    )
     val DRACULA = TerminalTheme(
         "dracula", "Dracula", c(0x282A36), c(0xF8F8F2), c(0xFF79C6),
         intArrayOf(
@@ -71,7 +81,7 @@ object Themes {
         ),
     )
 
-    val ALL = listOf(ALPINE, DRACULA, NORD, SOLARIZED_DARK, MONOKAI, GRUVBOX)
+    val ALL = listOf(ALPINE, AURORA, DRACULA, NORD, SOLARIZED_DARK, MONOKAI, GRUVBOX)
 
     fun byId(id: String): TerminalTheme = ALL.firstOrNull { it.id == id } ?: ALPINE
 }

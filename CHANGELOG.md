@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.100 — Aurora Glass Phase 2: bottom navigation
+
+- The two side drawers are gone: navigation is now a one-handed glass bottom bar (Terminal / Files / Sessions / Settings), and the file browser and settings open as bottom sheets. All existing functions are still reachable, and the extra-keys row and terminal behaviour are unchanged.
+
 ## 1.7.99 — Real-bug fixes + Aurora Glass design
 
 - Terminal: fixed the statusPoller leak, the ready-gate counter leak that could block closing the last tab, PtySession destroy races, the search executor race, guest-file write races, wake-lock fallback, and several smaller leaks and correctness bugs.

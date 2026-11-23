@@ -1,0 +1,1 @@
+Bottom sheets now respect the navigation-bar inset, so the last row is fully visible instead of hiding behind the nav buttons.

@@ -84,6 +84,13 @@ class MainActivity : Activity() {
     // here through their BottomSheetBehaviors — no DrawerLayout remains.
     private lateinit var fileSheetBehavior: BottomSheetBehavior<LinearLayout>
     private lateinit var settingsSheetBehavior: BottomSheetBehavior<ScrollView>
+    // Screenshot fixes: the sheet views themselves (for the status-bar top padding in
+    // applyInsetsManually — the sheets are NOT inside rootFrame, so its padding never
+    // reaches them) and the bottom nav bar (translated up with the extra-keys row when
+    // the keyboard opens, so no dead gap opens between row and keyboard).
+    private lateinit var fileSheet: LinearLayout
+    private lateinit var settingsSheet: ScrollView
+    private lateinit var bottomNavBar: LinearLayout
     private val navButtons = mutableListOf<Button>()
     private lateinit var settingsStore: SettingsStore
 
@@ -182,6 +189,7 @@ class MainActivity : Activity() {
         setupBottomSheets()
         setupBottomNav()
         rootFrame = findViewById(R.id.rootFrame)
+        bottomNavBar = findViewById(R.id.bottomNavBar)
         setupContainer = findViewById(R.id.setupContainer)
         setupStatus = findViewById(R.id.setupStatus)
         setupProgress = findViewById(R.id.setupProgress)
@@ -753,7 +761,7 @@ class MainActivity : Activity() {
         panel.addView(sectionLabel("Extra keys row"))
         panel.addView(
             MaterialSwitch(this).apply {
-                text = "Show ESC / TAB / CTRL / arrow row"
+                text = "Show ESC / TAB / CTRL / ALT / SHIFT / DEL / arrow row"
                 setTextColor(0xFFD4D4D4.toInt())
                 isChecked = settingsStore.showExtraKeys
                 setOnCheckedChangeListener { _, checked ->
@@ -3754,6 +3762,18 @@ class MainActivity : Activity() {
         ViewCompat.setOnApplyWindowInsetsListener(rootFrame) { view, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             view.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+            // The sheets are direct children of the root CoordinatorLayout, NOT inside
+            // rootFrame, so rootFrame's own top padding (above) never reaches them: when a
+            // sheet is dragged to full height its handle and top chips started at y=0, under
+            // the status bar. Give both sheets the real status-bar inset as top padding —
+            // the same inset rootFrame uses, never a fixed margin. (The tab bar needs no
+            // such fix: it lives inside rootFrame, already below the status bar.)
+            if (::fileSheet.isInitialized) {
+                fileSheet.setPadding(fileSheet.paddingLeft, systemBars.top, fileSheet.paddingRight, fileSheet.paddingBottom)
+            }
+            if (::settingsSheet.isInitialized) {
+                settingsSheet.setPadding(settingsSheet.paddingLeft, systemBars.top, settingsSheet.paddingRight, settingsSheet.paddingBottom)
+            }
             // ime().bottom is measured from the true screen edge, including whatever the
             // navigation bar itself occupies — but rootFrame's own bottom padding (just above,
             // from systemBars()) already pushed all of this content up above the nav bar. Without
@@ -3764,6 +3784,14 @@ class MainActivity : Activity() {
             val navBarBottom = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
             val imeOverlap = (imeBottom - navBarBottom).coerceAtLeast(0)
             extraKeysScroll.translationY = -imeOverlap.toFloat()
+            // The bottom nav bar is laid out BELOW the extra-keys row, and only the row used
+            // to float up: the nav bar's whole height (plus the rows' margins) stayed behind
+            // the keyboard as dead space between row and keyboard. Float the nav bar up by
+            // the same amount, so the stack reads keyboard / nav / keys with no gap. Still a
+            // pure translation like the row's, so terminalContainer never resizes (no
+            // SIGWINCH), and the row's own top edge — the terminal's visible bottom, what
+            // imeCoverPx accounts for — doesn't move, so imeCoverPx stays imeOverlap.
+            if (::bottomNavBar.isInitialized) bottomNavBar.translationY = -imeOverlap.toFloat()
             // Floating extraKeysScroll up by imeOverlap lands its bottom edge exactly at the
             // visible boundary (terminalContainer's own bottom minus imeOverlap) — the row's own
             // height doesn't add to how much of the terminal's content is actually obstructed,
@@ -4274,11 +4302,12 @@ class MainActivity : Activity() {
      *  whatever the user already had typed but not yet submitted at the prompt is cleared first
      *  regardless of where their cursor happened to be left. Ctrl+U alone only kills text *before*
      *  the cursor — if the cursor had been moved left, whatever came after it would still get
-     *  appended onto the injected command. Also drops any armed CTRL/ALT extra-key modifier: this
-     *  bypasses sendControlAware() (a literal command string, not a control character), which is
-     *  the one thing that otherwise clears them — left armed, the *next* key the user types
-     *  anywhere would wrongly get treated as that modifier's target instead of a plain keystroke,
-     *  exactly what sendControlAware() exists to prevent for every other extra key. */
+     *  appended onto the injected command. Also drops any armed CTRL/ALT/SHIFT extra-key
+     *  modifier: this bypasses sendControlAware() (a literal command string, not a control
+     *  character), which is the one thing that otherwise clears them — left armed, the *next*
+     *  key the user types anywhere would wrongly get treated as that modifier's target instead
+     *  of a plain keystroke, exactly what sendControlAware() exists to prevent for every other
+     *  extra key. */
     private fun runShortcutCommand(cmd: String) {
         val tab = tabs.getOrNull(activeTabIndex) ?: return
         runShortcutCommand(tab.session, cmd)
@@ -4287,6 +4316,7 @@ class MainActivity : Activity() {
     private fun runShortcutCommand(session: PtySession, cmd: String) {
         terminalView.ctrlArmed = false
         terminalView.altArmed = false
+        terminalView.shiftArmed = false
         writeToSession(session, byteArrayOf(0x05, 0x15) + cmd.toByteArray())
     }
 
@@ -4303,7 +4333,7 @@ class MainActivity : Activity() {
             if (!sent) {
                 sent = true
                 tab.onOutput = prev
-                // This lambda runs on the pty-reader thread, and runShortcutCommand() resets the CTRL/ALT
+                // This lambda runs on the pty-reader thread, and runShortcutCommand() resets the CTRL/ALT/SHIFT
                 // buttons (views): hop to the UI thread, otherwise it threw and the command was never typed.
                 mainHandler.post { runShortcutCommand(tab.session, cmd) }
             }
@@ -4580,6 +4610,13 @@ class MainActivity : Activity() {
 
     private fun buildExtraKeysRow(row: LinearLayout) {
         row.removeAllViews()
+        // Text keys are deliberately narrow (8dp side padding, 36dp min width): on a 360dp
+        // screen the primary cluster — keyboard, search, ESC, TAB, CTRL, ALT, SHIFT, DEL —
+        // no longer quite fits without scrolling (SHIFT alone left ~6dp spare, and DEL is
+        // ~45dp more), so the row scrolls slightly and DEL sits just past the right edge
+        // on the narrowest screens. The keys are deliberately NOT shrunk below 8dp/36dp
+        // to force the fit — a slightly scrolling row beats unusable keys — and the XML
+        // end padding keeps the last key clear of the edge at full scroll.
         settingsStore.migrateLegacyAlphacodeShortcut()
         settingsStore.migrateEmbeddedKeysToShortcuts()
         fun keyBackground() = GradientDrawable().apply {
@@ -4595,9 +4632,9 @@ class MainActivity : Activity() {
                 typeface = Typeface.DEFAULT_BOLD
                 setTextColor(0xFFE7ECEF.toInt())
                 background = keyBackground()
-                minWidth = dp(38)
+                minWidth = dp(36)
                 minHeight = dp(38)
-                setPadding(dp(12), 0, dp(12), 0)
+                setPadding(dp(8), 0, dp(8), 0)
                 // A plain Button is focusable by default, and tapping one moves Android's view
                 // focus onto it — away from terminalView, which owns the IME connection. That
                 // focus change can make the soft keyboard briefly detach and reattach, which
@@ -4613,8 +4650,8 @@ class MainActivity : Activity() {
             }
             row.addView(button, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(38)).apply { marginEnd = dp(6) })
         }
-        // CTRL/ALT are momentary modifiers, not plain actions — addKey() above always ran its
-        // action and never reflected any state, so tapping CTRL always (re-)armed it with no
+        // CTRL/ALT/SHIFT are momentary modifiers, not plain actions — addKey() above always ran
+        // its action and never reflected any state, so tapping CTRL always (re-)armed it with no
         // visual sign it had, and tapping it again did nothing (still just set the same field to
         // true) rather than canceling it. This toggles the armed flag and keeps the button's own
         // color in sync with it via refresh(), which TerminalView.onModifierStateChanged also
@@ -4627,9 +4664,9 @@ class MainActivity : Activity() {
                 isAllCaps = false
                 textSize = 12f
                 typeface = Typeface.DEFAULT_BOLD
-                minWidth = dp(38)
+                minWidth = dp(36)
                 minHeight = dp(38)
-                setPadding(dp(12), 0, dp(12), 0)
+                setPadding(dp(8), 0, dp(8), 0)
                 isFocusable = false
                 isFocusableInTouchMode = false
             }
@@ -4686,6 +4723,18 @@ class MainActivity : Activity() {
         addKey("TAB") { terminalView.sendControlAware(byteArrayOf(0x09)) }
         addToggleKey("CTRL", { terminalView.ctrlArmed }, { terminalView.ctrlArmed = !terminalView.ctrlArmed })
         addToggleKey("ALT", { terminalView.altArmed }, { terminalView.altArmed = !terminalView.altArmed })
+        // SHIFT is the same addToggleKey as CTRL/ALT — tap to arm (button lights up), tap
+        // again to cancel, consumed by the next keystroke via TerminalView.shiftArmed. What it
+        // *does* differs (uppercase / back-tab / CSI 1;2 — see TerminalView.shifted()), but
+        // the interaction is deliberately identical, so the three modifiers feel like one set.
+        addToggleKey("SHIFT", { terminalView.shiftArmed }, { terminalView.shiftArmed = !terminalView.shiftArmed })
+        // DEL is forward-delete (delete the character under the cursor), not backspace:
+        // ESC[3~ is the same sequence the physical keyboard's KEYCODE_FORWARD_DEL sends
+        // in TerminalView.onKeyDown(). It goes through sendControlAware() like the other
+        // keys, so an armed SHIFT turns it into ESC[3;2~ (see shifted()) and an armed ALT
+        // prefixes an ESC — exactly like the arrow keys. 0x7F is NOT used here: that is
+        // backspace (KEYCODE_DEL), a different key.
+        addKey("DEL") { terminalView.sendControlAware("\u001B[3~") }
         // Respect DECCKM like onKeyDown() and the alt-scroll fallback do: programs that
         // switched cursor keys to application mode (vim, fzf-style pickers) expect SS3.
         fun arrow(app: String, normal: String) = if (terminalView.emulator?.applicationCursorKeys == true) app else normal
@@ -4716,19 +4765,30 @@ class MainActivity : Activity() {
      * or the Terminal nav item. The old DrawerLayout edge swipes are gone with the drawers;
      * there is deliberately no swipe-from-edge gesture anymore, so the terminal's own
      * horizontal swipes (tab switching via TerminalView.onSwipeTab) never fight a drawer.
-     * Back behaviour lives in the onBackPressed() override below (this Activity deliberately
-     * avoids AppCompat, which owns OnBackPressedDispatcher).
+     * Sheets open at half height (STATE_HALF_EXPANDED, halfExpandedRatio 0.5 — the
+     * Material default) with the terminal still partly visible behind them, and drag up to
+     * full height. Back behaviour lives in the onBackPressed() override below (this
+     * Activity deliberately avoids AppCompat, which owns OnBackPressedDispatcher).
      */
     private fun setupBottomSheets() {
-        fileSheetBehavior = BottomSheetBehavior.from(findViewById<LinearLayout>(R.id.fileSheet)).apply {
+        fileSheet = findViewById(R.id.fileSheet)
+        fileSheetBehavior = BottomSheetBehavior.from(fileSheet).apply {
             state = BottomSheetBehavior.STATE_HIDDEN
             isHideable = true
             skipCollapsed = true
+            // HALF_EXPANDED only exists with fitToContents off (otherwise the sheet only
+            // ever rests at COLLAPSED or EXPANDED); 0.5f is the Material default, restated
+            // here so the resting height is a deliberate choice, not an accident of it.
+            isFitToContents = false
+            halfExpandedRatio = 0.5f
         }
-        settingsSheetBehavior = BottomSheetBehavior.from(findViewById<ScrollView>(R.id.settingsSheet)).apply {
+        settingsSheet = findViewById(R.id.settingsSheet)
+        settingsSheetBehavior = BottomSheetBehavior.from(settingsSheet).apply {
             state = BottomSheetBehavior.STATE_HIDDEN
             isHideable = true
             skipCollapsed = true
+            isFitToContents = false
+            halfExpandedRatio = 0.5f
         }
         // What the old DrawerListener did on open: a sheet sliding up over the terminal is
         // exactly when the keyboard is most likely still up — hide it so it doesn't eat
@@ -4736,7 +4796,11 @@ class MainActivity : Activity() {
         // Deliberately does NOT reset the settings panel to its category list here.
         val sheetCallback = object : BottomSheetBehavior.BottomSheetCallback() {
             override fun onStateChanged(bottomSheet: View, newState: Int) {
-                if (newState == BottomSheetBehavior.STATE_EXPANDED) {
+                // Sheets now open at HALF_EXPANDED, not EXPANDED — hide the keyboard there
+                // too, or it stays up behind the half-height sheet.
+                if (newState == BottomSheetBehavior.STATE_HALF_EXPANDED ||
+                    newState == BottomSheetBehavior.STATE_EXPANDED
+                ) {
                     (getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)
                         ?.hideSoftInputFromWindow(bottomSheet.windowToken, 0)
                 }
@@ -4776,7 +4840,7 @@ class MainActivity : Activity() {
     private fun showFileSheet(sessions: Boolean = false) {
         if (sessions) showSessionsMode() else hideSessionsMode()
         settingsSheetBehavior.state = BottomSheetBehavior.STATE_HIDDEN
-        fileSheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
+        fileSheetBehavior.state = BottomSheetBehavior.STATE_HALF_EXPANDED
         updateBottomNavSelection(if (sessions) 2 else 1)
     }
 
@@ -4786,7 +4850,7 @@ class MainActivity : Activity() {
 
     private fun showSettingsSheet() {
         fileSheetBehavior.state = BottomSheetBehavior.STATE_HIDDEN
-        settingsSheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
+        settingsSheetBehavior.state = BottomSheetBehavior.STATE_HALF_EXPANDED
         updateBottomNavSelection(3)
     }
 

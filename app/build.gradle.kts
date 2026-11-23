@@ -145,10 +145,6 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
-    // DrawerLayout alone (not the full material/appcompat stack) for the right-edge-swipe
-    // settings panel — it's a small, standalone artifact with its own built-in edge-drag
-    // gesture detection, not worth reimplementing by hand.
-    implementation("androidx.drawerlayout:drawerlayout:1.2.0")
     // Material 3 components (buttons, dialogs, chips, switches, color/shape theming) for the
     // redesign — the app previously used only plain platform widgets (Button, AlertDialog,
     // Switch) with hand-rolled coloring.

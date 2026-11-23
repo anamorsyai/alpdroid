@@ -48,6 +48,21 @@
         <item name="android:minHeight">0dp</item>
     </style>
 
+    <!-- Bottom nav: the same chip language as the tab bar, but tighter — four items share
+         one bar, and "Sessions" at the tab-bar size (12.5sp + 14dp side padding) needs ~88dp
+         against a ~79dp slot on a 360dp screen, so it wrapped onto two lines and grew taller
+         than its siblings. 11sp + 6dp side padding fits (~62dp), and maxLines=1 + ellipsize
+         is the backstop so a longer locale or a larger font scale can never stretch one pill
+         taller than the rest. -->
+    <style name="Widget.AlpDroid.BottomNav" parent="Widget.AlpDroid.ChipTab">
+        <item name="android:textSize">11sp</item>
+        <item name="android:paddingStart">6dp</item>
+        <item name="android:paddingEnd">6dp</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:gravity">center</item>
+    </style>
+
     <!-- MainActivity's theme only for the moment it launches (installSplashScreen() in
          MainActivity.onCreate() swaps this out before setContentView) — a real system splash
          screen, not a fake "splash Activity" that delays showing the actual UI. The animated

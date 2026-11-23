@@ -25,6 +25,12 @@ class TransactionStore(private val maxSize: Int = 500, private val maxBytes: Lon
     val transactions: StateFlow<List<HttpTransaction>> = _transactions.asStateFlow()
 
     fun record(tx: HttpTransaction) {
+        // Dropped count / evicted ids are computed inside update but only *applied* after it returns:
+        // update{} may re-run its lambda on a CAS retry, so a side effect inside it (addAndGet / remove)
+        // would fire once per retry. The last run is the one that commits, so the values it leaves
+        // in these locals are exactly the committed ones.
+        var droppedDelta = 0L
+        var evictedIds: List<String> = emptyList()
         _transactions.update { current ->
             val next = current + tx
             // subList() alone would return a *view* still backed by next's full array,
@@ -32,9 +38,14 @@ class TransactionStore(private val maxSize: Int = 500, private val maxBytes: Lon
             // forces a real copy so they're actually eligible for GC.
             val counted = if (next.size > maxSize) next.subList(next.size - maxSize, next.size).toList() else next
             val kept = trimToBudget(counted)
-            dropped.addAndGet((next.size - kept.size).toLong())
+            droppedDelta = (next.size - kept.size).toLong()
+            evictedIds = next.filterNot { n -> kept.any { k -> k.id == n.id } }.map { it.id }
             kept
         }
+        if (droppedDelta > 0) dropped.addAndGet(droppedDelta)
+        // A dropped entry's WebSocket/SSE frames must go with it, or the registry keeps up to
+        // 8 MiB per connection for transactions History no longer holds.
+        evictedIds.forEach { webSockets.remove(it) }
     }
 
     /** Oldest entries go first once the bodies held in memory pass [maxBytes] (the newest entry is always kept). */
@@ -47,7 +58,8 @@ class TransactionStore(private val maxSize: Int = 500, private val maxBytes: Lon
         return list.subList(drop, list.size).toList()
     }
 
-    private fun weight(t: HttpTransaction): Long = 512L + (t.requestBody?.size ?: 0) + (t.responseBody?.size ?: 0)
+    private fun weight(t: HttpTransaction): Long =
+        512L + (t.requestBody?.size ?: 0) + (t.responseBody?.size ?: 0) + webSockets.bytesFor(t.id)
 
     fun clear() {
         _transactions.value = emptyList()
@@ -62,10 +74,18 @@ class TransactionStore(private val maxSize: Int = 500, private val maxBytes: Lon
 
     /** Swaps in a whole different list wholesale — how loading a saved project replaces the live capture. */
     fun replaceAll(transactions: List<HttpTransaction>) {
-        _transactions.value = if (transactions.size > maxSize) {
-            transactions.subList(transactions.size - maxSize, transactions.size).toList()
-        } else {
-            transactions
+        // The old frames belong to the old History: drop them first, or a replaced project
+        // keeps the previous project's WebSocket/SSE frames under ids it no longer owns.
+        webSockets.clear()
+        // update{} (not a direct assignment): a concurrent record() must not be lost, and the
+        // replacement is subject to the same size + memory budget as a normal record.
+        _transactions.update {
+            val counted = if (transactions.size > maxSize) {
+                transactions.subList(transactions.size - maxSize, transactions.size).toList()
+            } else {
+                transactions
+            }
+            trimToBudget(counted)
         }
     }
 }

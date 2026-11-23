@@ -58,6 +58,8 @@ class InterceptController {
     private val reqHolds = ConcurrentHashMap<String, CompletableDeferred<RequestAction>>()
     private val resHolds = ConcurrentHashMap<String, CompletableDeferred<ResponseAction>>()
     private val info = ConcurrentHashMap<String, Held>()
+    /** When each hold was parked (ms, System.currentTimeMillis) — for the TTL sweep below. */
+    private val holdAt = ConcurrentHashMap<String, Long>()
 
     private val _pendingFlow = MutableStateFlow<List<Held>>(emptyList())
     /** [pending] as an observable, so the Proxy screen updates the moment a message is parked or released. */
@@ -78,15 +80,17 @@ class InterceptController {
             val d = CompletableDeferred<RequestAction>()
             reqHolds[holdId] = d
             info[holdId] = Held(holdId, "request", req.id, req.method, req.host, req.port, req.target, null, effHeaders, effBody)
+            holdAt[holdId] = System.currentTimeMillis()
             publish()
+            sweepStaleHolds()
             // Race guard: if interception was switched off (setIntercept flips `enabled` then calls
             // releaseAll) in the window between the check above and registering this hold, releaseAll's
             // snapshot may have missed us — forward now instead of parking this request forever.
-            if (!enabled) { reqHolds.remove(holdId); info.remove(holdId); publish(); return ruleAction }
+            if (!enabled) { reqHolds.remove(holdId); info.remove(holdId); holdAt.remove(holdId); publish(); return ruleAction }
             return try {
                 // "Forward" from the agent means "send the rule-applied version", not the untouched original.
                 when (val chosen = d.await()) { RequestAction.Forward -> ruleAction; else -> chosen }
-            } finally { reqHolds.remove(holdId); info.remove(holdId); publish() }
+            } finally { reqHolds.remove(holdId); info.remove(holdId); holdAt.remove(holdId); publish() }
         }
 
         override suspend fun onResponse(res: InterceptedResponse): ResponseAction {
@@ -100,12 +104,14 @@ class InterceptController {
             val d = CompletableDeferred<ResponseAction>()
             resHolds[holdId] = d
             info[holdId] = Held(holdId, "response", res.id, "", res.host, res.port, "", res.status, effHeaders, effBody)
+            holdAt[holdId] = System.currentTimeMillis()
             publish()
+            sweepStaleHolds()
             // Same race guard as onRequest: never leave a response parked after interception is off.
-            if (!enabled) { resHolds.remove(holdId); info.remove(holdId); publish(); return ruleAction }
+            if (!enabled) { resHolds.remove(holdId); info.remove(holdId); holdAt.remove(holdId); publish(); return ruleAction }
             return try {
                 when (val chosen = d.await()) { ResponseAction.Forward -> ruleAction; else -> chosen }
-            } finally { resHolds.remove(holdId); info.remove(holdId); publish() }
+            } finally { resHolds.remove(holdId); info.remove(holdId); holdAt.remove(holdId); publish() }
         }
     }
 
@@ -146,7 +152,37 @@ class InterceptController {
         resHolds.values.toList().forEach { it.complete(ResponseAction.Forward) }
     }
 
+    /**
+     * No scheduler in this file, so the sweep runs on every new hold (the only moment a
+     * hold can be created): a hold older than [HOLD_TTL_MS] is auto-forwarded, and when
+     * more than [MAX_PENDING] are parked the oldest are auto-forwarded first. Without
+     * this a forgotten breakpoint parked requests forever and the proxy stalled.
+     * Completing a deferred is idempotent — a hold resolved at the same moment just
+     * answers `false` here and is released by its own await() finally block.
+     */
+    private fun sweepStaleHolds() {
+        val now = System.currentTimeMillis()
+        val ordered = info.keys.sortedBy { it.drop(1).toLongOrNull() ?: 0L }
+        for (holdId in ordered) {
+            val at = holdAt[holdId] ?: continue
+            if (now - at > HOLD_TTL_MS) forwardHold(holdId)
+        }
+        val still = info.keys.sortedBy { it.drop(1).toLongOrNull() ?: 0L }
+        if (still.size > MAX_PENDING) {
+            for (holdId in still.dropLast(MAX_PENDING)) forwardHold(holdId)
+        }
+    }
+
+    private fun forwardHold(holdId: String) {
+        reqHolds[holdId]?.complete(RequestAction.Forward)
+        resHolds[holdId]?.complete(ResponseAction.Forward)
+    }
+
     private companion object {
+        /** A parked message is auto-forwarded after this long with no decision. */
+        const val HOLD_TTL_MS = 60_000L
+        /** At most this many messages stay parked; older ones are auto-forwarded. */
+        const val MAX_PENDING = 100
         val STATIC_EXTENSIONS = setOf(
             "png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "ico", "bmp", "css", "js", "mjs", "map",
             "woff", "woff2", "ttf", "otf", "eot", "mp3", "mp4", "webm", "ogg", "wav",

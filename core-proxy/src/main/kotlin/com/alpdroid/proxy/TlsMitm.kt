@@ -66,13 +66,17 @@ class TlsMitm(
      * plain socket is connected with a timeout first so a black-holed host cannot pin a thread forever.
      */
     fun upstreamSocket(host: String, port: Int): SSLSocket {
-        upstreamOverride?.let { return it(host, port) }
-        val plain = java.net.Socket()
-        plain.connect(InetSocketAddress(host, port), UPSTREAM_CONNECT_TIMEOUT_MS)
-        val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
-        // Pass host/port so SNI and hostname verification use the real name, not the resolved IP.
-        val ssl = factory.createSocket(plain, host, port, true) as SSLSocket
+        val ssl: SSLSocket = upstreamOverride?.let { it(host, port) } ?: run {
+            val plain = java.net.Socket()
+            plain.connect(InetSocketAddress(host, port), UPSTREAM_CONNECT_TIMEOUT_MS)
+            val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
+            // Pass host/port so SNI and hostname verification use the real name, not the resolved IP.
+            factory.createSocket(plain, host, port, true) as SSLSocket
+        }
         ssl.sslParameters = ssl.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
+        // Before the caller runs startHandshake(): a black-holed upstream must time out
+        // instead of pinning the connection thread forever.
+        ssl.soTimeout = UPSTREAM_HANDSHAKE_TIMEOUT_MS
         return ssl
     }
 
@@ -85,12 +89,18 @@ class TlsMitm(
         val factory = serverContext(host).socketFactory as SSLSocketFactory
         val tls = factory.createSocket(socket, socket.inetAddress.hostAddress, socket.port, true) as SSLSocket
         tls.useClientMode = false
+        // Before the caller runs startHandshake(): a client that never starts (or stalls
+        // mid-handshake) must time out instead of pinning the connection thread forever.
+        // Same idle budget the engine gives a live connection (IDLE_TIMEOUT_MS there).
+        tls.soTimeout = CLIENT_HANDSHAKE_TIMEOUT_MS
         return tls
     }
 
     private companion object {
         const val MAX_CONTEXTS = 512
         const val UPSTREAM_CONNECT_TIMEOUT_MS = 10_000
+        const val UPSTREAM_HANDSHAKE_TIMEOUT_MS = 10_000
+        const val CLIENT_HANDSHAKE_TIMEOUT_MS = 60_000
     }
 }
 

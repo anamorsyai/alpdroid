@@ -17,6 +17,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.net.ssl.SSLSocket
 
 /**
@@ -60,6 +61,10 @@ class ProxyEngine(
 ) {
     private var serverSocket: ServerSocket? = null
     private var job: Job? = null
+    /** Guards [job]/[serverSocket]: start() and stop() used to race — a second start() launched a
+     *  second accept loop (and a second bind), and a stop() during start's async bind left the
+     *  socket assigned after stop() had cleared it, leaking a listening socket. */
+    private val lifecycleLock = Any()
     private val activeConnections = AtomicInteger(0)
 
     val boundPort: Int get() = serverSocket?.localPort ?: port
@@ -72,36 +77,57 @@ class ProxyEngine(
      * main-thread I/O violation on every app launch.
      */
     fun start(coroutineScope: CoroutineScope) {
-        job = coroutineScope.launch(connDispatcher) {
-            val server = ServerSocket()
-            server.reuseAddress = true
-            server.bind(InetSocketAddress("127.0.0.1", port))
-            serverSocket = server
-            while (isActive) {
-                val client = try {
-                    server.accept()
-                } catch (e: IOException) {
-                    break
-                }
-                if (activeConnections.incrementAndGet() > MAX_CONNECTIONS) {
-                    activeConnections.decrementAndGet()
-                    client.closeQuietly()
-                    continue
-                }
-                // A throwable escaping a child would cancel this whole accept loop (structured concurrency)
-                // and silently kill the proxy, so every failure of one connection is contained to it.
-                launch(connDispatcher) {
-                    try {
-                        client.soTimeout = IDLE_TIMEOUT_MS
-                        client.tcpNoDelay = true // we write whole messages at once; don't let Nagle hold the tail back
-                        handleClient(client)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Throwable) {
-                        // Dropped, malformed, timed out — nothing to recover; the next connection is unaffected.
-                    } finally {
-                        activeConnections.decrementAndGet()
-                        client.closeQuietly()
+        synchronized(lifecycleLock) {
+            if (job?.isActive == true) return // idempotent: a second start() is a no-op, not a second loop
+            job = coroutineScope.launch(connDispatcher) {
+                val server = ServerSocket()
+                try {
+                    server.reuseAddress = true
+                    server.bind(InetSocketAddress("127.0.0.1", port))
+                    synchronized(lifecycleLock) {
+                        // stop() may have run while the (blocking) bind was in flight: do not
+                        // publish a socket stop() already closed, and do not outlive our job.
+                        if (job?.isActive != true || coroutineContext[Job]?.isActive != true) {
+                            server.closeQuietly()
+                            return@launch
+                        }
+                        serverSocket = server
+                    }
+                    while (isActive) {
+                        val client = try {
+                            server.accept()
+                        } catch (e: IOException) {
+                            break
+                        }
+                        if (activeConnections.incrementAndGet() > MAX_CONNECTIONS) {
+                            activeConnections.decrementAndGet()
+                            client.closeQuietly()
+                            continue
+                        }
+                        // A throwable escaping a child would cancel this whole accept loop (structured concurrency)
+                        // and silently kill the proxy, so every failure of one connection is contained to it.
+                        launch(connDispatcher) {
+                            try {
+                                client.soTimeout = IDLE_TIMEOUT_MS
+                                client.tcpNoDelay = true // we write whole messages at once; don't let Nagle hold the tail back
+                                handleClient(client)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Throwable) {
+                                // Dropped, malformed, timed out — nothing to recover; the next connection is unaffected.
+                            } finally {
+                                activeConnections.decrementAndGet()
+                                client.closeQuietly()
+                            }
+                        }
+                    }
+                } finally {
+                    // The accept loop ending (bind failure, accept error, cancel) closes the
+                    // socket here too — stop() is not the only way out any more.
+                    server.closeQuietly()
+                    synchronized(lifecycleLock) {
+                        if (serverSocket === server) serverSocket = null
+                        if (job === coroutineContext[Job]) job = null
                     }
                 }
             }
@@ -109,16 +135,24 @@ class ProxyEngine(
     }
 
     fun stop() {
-        job?.cancel()
-        serverSocket?.closeQuietly()
-        serverSocket = null
+        synchronized(lifecycleLock) {
+            val j = job
+            job = null
+            j?.cancel()
+            serverSocket?.closeQuietly()
+            serverSocket = null
+        }
     }
 
     private suspend fun handleClient(client: Socket) {
         val input = BufferedInputStream(client.getInputStream())
         val requestLine = readLine(input)?.let(::parseRequestLine) ?: return
         val headers = readHeaders(input)
-        val target = parseTarget(requestLine.method, requestLine.target) ?: return
+        // A malformed target used to close the connection silently; answer 400 so the
+        // client (and the log) can tell a bad request from a dropped connection. No
+        // localhost block here: local access stays open by design.
+        val target = parseTarget(requestLine.method, requestLine.target)
+            ?: run { sendError(client.getOutputStream(), 400, "Bad Request", "Invalid request target"); return }
 
         if (requestLine.method.equals("CONNECT", ignoreCase = true)) {
             handleConnectTunnel(client, target)
@@ -228,6 +262,15 @@ class ProxyEngine(
         requestHeaders: List<Pair<String, String>>,
         target: Target,
     ) {
+        // An https absolute-form (`GET https://host/path`) has no upgrade path here: this
+        // handler speaks plain HTTP upstream, so it would send cleartext to a TLS port.
+        // HTTPS must arrive as CONNECT (then MITM or a tunnel); reject the absolute form
+        // with 400 rather than guessing. The Upgrade path is the same story — a plain-HTTP
+        // handler cannot upgrade to TLS — so it is covered by the same rejection.
+        if (target.scheme.equals("https", ignoreCase = true)) {
+            sendError(client.getOutputStream(), 400, "Bad Request", "HTTPS requests must use CONNECT, not absolute-form")
+            return
+        }
         val socket = try {
             Socket().apply { connect(InetSocketAddress(target.host, target.port), CONNECT_TIMEOUT_MS) }
         } catch (e: IOException) {
@@ -317,7 +360,13 @@ class ProxyEngine(
             requestLine.method, requestTarget,
             requestHeaders.filterNot { it.first.equals("Expect", ignoreCase = true) }, requestBody.bytes,
         )
-        applyRequestIntercept(txId, scheme, target.host, target.port, req)
+        if (applyRequestIntercept(txId, scheme, target.host, target.port, req)) {
+            // The interceptor threw or timed out (30s): answer 502 and record the drop
+            // instead of hanging the client on a parked request, or forwarding uninspected.
+            sendError(clientOut, 502, "Bad Gateway", "Interceptor failed or timed out")
+            recordDropped(txId, start, req.method, scheme, target.host, target.port, req.target, req.headers, req.body)
+            return false
+        }
         if (req.drop) {
             recordDropped(txId, start, req.method, scheme, target.host, target.port, req.target, req.headers, req.body)
             return false
@@ -348,7 +397,10 @@ class ProxyEngine(
                 head = readResponseHead(upIn) ?: throw IOException("connection closed")
             } catch (e: IOException) {
                 upstream.close()
-                if (reusing && attempt++ == 0) continue
+                // Retry a stale reused connection exactly once — but only for idempotent
+                // methods. Retrying a POST/PUT after its bytes may already have reached the
+                // server would execute the side effect twice; a safe method can be replayed.
+                if (reusing && attempt++ == 0 && isIdempotent(req.method)) continue
                 val timedOut = e is java.net.SocketTimeoutException
                 sendError(clientOut, if (timedOut) 504 else 502, if (timedOut) "Gateway Timeout" else "Bad Gateway", "Upstream error: ${e.javaClass.simpleName}")
                 return false
@@ -425,7 +477,11 @@ class ProxyEngine(
 
         val (plainHeaders, plainBody) = decodeContentEncoding(head.headers, body.bytes, BODY_BUFFER_CAP)
         val resp = RespEdit(head.statusLine, head.status, plainHeaders, plainBody)
-        applyResponseIntercept(txId, target.host, target.port, resp)
+        if (applyResponseIntercept(txId, target.host, target.port, resp)) {
+            sendError(clientOut, 502, "Bad Gateway", "Interceptor failed or timed out")
+            recordDropped(txId, start, req.method, scheme, target.host, target.port, req.target, req.headers, req.body)
+            return false
+        }
         if (resp.drop) {
             recordIfInScope(
                 HttpTransaction(
@@ -569,32 +625,75 @@ class ProxyEngine(
         var drop = false
     }
 
-    private suspend fun applyRequestIntercept(id: String, scheme: String, host: String, port: Int, r: ReqEdit) {
-        val icept = interceptor ?: return
-        when (val a = icept.onRequest(InterceptedRequest(id, source, r.method, scheme, host, port, r.target, r.headers, r.body))) {
+    /**
+     * Runs the request interceptor, bounded in time. Returns true when the interceptor
+     * failed (threw, or did not answer within 30s) — the caller answers 502 and records
+     * the drop. A hanging or crashing interceptor must never stall the proxy thread, or
+     * silently forward traffic it was supposed to inspect. Cancellation still propagates.
+     */
+    private suspend fun applyRequestIntercept(id: String, scheme: String, host: String, port: Int, r: ReqEdit): Boolean {
+        val icept = interceptor ?: return false
+        val a = try {
+            withTimeoutOrNull(INTERCEPT_TIMEOUT_MS) {
+                icept.onRequest(InterceptedRequest(id, source, r.method, scheme, host, port, r.target, r.headers, r.body))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            null
+        } ?: return true
+        when (a) {
             RequestAction.Forward -> {}
             RequestAction.Drop -> r.drop = true
             is RequestAction.Replace -> {
                 a.method?.let { r.method = it }
                 a.target?.let { r.target = it }
                 a.headers?.let { r.headers = it }
-                if (a.body != null) { r.body = a.body; r.headers = withContentLength(r.headers, a.body.size) }
+                if (a.body != null) {
+                    r.body = a.body
+                    // The replacement body is plain bytes: a stale Content-Encoding (gzip, …)
+                    // would make the peer decode garbage, so strip it with the re-framing.
+                    r.headers = stripContentEncoding(withContentLength(r.headers, a.body.size))
+                }
             }
         }
+        return false
     }
 
-    private suspend fun applyResponseIntercept(id: String, host: String, port: Int, r: RespEdit) {
-        val icept = interceptor ?: return
-        when (val a = icept.onResponse(InterceptedResponse(id, source, host, port, r.status, r.headers, r.body))) {
+    /** Same contract as [applyRequestIntercept], for responses. */
+    private suspend fun applyResponseIntercept(id: String, host: String, port: Int, r: RespEdit): Boolean {
+        val icept = interceptor ?: return false
+        val a = try {
+            withTimeoutOrNull(INTERCEPT_TIMEOUT_MS) {
+                icept.onResponse(InterceptedResponse(id, source, host, port, r.status, r.headers, r.body))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            null
+        } ?: return true
+        when (a) {
             ResponseAction.Forward -> {}
             ResponseAction.Drop -> r.drop = true
             is ResponseAction.Replace -> {
                 a.status?.let { r.status = it; r.statusLine = replaceStatusCode(r.statusLine, it) }
                 a.headers?.let { r.headers = it }
-                if (a.body != null) { r.body = a.body; r.headers = withContentLength(r.headers, a.body.size) }
+                if (a.body != null) {
+                    r.body = a.body
+                    r.headers = stripContentEncoding(withContentLength(r.headers, a.body.size))
+                }
             }
         }
+        return false
     }
+
+    private fun stripContentEncoding(headers: List<Pair<String, String>>): List<Pair<String, String>> =
+        headers.filterNot { it.first.equals("Content-Encoding", ignoreCase = true) }
+
+    /** GET/HEAD/OPTIONS/TRACE: replaying one is safe even if the first attempt reached the server. */
+    private fun isIdempotent(method: String): Boolean =
+        method.equals("GET", ignoreCase = true) || method.equals("HEAD", ignoreCase = true) ||
+            method.equals("OPTIONS", ignoreCase = true) || method.equals("TRACE", ignoreCase = true)
 
     private fun recordIfInScope(tx: HttpTransaction, host: String) {
         if (!respectScope || scope.matches(host)) store.record(tx)
@@ -617,18 +716,30 @@ class ProxyEngine(
     }
 
     /**
-     * Headers to forward: strip hop-by-hop Connection/Proxy-Connection, and — because we always buffer and may
+     * Headers to forward: strip hop-by-hop headers, and — because we always buffer and may
      * de-chunk or truncate the body — re-frame Content-Length to the bytes we will actually write and drop any
      * stale Transfer-Encoding (so the peer never waits on chunks that won't come, and never on a length that
      * doesn't match). A bodyless message keeps whatever framing it had.
+     *
+     * Hop-by-hop (RFC 9110 §7.6.1) headers are for this connection only and must not be relayed
+     * to the next hop: Keep-Alive, TE, Trailer, Upgrade (except on a genuine upgrade handshake,
+     * where it *is* the request), Proxy-Authenticate, Proxy-Authorization, Proxy-Connection,
+     * and every header named by the Connection header itself. Connection itself is rewritten
+     * only when we close the connection ourselves; an Upgrade handshake keeps its own.
      */
     private fun forwardHeaders(headers: List<Pair<String, String>>, body: ByteArray?, connectionClose: Boolean): List<Pair<String, String>> {
-        // Connection is rewritten only when we close the connection ourselves; an Upgrade handshake keeps its own.
-        var h = headers.filterNot {
-            it.first.equals("Proxy-Connection", ignoreCase = true) ||
-                (connectionClose && it.first.equals("Connection", ignoreCase = true))
+        val connTokens = headerValue(headers, "Connection")?.split(',')?.map { it.trim().lowercase() }?.filter { it.isNotEmpty() } ?: emptyList()
+        // A genuine upgrade handshake (Connection: Upgrade + Upgrade: websocket) keeps both
+        // headers — stripping them would break the handshake this function is forwarding.
+        val isUpgradeHandshake = "upgrade" in connTokens
+        val hopByHop = setOf("proxy-connection", "keep-alive", "te", "trailer", "proxy-authenticate", "proxy-authorization") +
+            connTokens.filterNot { it == "close" || it == "keep-alive" || (it == "upgrade" && isUpgradeHandshake) } +
+            if (isUpgradeHandshake) emptySet() else setOf("upgrade")
+        var h = headers.filterNot { header ->
+            val name = header.first.lowercase()
+            name in hopByHop || (connectionClose && name == "connection")
         }
-        if (body != null) h = withContentLength(h, body.size)
+        if (body != null) h = withContentLength(h, body.size) // also drops Transfer-Encoding: re-framed, not chunked
         return if (connectionClose) h + ("Connection" to "close") else h
     }
 
@@ -663,6 +774,8 @@ class ProxyEngine(
         const val BODY_BUFFER_CAP = 25 * 1024 * 1024
         const val MAX_CONNECTIONS = 256
         const val CONNECT_TIMEOUT_MS = 10_000
+        /** How long an interceptor (breakpoint) may hold one message before the proxy answers 502. */
+        const val INTERCEPT_TIMEOUT_MS = 30_000L
         /** A peer that goes silent this long mid-message is dropped instead of pinning a thread and socket forever. */
         const val IDLE_TIMEOUT_MS = 60_000
         /** How long an idle keep-alive tunnel is held (it pins a thread while it waits for the next request). */

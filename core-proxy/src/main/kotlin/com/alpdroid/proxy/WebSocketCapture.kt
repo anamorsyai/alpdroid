@@ -26,6 +26,9 @@ class WebSocketFrames(val kind: String, private val maxFrames: Int = 2000, priva
     /** How many frames have been seen in total, including ones already dropped from the window. */
     val total: Int @Synchronized get() = next
 
+    /** Bytes currently held (payloads + per-frame overhead), for the store's memory budget. */
+    @Synchronized fun bytesUsed(): Long = bytes
+
     @Synchronized fun add(fromClient: Boolean, opcode: Int, fin: Boolean, length: Long, payload: ByteArray, truncated: Boolean) {
         frames.addLast(WsFrame(next++, System.currentTimeMillis(), fromClient, opcode, fin, length, payload, truncated))
         bytes += payload.size + 64
@@ -44,6 +47,8 @@ class WebSocketRegistry(private val max: Int = 64) {
 
     @Synchronized fun open(id: String, kind: String): WebSocketFrames = WebSocketFrames(kind).also { map[id] = it }
     @Synchronized operator fun get(id: String): WebSocketFrames? = map[id]
+    /** Bytes currently held for [id]'s frames, or 0 when there are none — for the store's memory budget. */
+    @Synchronized fun bytesFor(id: String): Long = map[id]?.bytesUsed() ?: 0L
     @Synchronized fun remove(id: String) { map.remove(id) }
     @Synchronized fun clear() { map.clear() }
 }

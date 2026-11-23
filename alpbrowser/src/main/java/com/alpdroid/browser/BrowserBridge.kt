@@ -562,7 +562,7 @@ class BrowserBridge(
     private fun addRule(body: JSONObject): Pair<Int, JSONObject> {
         val part = runCatching { RuleEngine.Part.valueOf(body.optString("part").uppercase()) }.getOrNull()
             ?: return 400 to error("part must be one of REQ_HEADER, REQ_BODY, RES_HEADER, RES_BODY")
-        val id = body.optString("id").ifBlank { "r${System.currentTimeMillis()}" }
+        val id = body.optString("id").ifBlank { "r${java.util.UUID.randomUUID()}" }
         intercept.rules.add(RuleEngine.Rule(
             id = id, part = part, find = body.optString("find"), replace = body.optString("replace"),
             hostContains = body.optString("hostContains"), regex = body.optBoolean("regex"),

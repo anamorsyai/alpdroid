@@ -171,6 +171,11 @@ object AppUpdater {
                 val cur = best
                 if (cur == null || isNewer(tagVersion(p.release.optString("tag_name")), tagVersion(cur.release.optString("tag_name")))) best = p
             }
+            // Early stop, as promised above: this page held an in-channel (stable, non-draft)
+            // release that is not newer than installed. Releases are listed newest-first, so
+            // a later page can only hold older releases of this channel — paging on would only
+            // burn API calls. The best newer release on *this* page (if any) is kept above.
+            if (pageHasStaleInChannel(releases, belongs, newer)) break
             if (releases.length() < PER_PAGE) break // that was the last page
         }
         val found = best ?: return null
@@ -182,6 +187,24 @@ object AppUpdater {
         // on a private repo, and sending the bearer token to a redirect host leaks it.
         return Update(tag, r.optString("name", tag), r.optString("body", ""), a.optString("browser_download_url"), a.optString("url"), a.optLong("size"), sha256Of(a.optString("digest")), a.optString("name"),
             delta = findDelta(r.optJSONArray("assets"), installedName))
+    }
+
+    /**
+     * True when this page contains a release of the channel that is not newer than installed
+     * (same skips as [pickFromPage]: drafts and prereleases do not count). The early-stop
+     * signal for [selectRelease]: once the newest-first listing reaches a release of this
+     * channel that is already installed or older, no later page can hold a newer one.
+     * A page with no in-channel release at all (only the other channel's) returns false,
+     * so paging continues until the channel's releases are actually reached.
+     */
+    internal fun pageHasStaleInChannel(releases: org.json.JSONArray, belongs: (String) -> Boolean, newer: (String) -> Boolean): Boolean {
+        for (i in 0 until releases.length()) {
+            val r = releases.optJSONObject(i) ?: continue
+            if (r.optBoolean("draft") || r.optBoolean("prerelease")) continue
+            val tag = r.optString("tag_name")
+            if (belongs(tag) && !newer(tag)) return true
+        }
+        return false
     }
 
     private const val PER_PAGE = 100

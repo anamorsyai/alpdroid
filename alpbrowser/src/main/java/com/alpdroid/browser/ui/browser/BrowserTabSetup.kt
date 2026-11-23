@@ -101,7 +101,10 @@ internal fun ensureTabWebView(context: Context, app: AlpBrowserApp, tab: Browser
             // be a leaf our own CA signed. Proceed on UNTRUSTED only after confirming the leaf chains to our CA.
             override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
                 // Only while the proxy is in the path: with Capture off nothing of ours can legitimately sit between the page and the site.
-                if (error.primaryError == SslError.SSL_UNTRUSTED && app.proxyActive() && isOurLeaf(error.certificate, app)) handler.proceed()
+                // The host comes from the error itself (SslError.getUrl), so a subresource's leaf is
+                // checked against its own host, not the page's URL.
+                val host = runCatching { android.net.Uri.parse(error.url).host }.getOrNull()
+                if (error.primaryError == SslError.SSL_UNTRUSTED && app.proxyActive() && isOurLeaf(error.certificate, host, app)) handler.proceed()
                 else handler.cancel()
             }
         }
@@ -144,11 +147,14 @@ internal fun openTab(context: Context, app: AlpBrowserApp, url: String, activate
 }
 
 /**
- * True when [cert] is a leaf our own MITM CA signed, proven by its signature. A name match alone is never enough: anyone can
- * mint a certificate whose issuer is called "Ronin Proxy CA".
+ * True when [cert] is a leaf our own MITM CA signed, proven by its signature, for [host].
+ * A name match alone is never enough: anyone can mint a certificate whose issuer is
+ * called "Ronin Proxy CA" — and a signature alone is not enough either: a leaf our CA
+ * signed for host A must not be accepted for host B, and an expired (or not-yet-valid,
+ * or CA) certificate must not be accepted at all.
  */
-private fun isOurLeaf(cert: SslCertificate?, app: AlpBrowserApp): Boolean {
-    if (cert == null) return false
+private fun isOurLeaf(cert: SslCertificate?, host: String?, app: AlpBrowserApp): Boolean {
+    if (cert == null || host.isNullOrBlank()) return false
     val pub = app.caPublicKey ?: return false
     val x = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) cert.x509Certificate else runCatching {
         // Before API 29 the certificate is only reachable through its saved state.
@@ -156,7 +162,48 @@ private fun isOurLeaf(cert: SslCertificate?, app: AlpBrowserApp): Boolean {
         java.security.cert.CertificateFactory.getInstance("X.509").generateCertificate(der.inputStream()) as java.security.cert.X509Certificate
     }.getOrNull()
     if (x == null) return false
-    return runCatching { x.verify(pub); true }.getOrDefault(false)
+    return runCatching {
+        x.checkValidity() // expired / not-yet-valid leaf: reject, even though the signature is ours
+        if (x.basicConstraints != -1) return@runCatching false // a CA certificate is not a leaf
+        if (!certHostMatches(x, host)) return@runCatching false
+        x.verify(pub)
+        true
+    }.getOrDefault(false)
+}
+
+/** [host] matches the leaf's SANs (DNS or IP), falling back to the CN when there are no SANs. */
+private fun certHostMatches(x: java.security.cert.X509Certificate, host: String): Boolean {
+    val wanted = host.trim().removeSuffix(".").lowercase()
+    val sans = runCatching { x.subjectAlternativeNames }.getOrNull()
+    if (!sans.isNullOrEmpty()) {
+        // SAN type 7 = IP address, 2 = DNS name.
+        for (san in sans) {
+            if (san.size < 2) continue
+            val value = san[1]?.toString() ?: continue
+            if (san[0] == 7) {
+                if (value.equals(wanted, ignoreCase = true)) return true
+            } else if (san[0] == 2) {
+                if (sanMatches(value, wanted)) return true
+            }
+        }
+        return false
+    }
+    // No SANs: fall back to the CN (RFC 2818 legacy behaviour). Parsed by hand — javax.naming
+    // is not on Android, so LdapName is unavailable here.
+    val cn = x.subjectX500Principal.name.split(",").firstOrNull { it.trim().startsWith("CN=", ignoreCase = true) }
+        ?.trim()?.substringAfter("=", "")?.trim() ?: return false
+    return sanMatches(cn, wanted)
+}
+
+/** One SAN/CN entry matches [host]: exact, or a `*.domain` wildcard for one label. */
+private fun sanMatches(pattern: String, host: String): Boolean {
+    val p = pattern.trim().removeSuffix(".").lowercase()
+    if (p == host) return true
+    if (p.startsWith("*.")) {
+        val suffix = p.substring(1) // ".domain"
+        return host.endsWith(suffix) && host.dropLast(suffix.length).isNotEmpty() && '.' !in host.dropLast(suffix.length)
+    }
+    return false
 }
 
 internal fun normalizeUrl(input: String): String {

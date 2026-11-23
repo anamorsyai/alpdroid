@@ -258,8 +258,14 @@ class PtySession private constructor(
      *  overwriting files the process might still be touching (a restore/reinstall replacing the
      *  whole rootfs right after closing every tab) needs this instead of assuming destroy() was
      *  synchronous. */
-    fun awaitExit(timeoutMs: Long): Boolean =
-        runCatching { process.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(true)
+    fun awaitExit(timeoutMs: Long): Boolean = try {
+        process.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+    } catch (_: InterruptedException) {
+        // An interrupt is NOT an exit: returning true here used to let callers
+        // (restore/reinstall) wipe the rootfs while the guest was still writing.
+        Thread.currentThread().interrupt()
+        false
+    }
 
     /** Pids of everything below the bridge (proot, the shell, servers, detached daemons), read from /proc.
      *  Empty when the bridge is already gone: a dead pid may have been reused, and we must never signal

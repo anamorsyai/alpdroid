@@ -408,6 +408,12 @@ object AlpineRootfs {
                 }
                 '0', '\u0000' -> {
                     dest.parentFile?.mkdirs()
+                    // A file entry over a symlink planted by an earlier entry in this
+                    // same archive: outputStream() would follow the link and write
+                    // outside staging. Delete the link first (same as the restore
+                    // path), and refuse if it is still a link afterwards.
+                    if (java.nio.file.Files.isSymbolicLink(dest.toPath())) dest.delete()
+                    if (java.nio.file.Files.isSymbolicLink(dest.toPath())) throw SecurityException("tar entry is a file over a symlink: $name")
                     dest.outputStream().use { out -> copySized(input, out, size, copyBuf) }
                     skipPadding(input, size)
                     chmodNoFollow(dest, mode.takeIf { it != 0 } ?: 0b110100100) // 644
